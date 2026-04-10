@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: ae_orchestrator
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: root
     ports:
       - "5432:5432"
     volumes:
@@ -27,6 +27,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: aeaihub-orchestrator-langfuse
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:root@postgres:5432/ae_orchestrator
+      - NEXTAUTH_URL=http://localhost:3001
+      - NEXTAUTH_SECRET=mysecret
+      - SALT=mysalt
+      - TELEMETRY_ENABLED=true
 
 volumes:
   postgres-data:

@@ -93,14 +93,10 @@ def stream_google(
 ) -> dict[str, Any]:
     """Stream Google Gemini, publishing tokens to Redis.  Returns the same
     dict format as ``_call_google`` in llm_providers.py."""
-    from app.config import settings
-    if not settings.google_api_key:
-        raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
-
-    from google import genai
     from google.genai import types
+    from app.engine.llm_providers import _build_google_client
 
-    client = genai.Client(api_key=settings.google_api_key)
+    client = _build_google_client()
 
     full_text = ""
     usage_meta = None

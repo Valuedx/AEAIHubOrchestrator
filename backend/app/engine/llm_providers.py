@@ -92,6 +92,35 @@ def call_llm_streaming(
     )
 
 
+def _build_google_client():
+    """Build a google.genai Client using Vertex AI (preferred) or API key."""
+    import os
+    from google import genai
+
+    # Prefer Vertex AI with service account credentials
+    if settings.google_project:
+        if settings.google_application_credentials:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+        client = genai.Client(
+            vertexai=True,
+            project=settings.google_project,
+            location=settings.google_location or "us-central1",
+        )
+        logger.info("Google GenAI client: Vertex AI (project=%s)", settings.google_project)
+        return client
+
+    # Fallback to API key
+    if settings.google_api_key:
+        client = genai.Client(api_key=settings.google_api_key)
+        logger.info("Google GenAI client: API key")
+        return client
+
+    raise ValueError(
+        "Neither ORCHESTRATOR_GOOGLE_PROJECT (Vertex AI) nor "
+        "ORCHESTRATOR_GOOGLE_API_KEY is configured"
+    )
+
+
 def _call_google(
     model: str,
     system_prompt: str,
@@ -99,13 +128,9 @@ def _call_google(
     temperature: float,
     max_tokens: int,
 ) -> dict[str, Any]:
-    if not settings.google_api_key:
-        raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
-
-    from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=settings.google_api_key)
+    client = _build_google_client()
     response = client.models.generate_content(
         model=model,
         contents=user_message,
