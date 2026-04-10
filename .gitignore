@@ -1,0 +1,22 @@
+# Backend
+backend/.env
+backend/.pytest_cache/
+backend/__pycache__/
+backend/*.pyc
+backend/celerybeat-schedule.bak
+backend/celerybeat-schedule.dat
+backend/celerybeat-schedule.dir
+backend/venv/
+backend/.venv/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Tooling / OS
+.pytest_cache/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

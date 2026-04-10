@@ -1,0 +1,456 @@
+{
+  "version": "1.0.0",
+  "categories": [
+    {
+      "id": "trigger",
+      "label": "Triggers",
+      "description": "Entry points that start a workflow execution"
+    },
+    {
+      "id": "agent",
+      "label": "AI Agents",
+      "description": "LLM-powered reasoning nodes"
+    },
+    {
+      "id": "action",
+      "label": "Actions",
+      "description": "Tool calls, HTTP requests, and side-effect operations"
+    },
+    {
+      "id": "logic",
+      "label": "Logic",
+      "description": "Branching, merging, and flow control nodes"
+    }
+  ],
+  "node_types": [
+    {
+      "type": "webhook_trigger",
+      "category": "trigger",
+      "label": "Webhook Trigger",
+      "description": "Start workflow on HTTP POST",
+      "icon": "webhook",
+      "config_schema": {
+        "method": {
+          "type": "string",
+          "default": "POST",
+          "enum": ["POST", "PUT"],
+          "description": "HTTP method accepted by this trigger endpoint"
+        },
+        "path": {
+          "type": "string",
+          "default": "/webhook",
+          "description": "URL path for this webhook (e.g. /my-webhook). Must start with /"
+        }
+      }
+    },
+    {
+      "type": "schedule_trigger",
+      "category": "trigger",
+      "label": "Schedule Trigger",
+      "description": "Start workflow on a cron schedule",
+      "icon": "clock",
+      "config_schema": {
+        "cron": {
+          "type": "string",
+          "default": "0 * * * *",
+          "description": "Cron expression in UTC (e.g. '0 * * * *' = every hour, '0 9 * * 1-5' = weekdays at 9am)"
+        }
+      }
+    },
+    {
+      "type": "llm_agent",
+      "category": "agent",
+      "label": "LLM Agent",
+      "description": "AI reasoning node with prompt and model selection",
+      "icon": "brain",
+      "config_schema": {
+        "provider": {
+          "type": "string",
+          "default": "google",
+          "enum": ["google", "openai", "anthropic"],
+          "description": "LLM provider to use for this agent"
+        },
+        "model": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "description": "Model variant — balance speed vs. capability"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Jinja2 template for the system prompt. Use {{ trigger.field }} for trigger data or {{ node_2.response }} for a previous node's output"
+        },
+        "temperature": {
+          "type": "number",
+          "default": 0.7,
+          "min": 0,
+          "max": 2,
+          "description": "Sampling temperature — 0 = deterministic, 1 = balanced, 2 = very creative"
+        },
+        "maxTokens": {
+          "type": "integer",
+          "default": 4096,
+          "description": "Maximum number of output tokens for this LLM call"
+        }
+      }
+    },
+    {
+      "type": "react_agent",
+      "category": "agent",
+      "label": "ReAct Agent",
+      "description": "Iterative tool-calling agent loop",
+      "icon": "repeat",
+      "config_schema": {
+        "provider": {
+          "type": "string",
+          "default": "google",
+          "enum": ["google", "openai", "anthropic"],
+          "description": "LLM provider powering the ReAct reasoning loop"
+        },
+        "model": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "description": "Model variant used for each reasoning step in the ReAct loop"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Jinja2 template for the system prompt. Use {{ trigger.field }} or {{ node_2.response }}"
+        },
+        "maxIterations": {
+          "type": "integer",
+          "default": 10,
+          "description": "Maximum number of Reason→Act cycles before the agent stops (prevents runaway loops)"
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "MCP tools available to this agent. Leave empty to auto-discover all tools at runtime"
+        }
+      }
+    },
+    {
+      "type": "mcp_tool",
+      "category": "action",
+      "label": "MCP Tool",
+      "description": "Execute an MCP server tool",
+      "icon": "wrench",
+      "config_schema": {
+        "toolName": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the MCP tool to call — select from the list or type manually"
+        },
+        "parameters": {
+          "type": "object",
+          "default": {},
+          "description": "JSON object of fixed parameters to pass to the tool. Runtime node outputs can override these"
+        }
+      }
+    },
+    {
+      "type": "http_request",
+      "category": "action",
+      "label": "HTTP Request",
+      "description": "Make an external HTTP call",
+      "icon": "globe",
+      "config_schema": {
+        "url": {
+          "type": "string",
+          "default": "",
+          "description": "Full URL to call (e.g. https://api.example.com/data)"
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          "description": "HTTP method to use for the request"
+        },
+        "headers": {
+          "type": "object",
+          "default": {},
+          "description": "JSON object of HTTP headers (e.g. {\"Authorization\": \"Bearer ...\"})"
+        },
+        "body": {
+          "type": "string",
+          "default": "",
+          "description": "Request body text — used for POST, PUT, and PATCH requests"
+        }
+      }
+    },
+    {
+      "type": "human_approval",
+      "category": "action",
+      "label": "Human Approval",
+      "description": "Pause and wait for human approval",
+      "icon": "user-check",
+      "config_schema": {
+        "approvalMessage": {
+          "type": "string",
+          "default": "",
+          "description": "Message shown to the approver in the approval UI"
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 3600,
+          "description": "Seconds to wait for approval before the execution times out (3600 = 1 hour)"
+        }
+      }
+    },
+    {
+      "type": "bridge_user_reply",
+      "category": "action",
+      "label": "Bridge User Reply",
+      "description": "Choose the exact text a sync caller receives when using the orchestrator bridge (sets orchestrator_user_reply)",
+      "icon": "message-square",
+      "config_schema": {
+        "messageExpression": {
+          "type": "string",
+          "default": "",
+          "description": "Optional safe_eval expression for the reply (e.g. node_7.response). If set, takes precedence over responseNodeId"
+        },
+        "responseNodeId": {
+          "type": "string",
+          "default": "",
+          "description": "Node id whose response or output field becomes the chat reply (same idea as Save Conversation State)"
+        }
+      }
+    },
+    {
+      "type": "condition",
+      "category": "logic",
+      "label": "Condition",
+      "description": "Branch based on a condition expression",
+      "icon": "git-branch",
+      "config_schema": {
+        "condition": {
+          "type": "string",
+          "default": "",
+          "description": "safe_eval expression evaluated as true/false (e.g. node_2.intent == \"diagnose\" or node_3.score > 0.8)"
+        },
+        "trueLabel": {
+          "type": "string",
+          "default": "Yes",
+          "description": "Label for the edge followed when the condition is true"
+        },
+        "falseLabel": {
+          "type": "string",
+          "default": "No",
+          "description": "Label for the edge followed when the condition is false"
+        }
+      }
+    },
+    {
+      "type": "merge",
+      "category": "logic",
+      "label": "Merge",
+      "description": "Merge multiple branches",
+      "icon": "git-merge",
+      "config_schema": {
+        "strategy": {
+          "type": "string",
+          "default": "waitAll",
+          "enum": ["waitAll", "waitAny"],
+          "description": "waitAll: hold until every incoming branch completes; waitAny: continue as soon as any one branch completes"
+        }
+      }
+    },
+    {
+      "type": "forEach",
+      "category": "logic",
+      "label": "ForEach",
+      "description": "Iterate over an array, executing downstream nodes once per element",
+      "icon": "repeat",
+      "config_schema": {
+        "arrayExpression": {
+          "type": "string",
+          "default": "",
+          "description": "Expression that resolves to the array to iterate (e.g. node_2.items or trigger.records)"
+        },
+        "itemVariable": {
+          "type": "string",
+          "default": "item",
+          "description": "Variable name for the current element inside the loop (accessible as item.field in downstream nodes)"
+        }
+      }
+    },
+    {
+      "type": "loop",
+      "category": "logic",
+      "label": "Loop",
+      "description": "Repeat downstream body nodes while a condition expression is true. The loop runs up to maxIterations times (hard cap: 25). An empty continueExpression runs unconditionally for maxIterations.",
+      "icon": "refresh-cw",
+      "config_schema": {
+        "continueExpression": {
+          "type": "string",
+          "default": "",
+          "description": "safe_eval expression evaluated before each iteration. Loop continues while True (e.g. node_2.score < 0.9 or _loop_index < 3). Leave empty to run unconditionally for maxIterations."
+        },
+        "maxIterations": {
+          "type": "integer",
+          "default": 10,
+          "description": "Maximum number of loop iterations (backend hard cap: 25). Each body node re-executes once per iteration."
+        }
+      }
+    },
+    {
+      "type": "load_conversation_state",
+      "category": "action",
+      "label": "Load Conversation State",
+      "description": "Fetch multi-turn chat history from persistent storage. Place this as the first node after the trigger to enable conversational memory.",
+      "icon": "history",
+      "config_schema": {
+        "sessionIdExpression": {
+          "type": "string",
+          "default": "trigger.session_id",
+          "description": "Expression that resolves to the session identifier (e.g. trigger.session_id)"
+        }
+      }
+    },
+    {
+      "type": "save_conversation_state",
+      "category": "action",
+      "label": "Save Conversation State",
+      "description": "Append the current user message and assistant response to persistent chat history. Place this as the last node in the graph.",
+      "icon": "save",
+      "config_schema": {
+        "sessionIdExpression": {
+          "type": "string",
+          "default": "trigger.session_id",
+          "description": "Expression that resolves to the session identifier"
+        },
+        "responseNodeId": {
+          "type": "string",
+          "default": "",
+          "description": "Node ID whose 'response' field is saved as the assistant message (e.g. node_4)"
+        },
+        "userMessageExpression": {
+          "type": "string",
+          "default": "trigger.message",
+          "description": "Expression that resolves to the user's current message text"
+        }
+      }
+    },
+    {
+      "type": "llm_router",
+      "category": "agent",
+      "label": "LLM Router",
+      "description": "Classifies the user's intent into one of the configured intent labels. Outputs {intent: string} for downstream Condition nodes to route on.",
+      "icon": "route",
+      "config_schema": {
+        "provider": {
+          "type": "string",
+          "default": "google",
+          "enum": ["google", "openai", "anthropic"],
+          "description": "LLM provider used to classify the user intent"
+        },
+        "model": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "description": "Model variant for the classification call"
+        },
+        "intents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Valid intent names the router can output (e.g. diagnose_server, casual_chat, escalate)"
+        },
+        "historyNodeId": {
+          "type": "string",
+          "default": "",
+          "description": "Node ID of the Load Conversation State node to read history from (e.g. node_1)"
+        },
+        "userMessageExpression": {
+          "type": "string",
+          "default": "trigger.message",
+          "description": "Expression that resolves to the current user message text"
+        }
+      }
+    },
+    {
+      "type": "reflection",
+      "category": "agent",
+      "label": "Reflection",
+      "description": "Calls an LLM with a summary of the workflow's execution history and returns a structured JSON assessment. Downstream Condition nodes can branch on any returned field (e.g. {\"next_action\": \"escalate\"}).",
+      "icon": "brain",
+      "config_schema": {
+        "provider": {
+          "type": "string",
+          "default": "google",
+          "enum": ["google", "openai", "anthropic"],
+          "description": "LLM provider used for the reflection call"
+        },
+        "model": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "description": "Model variant to use"
+        },
+        "reflectionPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Jinja2 system prompt template. Use {{ execution_summary }} to inject the auto-built history block, plus any other context variables."
+        },
+        "outputKeys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Expected top-level keys in the LLM's JSON response (e.g. [\"next_action\", \"confidence\"]). A warning is logged for any missing keys but execution is not blocked."
+        },
+        "maxHistoryNodes": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum number of recent node outputs to include in the execution summary (hard cap: 25)"
+        },
+        "temperature": {
+          "type": "number",
+          "default": 0.3,
+          "description": "Sampling temperature for the LLM call (0 = deterministic, 1 = creative)"
+        },
+        "maxTokens": {
+          "type": "number",
+          "default": 1024,
+          "description": "Maximum tokens for the LLM response"
+        }
+      }
+    },
+    {
+      "type": "a2a_call",
+      "category": "action",
+      "label": "A2A Agent Call",
+      "description": "Delegate a task to an external A2A-compatible agent and wait for the result. The remote agent's response is injected into context for downstream nodes.",
+      "icon": "network",
+      "config_schema": {
+        "agentCardUrl": {
+          "type": "string",
+          "default": "",
+          "description": "URL of the remote agent's /.well-known/agent.json discovery document"
+        },
+        "skillId": {
+          "type": "string",
+          "default": "",
+          "description": "Skill ID to invoke on the remote agent. Leave blank to use the first available skill."
+        },
+        "messageExpression": {
+          "type": "string",
+          "default": "trigger.message",
+          "description": "Expression that resolves to the message text sent to the remote agent (e.g. trigger.message or node_3.response)"
+        },
+        "apiKeySecret": {
+          "type": "string",
+          "default": "",
+          "description": "Vault reference to the remote agent's A2A API key, e.g. {{ env.REMOTE_AGENT_KEY }}"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "default": 300,
+          "description": "Maximum seconds to wait for the remote agent to complete. Raises an error if exceeded."
+        }
+      }
+    }
+  ]
+}

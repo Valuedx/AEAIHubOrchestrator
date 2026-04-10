@@ -1,0 +1,600 @@
+/**
+ * DynamicConfigForm — renders a config panel from a registry JSON schema.
+ *
+ * Field rendering rules (per schema entry type):
+ *  - string + enum      → Select
+ *  - string (systemPrompt / approvalMessage / body) → Textarea
+ *  - string             → Input text
+ *  - number / integer   → Input number (step 0.1 / 1, min/max from schema)
+ *  - boolean            → Switch
+ *  - array (tools field on react_agent) → ToolMultiSelect (live MCP list)
+ *  - array (other)      → Textarea (JSON)
+ *  - object             → Textarea (JSON, validated on blur)
+ */
+
+import { useEffect, useRef, useState } from "react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { api } from "@/lib/api";
+import type { ToolOut } from "@/lib/api";
+import { ExpressionInput } from "@/components/sidebar/ExpressionInput";
+import { getExpressionVariables } from "@/lib/expressionVariables";
+import { useFlowStore } from "@/store/flowStore";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type FieldSchema = {
+  type: string;
+  default?: unknown;
+  enum?: unknown[];
+  min?: number;
+  max?: number;
+  items?: { type: string };
+  description?: string;
+};
+
+export interface DynamicConfigFormProps {
+  nodeType: string;                                    // e.g. "react_agent"
+  schema: Record<string, FieldSchema>;
+  config: Record<string, unknown>;
+  onUpdate: (partial: { config: Record<string, unknown> }) => void;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** camelCase → "Camel Case" */
+function humanize(key: string): string {
+  return key
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (c) => c.toUpperCase())
+    .trim();
+}
+
+const TEXTAREA_KEYS = new Set(["systemPrompt", "approvalMessage", "body"]);
+
+// Fields that accept safe_eval dot-path expressions (e.g. node_2.intent == "x")
+const EXPRESSION_KEYS = new Set([
+  "condition",
+  "arrayExpression",
+  "continueExpression",
+  "sessionIdExpression",
+  "userMessageExpression",
+  "messageExpression",
+]);
+
+// Fields that accept a bare node ID (e.g. node_3)
+const NODE_ID_KEYS = new Set(["responseNodeId", "historyNodeId"]);
+
+// Fields that accept Jinja2 templates (e.g. {{ trigger.message }})
+const JINJA2_KEYS = new Set(["systemPrompt"]);
+
+// ---------------------------------------------------------------------------
+// FieldHint — grey help text rendered below a field input
+// ---------------------------------------------------------------------------
+
+function FieldHint({ text }: { text: string }) {
+  return (
+    <p className="text-[10px] text-muted-foreground leading-snug">{text}</p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JsonTextarea — controlled JSON editor that syncs when the serialised value
+// changes externally (e.g. after an undo/redo that replaces config).
+// ---------------------------------------------------------------------------
+
+function JsonTextarea({
+  id,
+  rows,
+  canonicalValue,   // the authoritative value from the store (as a JS object)
+  onCommit,         // called with the parsed object on valid blur
+}: {
+  id: string;
+  rows: number;
+  canonicalValue: unknown;
+  onCommit: (value: unknown) => void;
+}) {
+  const [raw, setRaw] = useState(() => JSON.stringify(canonicalValue, null, 2));
+  const [hasError, setHasError] = useState(false);
+  // Track the last canonical JSON string so we can detect external changes
+  const lastCanonical = useRef(JSON.stringify(canonicalValue));
+
+  // When the store value changes (e.g. undo/redo), reset the local raw string
+  const canonical = JSON.stringify(canonicalValue);
+  if (canonical !== lastCanonical.current) {
+    lastCanonical.current = canonical;
+    setRaw(JSON.stringify(canonicalValue, null, 2));
+    setHasError(false);
+  }
+
+  const handleBlur = () => {
+    try {
+      onCommit(JSON.parse(raw));
+      setHasError(false);
+    } catch {
+      setHasError(true);
+    }
+  };
+
+  return (
+    <>
+      <Textarea
+        id={id}
+        rows={rows}
+        value={raw}
+        onChange={(e) => setRaw(e.target.value)}
+        onBlur={handleBlur}
+        className={hasError ? "border-red-500" : ""}
+      />
+      {hasError && <p className="text-[10px] text-red-500">Invalid JSON</p>}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tool multi-select sub-component (for react_agent tools field)
+// ---------------------------------------------------------------------------
+
+function ToolMultiSelect({
+  selected,
+  onChange,
+}: {
+  selected: string[];
+  onChange: (names: string[]) => void;
+}) {
+  const [tools, setTools] = useState<ToolOut[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.listTools().then((ts) => {
+      setTools(ts);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <p className="text-xs text-muted-foreground">Loading tools…</p>;
+  }
+
+  if (tools.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        No tools available (MCP server may be offline).
+        Leave empty to auto-discover all tools at runtime.
+      </p>
+    );
+  }
+
+  const toggleTool = (name: string) => {
+    if (selected.includes(name)) {
+      onChange(selected.filter((n) => n !== name));
+    } else {
+      onChange([...selected, name]);
+    }
+  };
+
+  // Group by category
+  const byCategory: Record<string, ToolOut[]> = {};
+  for (const t of tools) {
+    (byCategory[t.category] ??= []).push(t);
+  }
+
+  return (
+    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+      {selected.length === 0 && (
+        <p className="text-[10px] text-muted-foreground italic">
+          None selected — all tools auto-discovered at runtime
+        </p>
+      )}
+      {Object.entries(byCategory).map(([cat, catTools]) => (
+        <div key={cat} className="space-y-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {cat}
+          </p>
+          {catTools.map((t) => {
+            const checked = selected.includes(t.name);
+            return (
+              <label
+                key={t.name}
+                className="flex items-start gap-2 cursor-pointer group"
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5 shrink-0"
+                  checked={checked}
+                  onChange={() => toggleTool(t.name)}
+                />
+                <div className="min-w-0">
+                  <span className={`text-xs ${checked ? "text-foreground" : "text-muted-foreground"} group-hover:text-foreground transition-colors`}>
+                    {t.title || t.name}
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="ml-1.5 text-[9px] px-1 py-0"
+                  >
+                    {t.safety_tier}
+                  </Badge>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tool single-select sub-component (for mcp_tool toolName field)
+// ---------------------------------------------------------------------------
+
+function ToolSingleSelect({
+  selected,
+  onChange,
+}: {
+  selected: string;
+  onChange: (name: string) => void;
+}) {
+  const [tools, setTools] = useState<ToolOut[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    api.listTools().then((ts) => {
+      setTools(ts);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <p className="text-xs text-muted-foreground">Loading tools…</p>;
+  }
+
+  if (tools.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        No tools available (MCP server may be offline). Type the tool name manually below.
+      </p>
+    );
+  }
+
+  const filtered = search.trim()
+    ? tools.filter(
+        (t) =>
+          t.name.toLowerCase().includes(search.toLowerCase()) ||
+          (t.title || "").toLowerCase().includes(search.toLowerCase()) ||
+          (t.description || "").toLowerCase().includes(search.toLowerCase()),
+      )
+    : tools;
+
+  // Group by category
+  const byCategory: Record<string, ToolOut[]> = {};
+  for (const t of filtered) {
+    (byCategory[t.category] ??= []).push(t);
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Search filter */}
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Filter tools…"
+        className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      />
+
+      {/* Selected indicator */}
+      {selected && (
+        <div className="flex items-center gap-1.5 rounded-md bg-primary/10 border border-primary/20 px-2.5 py-1.5">
+          <span className="text-xs font-mono text-primary truncate flex-1">{selected}</span>
+          <button
+            onClick={() => onChange("")}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0"
+            title="Clear selection"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Tool list */}
+      <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+        {Object.entries(byCategory).map(([cat, catTools]) => (
+          <div key={cat} className="space-y-0.5">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-1 pt-1">
+              {cat}
+            </p>
+            {catTools.map((t) => {
+              const isSelected = selected === t.name;
+              return (
+                <button
+                  key={t.name}
+                  onClick={() => onChange(isSelected ? "" : t.name)}
+                  className={`w-full text-left rounded-md px-2.5 py-2 transition-colors group ${
+                    isSelected
+                      ? "bg-primary/10 border border-primary/30"
+                      : "hover:bg-accent border border-transparent"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className={`text-xs font-medium truncate flex-1 ${isSelected ? "text-primary" : "text-foreground"}`}>
+                      {t.title || t.name}
+                    </span>
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 shrink-0">
+                      {t.safety_tier}
+                    </Badge>
+                  </div>
+                  {t.description && (
+                    <p className="text-[10px] text-muted-foreground mt-0.5 line-clamp-2 text-left">
+                      {t.description}
+                    </p>
+                  )}
+                  <p className="text-[9px] font-mono text-muted-foreground/70 mt-0.5">{t.name}</p>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <p className="text-xs text-muted-foreground py-2 px-1">No tools match "{search}"</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
+export function DynamicConfigForm({
+  nodeType,
+  schema,
+  config,
+  onUpdate,
+}: DynamicConfigFormProps) {
+
+  // Expression autocomplete — build variable suggestions from canvas state
+  const nodes = useFlowStore((s) => s.nodes);
+  const selectedNodeId = useFlowStore((s) => s.selectedNodeId);
+  const exprSuggestions = getExpressionVariables(nodes, selectedNodeId, "expression");
+  const nodeIdSuggestions = getExpressionVariables(nodes, selectedNodeId, "nodeId");
+  const jinja2Suggestions = getExpressionVariables(nodes, selectedNodeId, "jinja2");
+
+  const update = (key: string, value: unknown) => {
+    onUpdate({ config: { ...config, [key]: value } });
+  };
+
+  return (
+    <div className="space-y-4">
+      {Object.entries(schema).map(([key, field]) => {
+        const value = config[key];
+
+        // ---- enum → Select ----
+        if (field.enum && field.enum.length > 0) {
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)}</Label>
+              <Select
+                value={String(value ?? field.default ?? "")}
+                onValueChange={(v) => update(key, v)}
+              >
+                <SelectTrigger id={key}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {field.enum.map((opt) => (
+                    <SelectItem key={String(opt)} value={String(opt)}>
+                      {String(opt)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- tools array on react_agent → ToolMultiSelect ----
+        if (field.type === "array" && key === "tools" && nodeType === "react_agent") {
+          const selected = Array.isArray(value) ? (value as string[]) : [];
+          return (
+            <div key={key} className="space-y-2">
+              <Label>{humanize(key)}</Label>
+              <ToolMultiSelect
+                selected={selected}
+                onChange={(names) => update(key, names)}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- other array → JSON textarea ----
+        if (field.type === "array") {
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)} (JSON array)</Label>
+              <JsonTextarea
+                id={key}
+                rows={3}
+                canonicalValue={value ?? field.default ?? []}
+                onCommit={(v) => update(key, v)}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- object → JSON textarea ----
+        if (field.type === "object") {
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)} (JSON)</Label>
+              <JsonTextarea
+                id={key}
+                rows={3}
+                canonicalValue={value ?? field.default ?? {}}
+                onCommit={(v) => update(key, v)}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- boolean → checkbox ----
+        if (field.type === "boolean") {
+          return (
+            <div key={key} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <input
+                  id={key}
+                  type="checkbox"
+                  checked={Boolean(value ?? field.default ?? false)}
+                  onChange={(e) => update(key, e.target.checked)}
+                />
+                <Label htmlFor={key}>{humanize(key)}</Label>
+              </div>
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- number / integer → Input number ----
+        if (field.type === "number" || field.type === "integer") {
+          const step = field.type === "integer" ? 1 : 0.1;
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)}</Label>
+              <Input
+                id={key}
+                type="number"
+                step={step}
+                min={field.min}
+                max={field.max}
+                value={String(value ?? field.default ?? 0)}
+                onChange={(e) =>
+                  update(
+                    key,
+                    field.type === "integer"
+                      ? parseInt(e.target.value, 10)
+                      : parseFloat(e.target.value),
+                  )
+                }
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- toolName on mcp_tool → ToolSingleSelect ----
+        if (field.type === "string" && key === "toolName" && nodeType === "mcp_tool") {
+          return (
+            <div key={key} className="space-y-2">
+              <Label>{humanize(key)}</Label>
+              <ToolSingleSelect
+                selected={String(value ?? "")}
+                onChange={(name) => update(key, name)}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- string (Jinja2 textarea: systemPrompt) ----
+        if (field.type === "string" && JINJA2_KEYS.has(key)) {
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)}</Label>
+              <ExpressionInput
+                value={String(value ?? field.default ?? "")}
+                onChange={(v) => update(key, v)}
+                suggestions={jinja2Suggestions}
+                multiline
+                rows={4}
+                placeholder="Use {{ trigger.field }} or {{ node_2.response }}"
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- string (plain textarea: approvalMessage, body) ----
+        if (field.type === "string" && TEXTAREA_KEYS.has(key)) {
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)}</Label>
+              <Textarea
+                id={key}
+                rows={4}
+                value={String(value ?? field.default ?? "")}
+                onChange={(e) => update(key, e.target.value)}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- string (expression field: condition, arrayExpression, *Expression) ----
+        if (field.type === "string" && EXPRESSION_KEYS.has(key)) {
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)}</Label>
+              <ExpressionInput
+                value={String(value ?? field.default ?? "")}
+                onChange={(v) => update(key, v)}
+                suggestions={exprSuggestions}
+                placeholder="e.g. node_2.intent == &quot;diagnose&quot;"
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- string (node ID reference: responseNodeId, historyNodeId) ----
+        if (field.type === "string" && NODE_ID_KEYS.has(key)) {
+          return (
+            <div key={key} className="space-y-2">
+              <Label htmlFor={key}>{humanize(key)}</Label>
+              <ExpressionInput
+                value={String(value ?? field.default ?? "")}
+                onChange={(v) => update(key, v)}
+                suggestions={nodeIdSuggestions}
+                placeholder="e.g. node_4"
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- string → Input text ----
+        return (
+          <div key={key} className="space-y-2">
+            <Label htmlFor={key}>{humanize(key)}</Label>
+            <Input
+              id={key}
+              type="text"
+              value={String(value ?? field.default ?? "")}
+              onChange={(e) => update(key, e.target.value)}
+            />
+            {field.description && <FieldHint text={field.description} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

@@ -1,0 +1,66 @@
+from pydantic_settings import BaseSettings
+
+from app.paths import BACKEND_ENV_FILE
+
+
+class Settings(BaseSettings):
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/ae_orchestrator"
+    redis_url: str = "redis://localhost:6379/0"
+    mcp_server_url: str = "http://localhost:8000/mcp"
+    secret_key: str = "change-me-in-production"
+    cors_origins: list[str] = ["http://localhost:8080", "http://localhost:8082"]
+
+    # Auth: "dev" = X-Tenant-Id header, "jwt" = Bearer token required
+    auth_mode: str = "dev"
+
+    # LLM provider keys
+    google_api_key: str = ""
+    google_project: str = ""
+    google_location: str = "us-central1"
+
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+
+    anthropic_api_key: str = ""
+
+    # Credential vault encryption key (Fernet, base64-encoded 32 bytes).
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    vault_key: str = ""
+
+    # Rate limiting
+    rate_limit_requests: int = 100
+    rate_limit_window: str = "1 minute"
+    execution_quota_per_hour: int = 50
+
+    # OIDC federation (optional — set oidc_enabled=true to activate)
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""                          # e.g. https://accounts.google.com
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = "http://localhost:8001/auth/oidc/callback"
+    oidc_tenant_claim: str = "email"               # ID token claim used as tenant_id
+    oidc_scopes: str = "openid email profile"
+
+    # Snapshot pruning — max snapshots per workflow (0 = unlimited)
+    max_snapshots: int = 20
+
+    # MCP connection pool size
+    mcp_pool_size: int = 4
+
+    # When False, tasks run in-process via background threads (no Redis/Celery needed)
+    use_celery: bool = False
+
+    # Langfuse Observability
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
+    model_config = {
+        "env_prefix": "ORCHESTRATOR_",
+        "env_file": str(BACKEND_ENV_FILE),
+        "extra": "ignore"
+    }
+
+
+settings = Settings()
