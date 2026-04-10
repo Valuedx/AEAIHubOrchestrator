@@ -1,8 +1,10 @@
 # Backend
 backend/.env
 backend/.pytest_cache/
-backend/__pycache__/
-backend/*.pyc
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/**/*.pyd
 backend/celerybeat-schedule.bak
 backend/celerybeat-schedule.dat
 backend/celerybeat-schedule.dir
