@@ -36,7 +36,7 @@ def _is_enabled() -> bool:
         return env_val in ("1", "true", "yes", "on")
     try:
         from app.config import settings
-        return bool(getattr(settings, "langfuse_enabled", False))
+        return bool(settings.langfuse_enabled)
     except Exception:
         return False
 
@@ -57,11 +57,17 @@ def get_langfuse():
 
     try:
         from langfuse import Langfuse
-        _langfuse_client = Langfuse()
+        from app.config import settings
+
+        _langfuse_client = Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=settings.langfuse_host,
+        )
         _langfuse_available = True
         logger.info(
             "Langfuse observability initialized (host=%s)",
-            os.environ.get("LANGFUSE_HOST", "default"),
+            settings.langfuse_host,
         )
         return _langfuse_client
     except Exception as exc:
@@ -96,10 +102,10 @@ class _NoOpSpan:
     def end(self, **_kw):
         return None
 
-    def start_as_current_observation(self, **_kw):
-        return _noop_ctx()
+    def span(self, **_kw):
+        return _NoOpSpan()
 
-    def start_observation(self, **_kw):
+    def generation(self, **_kw):
         return _NoOpSpan()
 
 
@@ -129,28 +135,28 @@ def trace_workflow(
         return
 
     try:
-        from langfuse import propagate_attributes
-
         trace_tags = ["orchestrator", f"tenant:{tenant_id}"]
         if tags:
             trace_tags.extend(tags)
 
-        with propagate_attributes(
-            session_id=f"wf-{workflow_id}",
+        # Extract session_id from trigger_payload (A2A chat session) if provided
+        session_id = f"wf-{workflow_id}"
+        if isinstance(trigger_payload, dict):
+            session_id = trigger_payload.get("session_id") or session_id
+
+        trace = lf.trace(
+            name=f"workflow:{workflow_name or workflow_id}",
+            session_id=session_id,
             user_id=tenant_id,
             tags=trace_tags,
-        ):
-            with lf.start_as_current_observation(
-                name=f"workflow:{workflow_name or workflow_id}",
-                as_type="span",
-                input={"trigger_payload": trigger_payload},
-                metadata={
-                    "workflow_id": workflow_id,
-                    "instance_id": instance_id,
-                    "tenant_id": tenant_id,
-                },
-            ) as root:
-                yield root
+            input={"trigger_payload": trigger_payload},
+            metadata={
+                "workflow_id": workflow_id,
+                "instance_id": instance_id,
+                "tenant_id": tenant_id,
+            },
+        )
+        yield trace
     except Exception as exc:
         logger.debug("Langfuse trace_workflow error: %s", exc)
         yield _NoOpSpan()
