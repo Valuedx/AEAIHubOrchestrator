@@ -20,6 +20,11 @@
       "id": "logic",
       "label": "Logic",
       "description": "Branching, merging, and flow control nodes"
+    },
+    {
+      "id": "knowledge",
+      "label": "Knowledge",
+      "description": "RAG knowledge base retrieval and management"
     }
   ],
   "node_types": [
@@ -449,6 +454,40 @@
           "type": "integer",
           "default": 300,
           "description": "Maximum seconds to wait for the remote agent to complete. Raises an error if exceeded."
+        }
+      }
+    },
+    {
+      "type": "knowledge_retrieval",
+      "category": "knowledge",
+      "label": "Knowledge Retrieval",
+      "description": "Search knowledge bases and return relevant document chunks for RAG. Outputs context_text for downstream LLM nodes.",
+      "icon": "database",
+      "config_schema": {
+        "knowledgeBaseIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Knowledge bases to search. Select one or more from your tenant's KBs"
+        },
+        "queryExpression": {
+          "type": "string",
+          "default": "trigger.message",
+          "description": "Expression that resolves to the search query text (e.g. trigger.message or node_2.response)"
+        },
+        "topK": {
+          "type": "integer",
+          "default": 5,
+          "min": 1,
+          "max": 20,
+          "description": "Maximum number of relevant chunks to return"
+        },
+        "scoreThreshold": {
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "description": "Minimum similarity score (0-1). Chunks below this threshold are filtered out. 0 = no filtering"
         }
       }
     }

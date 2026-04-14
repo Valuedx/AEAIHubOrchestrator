@@ -17,6 +17,7 @@ import {
   AlertCircle,
   AlertTriangle,
   RefreshCw,
+  Database,
   type LucideIcon,
 } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,6 +42,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   save: Save,
   "message-square": MessageSquare,
   "refresh-cw": RefreshCw,
+  database: Database,
 };
 
 const CATEGORY_STYLES: Record<
@@ -68,6 +70,12 @@ const CATEGORY_STYLES: Record<
     bg: "bg-emerald-50 dark:bg-emerald-950/30",
     badge:
       "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",
+  },
+  knowledge: {
+    border: "border-teal-500/60",
+    bg: "bg-teal-50 dark:bg-teal-950/30",
+    badge:
+      "bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200",
   },
 };
 
@@ -232,6 +240,8 @@ function getDefaultIcon(category: NodeCategory): string {
       return "wrench";
     case "logic":
       return "git-branch";
+    case "knowledge":
+      return "database";
   }
 }
 

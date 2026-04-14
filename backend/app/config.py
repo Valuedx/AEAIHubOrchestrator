@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     # When False, tasks run in-process via background threads (no Redis/Celery needed)
     use_celery: bool = False
 
+    # Knowledge Base / RAG
+    embedding_default_provider: str = "openai"
+    embedding_default_model: str = "text-embedding-3-small"
+    embedding_batch_size: int = 100
+    kb_max_file_size_mb: int = 50
+    kb_default_vector_store: str = "pgvector"
+    kb_default_chunking_strategy: str = "recursive"
+    faiss_index_dir: str = "./faiss_indexes"
+
+    # Google Vertex AI (for embeddings — separate from google_api_key / GenAI)
+    vertex_project: str = ""
+    vertex_location: str = "us-central1"
+
     # Langfuse Observability
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""

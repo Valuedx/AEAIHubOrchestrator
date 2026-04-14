@@ -146,6 +146,65 @@ export interface InstanceContextOut {
   context_json: Record<string, unknown>;
 }
 
+// Knowledge Base types
+export interface KBOut {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string | null;
+  embedding_provider: string;
+  embedding_model: string;
+  embedding_dimension: number;
+  vector_store: string;
+  chunking_strategy: string;
+  chunk_size: number;
+  chunk_overlap: number;
+  semantic_threshold: number | null;
+  document_count: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KBDocumentOut {
+  id: string;
+  kb_id: string;
+  filename: string;
+  content_type: string;
+  file_size: number;
+  chunk_count: number;
+  status: string;
+  error: string | null;
+  created_at: string;
+}
+
+export interface EmbeddingOption {
+  provider: string;
+  model: string;
+  dimension: number;
+}
+
+export interface ChunkingStrategy {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface VectorStoreOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface KBChunkOut {
+  content: string;
+  score: number;
+  chunk_index: number;
+  document_id: string;
+  document_filename: string;
+  metadata: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // Workflow CRUD
 // ---------------------------------------------------------------------------
@@ -363,5 +422,89 @@ export const api = {
     };
 
     return () => es.close();
+  },
+
+  // ---------------------------------------------------------------------------
+  // Knowledge Bases
+  // ---------------------------------------------------------------------------
+
+  listKnowledgeBases(): Promise<KBOut[]> {
+    return request("/api/v1/knowledge-bases");
+  },
+
+  createKnowledgeBase(body: {
+    name: string;
+    description?: string;
+    embedding_provider?: string;
+    embedding_model?: string;
+    vector_store?: string;
+    chunking_strategy?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
+    semantic_threshold?: number | null;
+  }): Promise<KBOut> {
+    return request("/api/v1/knowledge-bases", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getKnowledgeBase(id: string): Promise<KBOut> {
+    return request(`/api/v1/knowledge-bases/${id}`);
+  },
+
+  updateKnowledgeBase(id: string, body: { name?: string; description?: string }): Promise<KBOut> {
+    return request(`/api/v1/knowledge-bases/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteKnowledgeBase(id: string): Promise<void> {
+    return request(`/api/v1/knowledge-bases/${id}`, { method: "DELETE" });
+  },
+
+  // Documents
+  async uploadDocument(kbId: string, file: File): Promise<KBDocumentOut> {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${API_BASE}/api/v1/knowledge-bases/${kbId}/documents`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: formData,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new ApiError(`API ${res.status}: ${body}`, res.status, body);
+    }
+    return res.json() as Promise<KBDocumentOut>;
+  },
+
+  listDocuments(kbId: string): Promise<KBDocumentOut[]> {
+    return request(`/api/v1/knowledge-bases/${kbId}/documents`);
+  },
+
+  deleteDocument(kbId: string, docId: string): Promise<void> {
+    return request(`/api/v1/knowledge-bases/${kbId}/documents/${docId}`, { method: "DELETE" });
+  },
+
+  searchKnowledgeBase(kbId: string, query: string, topK: number = 5): Promise<KBChunkOut[]> {
+    return request(`/api/v1/knowledge-bases/${kbId}/search`, {
+      method: "POST",
+      body: JSON.stringify({ query, top_k: topK }),
+    });
+  },
+
+  // Embedding / chunking options (drives KB creation form)
+  getEmbeddingOptions(): Promise<EmbeddingOption[]> {
+    return request("/api/v1/knowledge-bases/embedding-options");
+  },
+
+  getChunkingStrategies(): Promise<ChunkingStrategy[]> {
+    return request("/api/v1/knowledge-bases/chunking-strategies");
+  },
+
+  getVectorStores(): Promise<VectorStoreOption[]> {
+    return request("/api/v1/knowledge-bases/vector-stores");
   },
 };

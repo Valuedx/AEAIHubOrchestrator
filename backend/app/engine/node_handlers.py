@@ -61,6 +61,8 @@ def dispatch_node(
     if label == "Reflection":
         from app.engine.reflection_handler import _handle_reflection
         return _handle_reflection(node_data, context, tenant_id)
+    if label == "Knowledge Retrieval":
+        return _handle_knowledge_retrieval(node_data, context, tenant_id)
 
     handler = handlers.get(category, _handle_action)
     return handler(node_data, context, tenant_id)
@@ -744,5 +746,76 @@ def _handle_a2a_call(
         "skill_id": skill_id,
         "agent":    card.get("name", agent_url),
         "task":     final_task,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Retrieval — RAG chunk search
+# ---------------------------------------------------------------------------
+
+def _handle_knowledge_retrieval(
+    node_data: dict, context: dict[str, Any], tenant_id: str
+) -> dict[str, Any]:
+    """Search one or more knowledge bases and return relevant chunks.
+
+    The output includes ``context_text`` — a concatenated block of retrieved
+    content that downstream LLM Agent nodes can reference in their system
+    prompt via ``{{ node_X.context_text }}``.
+    """
+    config = node_data.get("config", {})
+    kb_ids_raw = config.get("knowledgeBaseIds", [])
+    query_expr = config.get("queryExpression", "trigger.message")
+    top_k = int(config.get("topK", 5))
+    score_threshold = float(config.get("scoreThreshold", 0.0))
+
+    if not kb_ids_raw:
+        logger.warning("Knowledge Retrieval node has no knowledgeBaseIds configured")
+        return {"chunks": [], "context_text": "", "query": "", "chunk_count": 0}
+
+    raw_query = _resolve_expr(query_expr, context)
+    query = str(raw_query) if raw_query is not None else str(
+        context.get("trigger", {}).get("message", "")
+    )
+
+    if not query.strip():
+        logger.warning("Knowledge Retrieval: query resolved to empty string")
+        return {"chunks": [], "context_text": "", "query": "", "chunk_count": 0}
+
+    try:
+        kb_ids = [uuid.UUID(kid) for kid in kb_ids_raw if kid]
+    except (ValueError, AttributeError) as exc:
+        logger.warning("Knowledge Retrieval: invalid knowledgeBaseIds: %s", exc)
+        return {"chunks": [], "context_text": "", "query": query, "chunk_count": 0, "error": str(exc)}
+
+    from app.database import SessionLocal
+    from app.engine.retriever import retrieve_chunks
+
+    db = SessionLocal()
+    try:
+        chunks = retrieve_chunks(
+            db=db,
+            kb_ids=kb_ids,
+            query=query,
+            tenant_id=tenant_id,
+            top_k=top_k,
+            score_threshold=score_threshold,
+        )
+    finally:
+        db.close()
+
+    context_text = "\n\n---\n\n".join(
+        c["content"] for c in chunks
+    ) if chunks else ""
+
+    logger.info(
+        "Knowledge Retrieval: query_len=%d, results=%d, context_text_len=%d",
+        len(query), len(chunks), len(context_text),
+    )
+
+    return {
+        "chunks": chunks,
+        "context_text": context_text,
+        "query": query,
+        "chunk_count": len(chunks),
     }
 

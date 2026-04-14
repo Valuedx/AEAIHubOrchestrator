@@ -16,6 +16,7 @@ import {
   Undo2,
   Redo2,
   Activity,
+  Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +29,7 @@ import { VersionHistoryDialog } from "@/components/toolbar/VersionHistoryDialog"
 import { InstanceHistoryDialog } from "@/components/toolbar/InstanceHistoryDialog";
 import { ValidationDialog } from "@/components/toolbar/ValidationDialog";
 import { TemplateGalleryDialog } from "@/components/toolbar/TemplateGalleryDialog";
+import { KnowledgeBaseDialog } from "@/components/toolbar/KnowledgeBaseDialog";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
 
 const STATUS_CONFIG: Record<string, { icon: typeof CircleDot; label: string; className: string }> = {
@@ -49,6 +51,7 @@ export function Toolbar() {
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
   const [validationOpen, setValidationOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [kbOpen, setKbOpen] = useState(false);
 
   const currentWorkflow = useWorkflowStore((s) => s.currentWorkflow);
   const isDirty = useWorkflowStore((s) => s.isDirty);
@@ -199,6 +202,15 @@ export function Toolbar() {
           <FolderOpen className="h-4 w-4" />
         </Button>
 
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setKbOpen(true)}
+          title="Knowledge Bases — manage RAG knowledge bases and documents"
+        >
+          <Database className="h-4 w-4" />
+        </Button>
+
         {currentWorkflow && (
           <>
             <Button
@@ -263,6 +275,7 @@ export function Toolbar() {
         </Button>
       </div>
 
+      <KnowledgeBaseDialog open={kbOpen} onOpenChange={setKbOpen} />
       <TemplateGalleryDialog open={templatesOpen} onOpenChange={setTemplatesOpen} />
       <WorkflowListDialog open={listOpen} onOpenChange={setListOpen} />
       <VersionHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} />

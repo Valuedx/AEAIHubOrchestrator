@@ -1,0 +1,181 @@
+"""Multi-provider embedding abstraction.
+
+Supports OpenAI, Google GenAI, and Google Vertex AI.  Each provider function
+returns a list of float vectors.  A registry maps (provider, model) pairs to
+their output dimensionality so callers can validate at KB-creation time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Provider / model -> dimension registry
+# ---------------------------------------------------------------------------
+
+EMBEDDING_REGISTRY: dict[tuple[str, str], int] = {
+    ("openai", "text-embedding-3-small"): 1536,
+    ("openai", "text-embedding-3-large"): 3072,
+    ("google", "text-embedding-004"): 768,
+    ("vertex", "gemini-embedding-001"): 3072,
+    ("vertex", "text-embedding-005"): 768,
+    ("vertex", "text-multilingual-embedding-002"): 768,
+}
+
+
+def get_embedding_dimension(provider: str, model: str) -> int:
+    dim = EMBEDDING_REGISTRY.get((provider, model))
+    if dim is None:
+        raise ValueError(
+            f"Unknown embedding model: provider={provider!r}, model={model!r}. "
+            f"Valid options: {list(EMBEDDING_REGISTRY.keys())}"
+        )
+    return dim
+
+
+def list_embedding_options() -> list[dict[str, Any]]:
+    """Return the full catalogue of supported embedding provider/model combos."""
+    return [
+        {"provider": p, "model": m, "dimension": d}
+        for (p, m), d in EMBEDDING_REGISTRY.items()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Async embedding functions
+# ---------------------------------------------------------------------------
+
+async def get_embedding(
+    text: str, provider: str, model: str, *, task_type: str = "RETRIEVAL_QUERY"
+) -> list[float]:
+    batch = await get_embeddings_batch([text], provider, model, task_type=task_type)
+    return batch[0]
+
+
+async def get_embeddings_batch(
+    texts: list[str],
+    provider: str,
+    model: str,
+    *,
+    task_type: str = "RETRIEVAL_DOCUMENT",
+) -> list[list[float]]:
+    """Embed *texts* in sub-batches respecting ``settings.embedding_batch_size``."""
+    if not texts:
+        return []
+
+    batch_size = settings.embedding_batch_size
+    all_embeddings: list[list[float]] = []
+
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        if provider == "openai":
+            embs = await _embed_openai(chunk, model)
+        elif provider == "google":
+            embs = await _embed_google(chunk, model)
+        elif provider == "vertex":
+            embs = await _embed_vertex(chunk, model, task_type)
+        else:
+            raise ValueError(f"Unknown embedding provider: {provider!r}")
+        all_embeddings.extend(embs)
+
+    return all_embeddings
+
+
+# ---------------------------------------------------------------------------
+# Provider implementations
+# ---------------------------------------------------------------------------
+
+async def _embed_openai(texts: list[str], model: str) -> list[list[float]]:
+    if not settings.openai_api_key:
+        raise ValueError("ORCHESTRATOR_OPENAI_API_KEY is not configured")
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+    response = client.embeddings.create(model=model, input=texts)
+    return [item.embedding for item in response.data]
+
+
+async def _embed_google(texts: list[str], model: str) -> list[list[float]]:
+    if not settings.google_api_key:
+        raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
+
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=settings.google_api_key)
+    result = client.models.embed_content(
+        model=model,
+        contents=texts,
+        config=types.EmbedContentConfig(output_dimensionality=get_embedding_dimension("google", model)),
+    )
+    return [e.values for e in result.embeddings]
+
+
+async def _embed_vertex(
+    texts: list[str], model: str, task_type: str
+) -> list[list[float]]:
+    if not settings.vertex_project:
+        raise ValueError(
+            "ORCHESTRATOR_VERTEX_PROJECT is not configured (required for Vertex AI embeddings)"
+        )
+
+    import vertexai  # type: ignore[import-untyped]
+    from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput  # type: ignore[import-untyped]
+
+    vertexai.init(project=settings.vertex_project, location=settings.vertex_location)
+    vtx_model = TextEmbeddingModel.from_pretrained(model)
+    inputs = [TextEmbeddingInput(text=t, task_type=task_type) for t in texts]
+    embeddings = vtx_model.get_embeddings(inputs)
+    return [e.values for e in embeddings]
+
+
+# ---------------------------------------------------------------------------
+# Sync wrappers (for Celery / worker threads)
+# ---------------------------------------------------------------------------
+
+_loop: asyncio.AbstractEventLoop | None = None
+_loop_lock = threading.Lock()
+_executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _get_or_create_loop() -> asyncio.AbstractEventLoop:
+    global _loop
+    with _loop_lock:
+        if _loop is None or _loop.is_closed():
+            _loop = asyncio.new_event_loop()
+            t = threading.Thread(target=_loop.run_forever, daemon=True)
+            t.start()
+        return _loop
+
+
+def get_embedding_sync(
+    text: str, provider: str, model: str, *, task_type: str = "RETRIEVAL_QUERY"
+) -> list[float]:
+    loop = _get_or_create_loop()
+    future = asyncio.run_coroutine_threadsafe(
+        get_embedding(text, provider, model, task_type=task_type), loop
+    )
+    return future.result(timeout=120)
+
+
+def get_embeddings_batch_sync(
+    texts: list[str],
+    provider: str,
+    model: str,
+    *,
+    task_type: str = "RETRIEVAL_DOCUMENT",
+) -> list[list[float]]:
+    loop = _get_or_create_loop()
+    future = asyncio.run_coroutine_threadsafe(
+        get_embeddings_batch(texts, provider, model, task_type=task_type), loop
+    )
+    return future.result(timeout=300)

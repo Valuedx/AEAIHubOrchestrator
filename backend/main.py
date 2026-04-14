@@ -15,6 +15,7 @@ from app.api.tools import router as tools_router
 from app.api.sse import router as sse_router
 from app.api.conversations import router as conversations_router
 from app.api.a2a import router as a2a_router
+from app.api.knowledge import router as knowledge_router
 from app.security.rate_limiter import limiter
 
 logging.basicConfig(
@@ -44,6 +45,7 @@ app.include_router(tools_router)
 app.include_router(sse_router)
 app.include_router(conversations_router)
 app.include_router(a2a_router)
+app.include_router(knowledge_router, prefix="/api/v1/knowledge-bases", tags=["knowledge"])
 
 if settings.oidc_enabled:
     from app.api.auth import router as oidc_router

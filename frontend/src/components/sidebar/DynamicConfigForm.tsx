@@ -27,6 +27,7 @@ import {
 import { api } from "@/lib/api";
 import type { ToolOut } from "@/lib/api";
 import { ExpressionInput } from "@/components/sidebar/ExpressionInput";
+import { KBMultiSelect } from "@/components/sidebar/KBMultiSelect";
 import { getExpressionVariables } from "@/lib/expressionVariables";
 import { useFlowStore } from "@/store/flowStore";
 
@@ -73,6 +74,7 @@ const EXPRESSION_KEYS = new Set([
   "sessionIdExpression",
   "userMessageExpression",
   "messageExpression",
+  "queryExpression",
 ]);
 
 // Fields that accept a bare node ID (e.g. node_3)
@@ -418,6 +420,21 @@ export function DynamicConfigForm({
               <ToolMultiSelect
                 selected={selected}
                 onChange={(names) => update(key, names)}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- knowledgeBaseIds on knowledge_retrieval → KBMultiSelect ----
+        if (field.type === "array" && key === "knowledgeBaseIds" && nodeType === "knowledge_retrieval") {
+          const selected = Array.isArray(value) ? (value as string[]) : [];
+          return (
+            <div key={key} className="space-y-2">
+              <Label>{humanize(key)}</Label>
+              <KBMultiSelect
+                selected={selected}
+                onChange={(ids) => update(key, ids)}
               />
               {field.description && <FieldHint text={field.description} />}
             </div>

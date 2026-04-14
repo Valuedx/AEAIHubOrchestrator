@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Search,
   X,
+  Database,
   type LucideIcon,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -42,6 +43,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   history: History,
   save: Save,
   "refresh-cw": RefreshCw,
+  database: Database,
 };
 
 const CATEGORY_META: Record<NodeCategory, { label: string; color: string }> = {
@@ -49,9 +51,10 @@ const CATEGORY_META: Record<NodeCategory, { label: string; color: string }> = {
   agent: { label: "AI Agents", color: "text-violet-600 dark:text-violet-400" },
   action: { label: "Actions", color: "text-sky-600 dark:text-sky-400" },
   logic: { label: "Logic", color: "text-emerald-600 dark:text-emerald-400" },
+  knowledge: { label: "Knowledge", color: "text-teal-600 dark:text-teal-400" },
 };
 
-const CATEGORIES: NodeCategory[] = ["trigger", "agent", "action", "logic"];
+const CATEGORIES: NodeCategory[] = ["trigger", "agent", "action", "logic", "knowledge"];
 
 function DraggableItem({ item }: { item: PaletteItem }) {
   const Icon = ICON_MAP[item.icon] || Wrench;
