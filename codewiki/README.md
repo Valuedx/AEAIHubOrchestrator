@@ -14,6 +14,7 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [Frontend Guide](frontend-guide.md) | React component tree, Zustand stores, canvas, toolbar, and sidebar |
 | [Deployment](deployment.md) | Docker Compose, environment variables, Celery, migrations |
 | [Security](security.md) | Authentication modes, multi-tenancy, Row Level Security, vault, rate limits |
+| [Feature Roadmap](feature-roadmap.md) | Gap analysis vs. competitors, 20 missing features with priority and status |
 
 ## Quick orientation
 
