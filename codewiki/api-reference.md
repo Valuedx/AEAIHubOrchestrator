@@ -286,6 +286,44 @@ Full reference in [RAG & Knowledge Base](rag-knowledge-base.md). Summary:
 
 ---
 
+## Secrets (Credential Vault) — `/api/v1/secrets`
+
+Manage encrypted tenant secrets used for `{{ env.KEY_NAME }}` references in node configs. Secret values are encrypted with Fernet at rest and **never returned** by any endpoint after creation.
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `POST` | `/api/v1/secrets` | 201 | Create a new secret |
+| `GET` | `/api/v1/secrets` | 200 | List all secrets (metadata only) |
+| `GET` | `/api/v1/secrets/{secret_id}` | 200 | Get one secret (metadata only) |
+| `PUT` | `/api/v1/secrets/{secret_id}` | 200 | Update a secret's value |
+| `DELETE` | `/api/v1/secrets/{secret_id}` | 204 | Delete a secret |
+
+**SecretCreate** (request body for POST):
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| `key_name` | string | 1–256 chars, `^\w+$` | Letters, digits, underscores only |
+| `value` | string | min 1 char | The secret value (encrypted before storage) |
+
+**SecretUpdate** (request body for PUT):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `value` | string | New secret value |
+
+**SecretOut** (response — all endpoints):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | |
+| `key_name` | string | The secret's name |
+| `created_at` | ISO datetime | |
+| `updated_at` | ISO datetime | |
+
+**Errors:** `400` (invalid key_name format), `404` (secret not found), `409` (duplicate key_name), `422` (invalid UUID).
+
+---
+
 ## Error conventions
 
 All errors follow this pattern:

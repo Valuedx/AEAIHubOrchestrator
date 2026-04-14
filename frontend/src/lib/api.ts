@@ -196,6 +196,14 @@ export interface VectorStoreOption {
   description: string;
 }
 
+// Tenant Secrets
+export interface SecretOut {
+  id: string;
+  key_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface KBChunkOut {
   content: string;
   score: number;
@@ -506,5 +514,31 @@ export const api = {
 
   getVectorStores(): Promise<VectorStoreOption[]> {
     return request("/api/v1/knowledge-bases/vector-stores");
+  },
+
+  // ---------------------------------------------------------------------------
+  // Tenant Secrets (Credential Vault)
+  // ---------------------------------------------------------------------------
+
+  listSecrets(): Promise<SecretOut[]> {
+    return request("/api/v1/secrets");
+  },
+
+  createSecret(key_name: string, value: string): Promise<SecretOut> {
+    return request("/api/v1/secrets", {
+      method: "POST",
+      body: JSON.stringify({ key_name, value }),
+    });
+  },
+
+  updateSecret(id: string, value: string): Promise<SecretOut> {
+    return request(`/api/v1/secrets/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+  },
+
+  deleteSecret(id: string): Promise<void> {
+    return request(`/api/v1/secrets/${id}`, { method: "DELETE" });
   },
 };

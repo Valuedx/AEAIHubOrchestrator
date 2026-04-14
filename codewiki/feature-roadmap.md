@@ -11,7 +11,7 @@ Gap analysis comparing AEAIHubOrchestrator against top DAG workflow builders for
 | **P0** | 1 | RAG / Knowledge Base / Vector Store | Dify, Flowise, n8n | **Done** |
 | **P0** | 2 | Code Execution Node | Dify, n8n, LangGraph | Planned |
 | **P0** | 3 | Integration Ecosystem (native connectors) | n8n (400+), Dify, Flowise | Planned |
-| **P0** | 4 | Credential Management UI | n8n, Dify | Planned |
+| **P0** | 4 | Credential Management UI | n8n, Dify | **Done** |
 | **P1** | 5 | In-Process Multi-Agent Patterns | CrewAI, LangGraph, AutoGen | Planned |
 | **P1** | 6 | Subgraphs / Nested Workflows | LangGraph, Dify | Planned |
 | **P1** | 7 | Cyclic Graph Support | LangGraph | Planned |
@@ -55,11 +55,13 @@ We have `safe_eval` for expressions but no general-purpose sandboxed code execut
 
 We have only HTTP Request + MCP tools as integration points. No native Slack, email, database query, file storage, or SaaS connector nodes. MCP provides extensibility, but users must stand up MCP servers for every integration. A core set of high-value native connectors would significantly reduce friction.
 
-#### 4. Credential / Secret Management UI — Planned
+#### 4. Credential / Secret Management UI — Done
 
 > n8n and Dify have full credential management UIs (add, test, reuse across workflows).
 
-We have Fernet-encrypted `tenant_secrets` in the DB and `{{ env.* }}` resolution, but no HTTP API or UI for managing secrets. Users must go through direct DB/ops paths. Needed: REST endpoints for CRUD on `tenant_secrets` and a frontend dialog for managing credentials.
+**Implemented:** Full REST API (`/api/v1/secrets`) for CRUD on tenant secrets with Fernet encryption. Frontend `SecretsDialog` accessible from the toolbar (KeyRound icon) with create, update, delete views. Secret values are never exposed after creation — only `{{ env.KEY_NAME }}` references are shown. Fixed the missing `get_tenant_secret` function so `{{ env.* }}` resolution now works at runtime.
+
+See [API Reference](api-reference.md) and [Security](security.md) for details.
 
 ---
 

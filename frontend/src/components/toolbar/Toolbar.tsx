@@ -17,6 +17,7 @@ import {
   Redo2,
   Activity,
   Database,
+  KeyRound,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ import { InstanceHistoryDialog } from "@/components/toolbar/InstanceHistoryDialo
 import { ValidationDialog } from "@/components/toolbar/ValidationDialog";
 import { TemplateGalleryDialog } from "@/components/toolbar/TemplateGalleryDialog";
 import { KnowledgeBaseDialog } from "@/components/toolbar/KnowledgeBaseDialog";
+import { SecretsDialog } from "@/components/toolbar/SecretsDialog";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
 
 const STATUS_CONFIG: Record<string, { icon: typeof CircleDot; label: string; className: string }> = {
@@ -52,6 +54,7 @@ export function Toolbar() {
   const [validationOpen, setValidationOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [kbOpen, setKbOpen] = useState(false);
+  const [secretsOpen, setSecretsOpen] = useState(false);
 
   const currentWorkflow = useWorkflowStore((s) => s.currentWorkflow);
   const isDirty = useWorkflowStore((s) => s.isDirty);
@@ -211,6 +214,15 @@ export function Toolbar() {
           <Database className="h-4 w-4" />
         </Button>
 
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setSecretsOpen(true)}
+          title="Secrets — manage API keys and credentials for {{ env.* }}"
+        >
+          <KeyRound className="h-4 w-4" />
+        </Button>
+
         {currentWorkflow && (
           <>
             <Button
@@ -276,6 +288,7 @@ export function Toolbar() {
       </div>
 
       <KnowledgeBaseDialog open={kbOpen} onOpenChange={setKbOpen} />
+      <SecretsDialog open={secretsOpen} onOpenChange={setSecretsOpen} />
       <TemplateGalleryDialog open={templatesOpen} onOpenChange={setTemplatesOpen} />
       <WorkflowListDialog open={listOpen} onOpenChange={setListOpen} />
       <VersionHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} />

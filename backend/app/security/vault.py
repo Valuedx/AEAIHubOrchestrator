@@ -56,6 +56,24 @@ def decrypt_secret(ciphertext: str) -> str:
     return f.decrypt(ciphertext.encode()).decode()
 
 
+def get_tenant_secret(tenant_id: str, key_name: str) -> str | None:
+    """Look up a single secret by tenant and key name, returning decrypted plaintext."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(TenantSecret)
+            .filter_by(tenant_id=tenant_id, key_name=key_name)
+            .first()
+        )
+        if row is None:
+            return None
+        return decrypt_secret(row.encrypted_value)
+    finally:
+        db.close()
+
+
 def _utcnow():
     return datetime.now(timezone.utc)
 

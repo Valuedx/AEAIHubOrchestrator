@@ -123,9 +123,30 @@ Set it as `ORCHESTRATOR_VAULT_KEY`. Without this key, vault operations will rais
 - `decrypt_secret(ciphertext)` decrypts back to plaintext.
 - Unique constraint on `(tenant_id, key_name)` prevents duplicate keys.
 
+### Management API
+
+Full CRUD is available at `/api/v1/secrets` (see [API Reference](api-reference.md)):
+
+- `POST /api/v1/secrets` — create a secret (key_name + value)
+- `GET /api/v1/secrets` — list all secrets (metadata only, values never exposed)
+- `PUT /api/v1/secrets/{id}` — update a secret's value
+- `DELETE /api/v1/secrets/{id}` — delete a secret
+
+Secret values are encrypted before storage and **never returned** by any API endpoint after creation.
+
+### Management UI
+
+The toolbar has a **Secrets** button (key icon) that opens the `SecretsDialog`. From there users can:
+
+- View all secrets with their key names and last-updated dates
+- Copy the `{{ env.KEY_NAME }}` reference to clipboard
+- Add new secrets with a password-masked input
+- Update existing secret values (old value is never shown)
+- Delete secrets (with a warning about broken references)
+
 ### Usage in workflows
 
-Node configs can reference vault secrets using `{{ env.KEY_NAME }}` syntax. At execution time, `resolve_config_env_vars` (in `engine/prompt_template.py`) decrypts the matching `TenantSecret` and injects the plaintext value.
+Node configs can reference vault secrets using `{{ env.KEY_NAME }}` syntax. At execution time, `resolve_config_env_vars` (in `engine/prompt_template.py`) calls `get_tenant_secret(tenant_id, key_name)` to look up and decrypt the matching `TenantSecret`.
 
 This keeps sensitive values (API keys, passwords) out of the `graph_json` while making them available at runtime.
 
