@@ -172,21 +172,8 @@ def span_node(
     input_data: Any = None,
     checkpoint_id: str | None = None,
 ) -> Generator:
-    """Child span for a single node execution.
-
-    Args:
-        checkpoint_id: UUID of the InstanceCheckpoint written after this node
-            completes.  When provided, it is stored in span metadata so the
-            Langfuse trace links directly to the DB snapshot.  Pass ``None``
-            (the default) when the checkpoint is not yet available at span
-            creation time — callers can supply it later via ``span.update()``.
-    """
-    if isinstance(parent, _NoOpSpan):
-        yield _NoOpSpan()
-        return
-
-    lf = get_langfuse()
-    if lf is None:
+    """Child span for a single node execution."""
+    if isinstance(parent, _NoOpSpan) or parent is None:
         yield _NoOpSpan()
         return
 
@@ -194,13 +181,14 @@ def span_node(
         meta: dict = {"node_id": node_id, "node_type": node_type}
         if checkpoint_id is not None:
             meta["checkpoint_id"] = checkpoint_id
-        with lf.start_as_current_observation(
+        
+        span = parent.span(
             name=f"node:{node_label or node_id}",
-            as_type="span",
             input=input_data,
             metadata=meta,
-        ) as span:
-            yield span
+        )
+        yield span
+        span.end()
     except Exception as exc:
         logger.debug("Langfuse span_node error: %s", exc)
         yield _NoOpSpan()
@@ -219,24 +207,18 @@ def record_generation(
     metadata: dict | None = None,
 ) -> None:
     """Record an LLM generation with token usage in the current context."""
-    if isinstance(parent, _NoOpSpan):
-        return
-
-    lf = get_langfuse()
-    if lf is None:
+    if isinstance(parent, _NoOpSpan) or parent is None:
         return
 
     try:
-        gen = lf.start_observation(
+        parent.generation(
             name=name,
-            as_type="generation",
             input={"system_prompt": system_prompt[:500], "user_message": user_message[:1000]},
             output=response[:2000] if response else None,
             model=model,
-            usage_details=usage,
+            usage=usage,
             metadata={"provider": provider, **(metadata or {})},
         )
-        gen.end()
     except Exception as exc:
         logger.debug("Langfuse record_generation error: %s", exc)
 
@@ -249,23 +231,18 @@ def span_tool(
     arguments: Any = None,
 ) -> Generator:
     """Span for a tool execution (MCP call, HTTP request, ReAct tool)."""
-    if isinstance(parent, _NoOpSpan):
-        yield _NoOpSpan()
-        return
-
-    lf = get_langfuse()
-    if lf is None:
+    if isinstance(parent, _NoOpSpan) or parent is None:
         yield _NoOpSpan()
         return
 
     try:
-        with lf.start_as_current_observation(
+        span = parent.span(
             name=f"tool:{tool_name}",
-            as_type="tool",
             input=arguments,
             metadata={"tool_name": tool_name},
-        ) as span:
-            yield span
+        )
+        yield span
+        span.end()
     except Exception as exc:
         logger.debug("Langfuse span_tool error: %s", exc)
         yield _NoOpSpan()

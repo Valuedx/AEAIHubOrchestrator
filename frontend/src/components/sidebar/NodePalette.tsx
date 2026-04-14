@@ -155,7 +155,7 @@ export function NodePalette({ collapsed, onToggle }: NodePaletteProps) {
   }
 
   return (
-    <div className="flex flex-col w-64 border-r bg-sidebar">
+    <div className="flex flex-col w-64 h-full min-h-0 border-r bg-sidebar overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3">
         <h2 className="text-sm font-semibold">Node Palette</h2>
         <button

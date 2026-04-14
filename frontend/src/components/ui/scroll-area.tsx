@@ -1,54 +1,44 @@
 "use client"
 
-import { ScrollArea as ScrollAreaPrimitive } from "@base-ui/react/scroll-area"
-
+import { forwardRef, type HTMLAttributes } from "react"
 import { cn } from "@/lib/utils"
 
-function ScrollArea({
-  className,
-  children,
-  ...props
-}: ScrollAreaPrimitive.Root.Props) {
-  return (
-    <ScrollAreaPrimitive.Root
-      data-slot="scroll-area"
-      className={cn("relative", className)}
-      {...props}
+/**
+ * Lightweight scroll container that uses **native** scrollbars styled via
+ * the global webkit / Firefox rules in index.css.
+ *
+ * Usage:
+ *   <ScrollArea className="flex-1">…</ScrollArea>
+ *
+ * The component renders a wrapper div (relative, overflow-hidden) around an
+ * inner viewport div that carries `overflow-y: auto`.  This lets the native
+ * scrollbar track + thumb styles defined in `index.css` apply directly,
+ * giving a consistent, always-visible scrollbar across all panels.
+ */
+const ScrollArea = forwardRef<
+  HTMLDivElement,
+  HTMLAttributes<HTMLDivElement>
+>(({ className, children, ...props }, ref) => (
+  <div
+    ref={ref}
+    data-slot="scroll-area"
+    className={cn("relative overflow-hidden min-h-0", className)}
+    {...props}
+  >
+    <div
+      data-slot="scroll-area-viewport"
+      className="h-full w-full overflow-y-auto overflow-x-hidden rounded-[inherit]"
+      style={{ maxHeight: "100%" }}
     >
-      <ScrollAreaPrimitive.Viewport
-        data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
-      >
-        {children}
-      </ScrollAreaPrimitive.Viewport>
-      <ScrollBar />
-      <ScrollAreaPrimitive.Corner />
-    </ScrollAreaPrimitive.Root>
-  )
-}
+      {children}
+    </div>
+  </div>
+))
+ScrollArea.displayName = "ScrollArea"
 
-function ScrollBar({
-  className,
-  orientation = "vertical",
-  ...props
-}: ScrollAreaPrimitive.Scrollbar.Props) {
-  return (
-    <ScrollAreaPrimitive.Scrollbar
-      data-slot="scroll-area-scrollbar"
-      data-orientation={orientation}
-      orientation={orientation}
-      className={cn(
-        "flex touch-none p-px transition-colors select-none data-horizontal:h-2.5 data-horizontal:flex-col data-horizontal:border-t data-horizontal:border-t-transparent data-vertical:h-full data-vertical:w-2.5 data-vertical:border-l data-vertical:border-l-transparent",
-        className
-      )}
-      {...props}
-    >
-      <ScrollAreaPrimitive.Thumb
-        data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-border"
-      />
-    </ScrollAreaPrimitive.Scrollbar>
-  )
+/* ScrollBar is kept as a no-op export so existing imports don't break. */
+function ScrollBar() {
+  return null
 }
 
 export { ScrollArea, ScrollBar }

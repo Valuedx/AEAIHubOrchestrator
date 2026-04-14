@@ -15,7 +15,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
   WORKFLOW_TEMPLATES,
@@ -193,7 +192,7 @@ export function TemplateGalleryDialog({ open, onOpenChange }: Props) {
           />
         </div>
         <Separator />
-        <ScrollArea className="flex-1 min-h-[280px] max-h-[45vh] pr-3">
+        <div className="flex-1 min-h-[280px] max-h-[45vh] overflow-y-auto overflow-x-hidden pr-3">
           <div className="grid gap-3 sm:grid-cols-2">
             {filtered.map((t) => (
               <div
@@ -232,7 +231,7 @@ export function TemplateGalleryDialog({ open, onOpenChange }: Props) {
           {filtered.length === 0 && (
             <p className="text-sm text-muted-foreground text-center py-8">No templates match.</p>
           )}
-        </ScrollArea>
+        </div>
         <Separator />
         <div className="flex flex-wrap gap-2 justify-between items-center">
           <span className="text-xs text-muted-foreground">Import / export portable graph JSON</span>
