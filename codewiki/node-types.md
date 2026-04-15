@@ -193,6 +193,46 @@ Delegates a task to an external A2A-compatible agent.
 
 **Output:** Remote agent's response.
 
+### Code (`code_execution`)
+
+Runs user-provided Python code in a sandboxed subprocess for data transformation, filtering, aggregation, or custom logic.
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `language` | enum | `python` | Programming language (`python` currently supported) |
+| `code` | string | *(see below)* | Python code to execute |
+| `timeout` | integer | `30` | Max execution time in seconds (1–120) |
+
+**Default code:**
+```python
+# 'inputs' contains upstream node outputs.
+# Assign your result to 'output'.
+
+output = {"result": inputs}
+```
+
+**Data flow:**
+- **Input:** The `inputs` dict contains all upstream node outputs keyed by `node_<id>` plus the `trigger` payload.
+- **Output:** The user must assign a dict to the `output` variable. If `output` is not a dict, it is wrapped as `{"result": output}`.
+
+**Security — sandbox layers:**
+
+| Layer | Description |
+|-------|-------------|
+| Process isolation | Code runs in a separate Python subprocess |
+| Restricted builtins | `open`, `exec`, `eval`, `compile`, `__import__`, `globals`, `locals`, `vars`, `dir`, `breakpoint`, `exit`, `quit`, `input` are removed |
+| Import whitelist | Only safe stdlib modules: `json`, `math`, `re`, `datetime`, `collections`, `itertools`, `functools`, `string`, `textwrap`, `hashlib`, `hmac`, `base64`, `urllib.parse`, `html`, `copy`, `decimal`, `fractions`, `statistics`, `operator`, `typing`, `uuid`, `random`, `time`, `enum`, `dataclasses` |
+| Timeout | Subprocess killed after the configured timeout (max capped by `ORCHESTRATOR_CODE_SANDBOX_TIMEOUT_MAX`) |
+| Output limit | Max 1 MB stdout (configurable via `ORCHESTRATOR_CODE_SANDBOX_OUTPUT_LIMIT_BYTES`) |
+| Clean environment | Subprocess inherits only `PATH` — no app secrets |
+
+**Configuration (env vars):**
+- `ORCHESTRATOR_CODE_SANDBOX_ENABLED` — disable code execution entirely (default: `true`)
+- `ORCHESTRATOR_CODE_SANDBOX_TIMEOUT_MAX` — hard cap on per-node timeout (default: `120`)
+- `ORCHESTRATOR_CODE_SANDBOX_OUTPUT_LIMIT_BYTES` — max output size (default: `1048576`)
+
+**Output:** The dict assigned to `output` in the user's code, plus `_sandbox_meta: { duration_ms, stderr }`.
+
 ---
 
 ## Logic nodes

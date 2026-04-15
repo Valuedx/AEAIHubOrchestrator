@@ -458,6 +458,33 @@
       }
     },
     {
+      "type": "code_execution",
+      "category": "action",
+      "label": "Code",
+      "description": "Run sandboxed Python code for data transformation and custom logic",
+      "icon": "code",
+      "config_schema": {
+        "language": {
+          "type": "string",
+          "default": "python",
+          "enum": ["python"],
+          "description": "Programming language for the code snippet"
+        },
+        "code": {
+          "type": "string",
+          "default": "# 'inputs' contains upstream node outputs.\n# Assign your result to 'output'.\n\noutput = {\"result\": inputs}\n",
+          "description": "Python code to execute in a sandboxed subprocess"
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 30,
+          "min": 1,
+          "max": 120,
+          "description": "Maximum execution time in seconds"
+        }
+      }
+    },
+    {
       "type": "knowledge_retrieval",
       "category": "knowledge",
       "label": "Knowledge Retrieval",

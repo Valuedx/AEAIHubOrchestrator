@@ -9,7 +9,7 @@ Gap analysis comparing AEAIHubOrchestrator against top DAG workflow builders for
 | Priority | # | Feature | Competitive Pressure | Status |
 |----------|---|---------|---------------------|--------|
 | **P0** | 1 | RAG / Knowledge Base / Vector Store | Dify, Flowise, n8n | **Done** |
-| **P0** | 2 | Code Execution Node | Dify, n8n, LangGraph | Planned |
+| **P0** | 2 | Code Execution Node | Dify, n8n, LangGraph | **Done** |
 | **P0** | 3 | Integration Ecosystem (native connectors) | n8n (400+), Dify, Flowise | Planned |
 | **P0** | 4 | Credential Management UI | n8n, Dify | **Done** |
 | **P1** | 5 | In-Process Multi-Agent Patterns | CrewAI, LangGraph, AutoGen | Planned |
@@ -43,11 +43,13 @@ Gap analysis comparing AEAIHubOrchestrator against top DAG workflow builders for
 
 See [RAG & Knowledge Base](rag-knowledge-base.md) for full documentation.
 
-#### 2. Code Execution Node — Planned
+#### 2. Code Execution Node — Done
 
 > Dify has sandboxed Python/JavaScript code nodes. n8n has a Code node. LangGraph nodes are arbitrary Python functions.
 
-We have `safe_eval` for expressions but no general-purpose sandboxed code execution node for data transformation, custom logic, or scripting. A sandboxed runtime (e.g. Docker-based, Pyodide, or restricted `exec`) is needed to safely execute user-provided code within workflows.
+**Implemented:** Sandboxed Python code execution node ("Code") running user code in a separate subprocess with multiple security layers: restricted builtins (no `open`/`exec`/`eval`), import whitelist (30 safe stdlib modules), per-node timeout (max 120 s), 1 MB output cap, and clean environment (no app secrets). The frontend config panel renders a monospace code editor with tab support. Data flows in via an `inputs` dict and out via an `output` variable.
+
+See [Node Types — Code](node-types.md) for full documentation.
 
 #### 3. Integration Ecosystem / Pre-built Connectors — Planned
 

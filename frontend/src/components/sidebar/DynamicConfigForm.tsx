@@ -147,6 +147,60 @@ function JsonTextarea({
 }
 
 // ---------------------------------------------------------------------------
+// CodeTextarea — monospace editor with tab support for code_execution nodes
+// ---------------------------------------------------------------------------
+
+function CodeTextarea({
+  value,
+  onChange,
+  placeholder,
+  description,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  description?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const cursorRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (cursorRef.current != null && ref.current) {
+      ref.current.selectionStart = ref.current.selectionEnd = cursorRef.current;
+      cursorRef.current = null;
+    }
+  });
+
+  return (
+    <div className="space-y-2">
+      <Label>Code</Label>
+      <textarea
+        ref={ref}
+        rows={12}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Tab") {
+            e.preventDefault();
+            const el = e.currentTarget;
+            const start = el.selectionStart;
+            const end = el.selectionEnd;
+            const updated = el.value.substring(0, start) + "  " + el.value.substring(end);
+            cursorRef.current = start + 2;
+            onChange(updated);
+          }
+        }}
+        spellCheck={false}
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono leading-relaxed placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y min-h-[200px]"
+        style={{ tabSize: 2 }}
+        placeholder={placeholder}
+      />
+      {description && <FieldHint text={description} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tool multi-select sub-component (for react_agent tools field)
 // ---------------------------------------------------------------------------
 
@@ -515,6 +569,19 @@ export function DynamicConfigForm({
               />
               {field.description && <FieldHint text={field.description} />}
             </div>
+          );
+        }
+
+        // ---- code field on code_execution → monospace code editor ----
+        if (field.type === "string" && key === "code" && nodeType === "code_execution") {
+          return (
+            <CodeTextarea
+              key={key}
+              value={String(value ?? field.default ?? "")}
+              onChange={(v) => update(key, v)}
+              placeholder={"# 'inputs' contains upstream node outputs.\n# Assign your result to 'output'.\n\noutput = {\"result\": inputs}"}
+              description={field.description}
+            />
           );
         }
 

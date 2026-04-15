@@ -63,6 +63,8 @@ def dispatch_node(
         return _handle_reflection(node_data, context, tenant_id)
     if label == "Knowledge Retrieval":
         return _handle_knowledge_retrieval(node_data, context, tenant_id)
+    if label == "Code":
+        return _handle_code_execution(node_data, context, tenant_id)
 
     handler = handlers.get(category, _handle_action)
     return handler(node_data, context, tenant_id)
@@ -817,5 +819,71 @@ def _handle_knowledge_retrieval(
         "context_text": context_text,
         "query": query,
         "chunk_count": len(chunks),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Code Execution — sandboxed Python subprocess
+# ---------------------------------------------------------------------------
+
+def _handle_code_execution(
+    node_data: dict, context: dict[str, Any], tenant_id: str
+) -> dict[str, Any]:
+    """Run user-provided Python code in a sandboxed subprocess."""
+    from app.config import settings
+    from app.engine.sandbox import run_python_sandbox
+
+    if not settings.code_sandbox_enabled:
+        return {"error": "Code execution is disabled by the administrator"}
+
+    config = node_data.get("config", {})
+    code = config.get("code", "").strip()
+    language = config.get("language", "python")
+    timeout = min(
+        int(config.get("timeout", 30)),
+        settings.code_sandbox_timeout_max,
+    )
+
+    if not code:
+        return {"error": "No code provided", "output": {}}
+
+    if language != "python":
+        return {"error": f"Unsupported language: {language}"}
+
+    # Build inputs from upstream node outputs
+    inputs: dict[str, Any] = {}
+    for k, v in context.items():
+        if k.startswith("node_") or k == "trigger":
+            inputs[k] = v
+
+    logger.info(
+        "Code node: language=%s, code_len=%d, timeout=%d",
+        language, len(code), timeout,
+    )
+
+    result = run_python_sandbox(
+        code=code,
+        inputs=inputs,
+        timeout=timeout,
+        output_limit=settings.code_sandbox_output_limit_bytes,
+    )
+
+    if result.error:
+        logger.warning(
+            "Code node failed after %d ms: %s", result.duration_ms, result.error
+        )
+        return {
+            "error": result.error,
+            "stderr": result.stderr,
+            "duration_ms": result.duration_ms,
+        }
+
+    logger.info("Code node completed in %d ms", result.duration_ms)
+    return {
+        **result.output,
+        "_sandbox_meta": {
+            "duration_ms": result.duration_ms,
+            "stderr": result.stderr if result.stderr else None,
+        },
     }
 

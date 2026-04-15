@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     vertex_project: str = ""
     vertex_location: str = "us-central1"
 
+    # Code Execution Sandbox
+    code_sandbox_enabled: bool = True
+    code_sandbox_timeout_max: int = 120
+    code_sandbox_output_limit_bytes: int = 1_048_576  # 1 MB
+
     # Langfuse Observability
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""

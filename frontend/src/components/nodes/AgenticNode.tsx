@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Database,
+  Code2,
   type LucideIcon,
 } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,6 +44,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   "message-square": MessageSquare,
   "refresh-cw": RefreshCw,
   database: Database,
+  code: Code2,
 };
 
 const CATEGORY_STYLES: Record<
