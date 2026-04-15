@@ -2,7 +2,11 @@ import uuid
 from types import SimpleNamespace
 
 from app.engine.memory_service import EffectiveMemoryPolicy
-from app.engine.node_handlers import _handle_bridge_user_reply, _handle_save_conversation_state
+from app.engine.node_handlers import (
+    _handle_archive_conversation_episode,
+    _handle_bridge_user_reply,
+    _handle_save_conversation_state,
+)
 
 
 class _FakeDB:
@@ -196,3 +200,55 @@ def test_save_conversation_skips_memory_record_promotion_for_error_output(monkey
     assert result["saved"] is True
     assert result["promoted_memory_records"] == 0
     assert calls["records"] == 0
+
+
+def test_archive_conversation_episode_resolves_expressions_and_returns_archive_info(monkeypatch):
+    fake_db = _FakeDB()
+    session = SimpleNamespace(id=uuid.uuid4(), session_id="sess-1")
+    episode = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="archived",
+        title="VPN Incident",
+        archive_reason="resolved",
+        archived_at=None,
+        checkpoint_summary_text="Issue closed after resetting the VPN profile.",
+    )
+    memory_row = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr("app.database.SessionLocal", lambda: fake_db)
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_or_create_session",
+        lambda *args, **kwargs: session,
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.archive_active_episode",
+        lambda *args, **kwargs: (episode, [memory_row]),
+    )
+
+    result = _handle_archive_conversation_episode(
+        {
+            "config": {
+                "sessionIdExpression": "trigger.session_id",
+                "summaryExpression": "node_reflection.final_summary",
+                "titleExpression": "node_reflection.final_title",
+                "reason": "resolved",
+            }
+        },
+        {
+            "trigger": {"session_id": "sess-1"},
+            "_workflow_def_id": str(uuid.uuid4()),
+            "_instance_id": str(uuid.uuid4()),
+            "_current_node_id": "node_archive",
+            "node_reflection": {
+                "final_summary": "Issue closed after resetting the VPN profile.",
+                "final_title": "VPN Incident",
+            },
+        },
+        "tenant-a",
+    )
+
+    assert result["archived"] is True
+    assert result["episode_id"] == str(episode.id)
+    assert result["title"] == "VPN Incident"
+    assert result["memory_records_created"] == 1
+    assert result["summary_text"] == "Issue closed after resetting the VPN profile."

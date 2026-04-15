@@ -1178,7 +1178,11 @@ export function DynamicConfigForm({
         if (
           field.type === "string" &&
           key === "memoryProfileId" &&
-          (nodeType === "llm_agent" || nodeType === "react_agent")
+          (
+            nodeType === "llm_agent" ||
+            nodeType === "react_agent" ||
+            nodeType === "archive_conversation_episode"
+          )
         ) {
           return (
             <div key={key} className="space-y-2">

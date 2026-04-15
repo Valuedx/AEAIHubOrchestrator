@@ -1,4 +1,4 @@
-"""Advanced memory models: conversation rows, profiles, semantic records, entity facts."""
+"""Advanced memory models: conversation rows, episodes, profiles, semantic records, entity facts."""
 
 from __future__ import annotations
 
@@ -90,6 +90,14 @@ class MemoryProfile(Base):
     summary_trigger_messages = Column(Integer, nullable=False, default=12)
     summary_recent_turns = Column(Integer, nullable=False, default=6)
     summary_max_tokens = Column(Integer, nullable=False, default=400)
+    summary_provider = Column(String(32), nullable=False, default="google")
+    summary_model = Column(String(128), nullable=False, default="gemini-2.5-flash")
+    episode_archive_provider = Column(String(32), nullable=False, default="google")
+    episode_archive_model = Column(String(128), nullable=False, default="gemini-2.5-flash")
+    episode_inactivity_minutes = Column(Integer, nullable=False, default=10080)
+    episode_min_turns = Column(Integer, nullable=False, default=2)
+    auto_archive_on_resolved = Column(Boolean, nullable=False, default=True)
+    promote_interactions = Column(Boolean, nullable=False, default=True)
     history_order = Column(String(32), nullable=False, default="summary_first")
     semantic_score_threshold = Column(Float, nullable=False, default=0.0)
     embedding_provider = Column(String(32), nullable=False, default="openai")
@@ -114,6 +122,69 @@ class MemoryProfile(Base):
             "workflow_def_id",
             unique=True,
             postgresql_where=text("workflow_def_id IS NOT NULL AND is_default = true"),
+        ),
+    )
+
+
+class ConversationEpisode(Base):
+    """Issue-scoped working-memory chapter inside a long-lived conversation session."""
+
+    __tablename__ = "conversation_episodes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    session_ref_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workflow_def_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    memory_profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("memory_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status = Column(String(32), nullable=False, default="active", index=True)
+    start_turn = Column(Integer, nullable=False)
+    end_turn = Column(Integer, nullable=True)
+    title = Column(String(256), nullable=True)
+    checkpoint_summary_text = Column(Text, nullable=True)
+    summary_updated_at = Column(DateTime(timezone=True), nullable=True)
+    summary_through_turn = Column(Integer, nullable=False, default=0)
+    archive_reason = Column(String(32), nullable=True)
+    archive_metadata_json = Column(JSONB, nullable=False, default=dict)
+    archived_memory_record_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("memory_records.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    last_activity_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    session = relationship(
+        "ConversationSession",
+        back_populates="episodes",
+        foreign_keys=[session_ref_id],
+    )
+    memory_profile = relationship("MemoryProfile", foreign_keys=[memory_profile_id])
+    archived_memory_record = relationship(
+        "MemoryRecord",
+        foreign_keys=[archived_memory_record_id],
+        post_update=True,
+    )
+
+    __table_args__ = (
+        Index("ix_conv_episode_session_status", "session_ref_id", "status"),
+        Index(
+            "ux_conv_episode_active_session",
+            "session_ref_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
         ),
     )
 

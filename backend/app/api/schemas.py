@@ -274,6 +274,44 @@ class ConversationSessionSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ConversationEpisodeOut(BaseModel):
+    id: uuid.UUID
+    session_id: str
+    status: str
+    start_turn: int
+    end_turn: int | None
+    title: str | None
+    checkpoint_summary_text: str | None
+    summary_through_turn: int
+    archive_reason: str | None
+    last_activity_at: datetime
+    archived_at: datetime | None
+    archived_memory_record_id: uuid.UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ArchiveConversationEpisodeRequest(BaseModel):
+    reason: str = Field(default="manual", pattern="^(resolved|inactive|manual)$")
+    summary_text: str | None = None
+    title: str | None = None
+    memory_profile_id: uuid.UUID | None = None
+
+
+class ArchiveConversationEpisodeOut(BaseModel):
+    session_id: str
+    archived: bool
+    episode_id: uuid.UUID | None
+    title: str | None
+    archive_reason: str | None
+    archived_at: datetime | None
+    memory_record_ids: list[uuid.UUID]
+    memory_records_created: int
+    summary_text: str
+
+
 # ---------------------------------------------------------------------------
 # A2A Protocol (Agent-to-Agent)
 # ---------------------------------------------------------------------------

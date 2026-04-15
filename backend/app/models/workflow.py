@@ -178,6 +178,12 @@ class ConversationSession(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id = Column(String(256), nullable=False)
     tenant_id = Column(String(64), nullable=False, index=True)
+    active_episode_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("conversation_episodes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     message_count = Column(Integer, nullable=False, default=0)
     last_message_at = Column(DateTime(timezone=True), nullable=True)
     summary_text = Column(Text, nullable=True)
@@ -196,6 +202,13 @@ class ConversationSession(Base):
         "MemoryRecord",
         back_populates="session",
         cascade="all, delete-orphan",
+    )
+    episodes = relationship(
+        "ConversationEpisode",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        foreign_keys="ConversationEpisode.session_ref_id",
+        order_by="ConversationEpisode.created_at",
     )
 
     __table_args__ = (

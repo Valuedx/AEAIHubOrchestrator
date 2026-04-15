@@ -19,7 +19,9 @@ from croniter import croniter
 
 from app.workers.celery_app import celery_app
 from app.database import SessionLocal
-from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowSnapshot
+from app.engine.memory_service import archive_active_episode, resolve_episode_policy
+from app.models.memory import ConversationEpisode
+from app.models.workflow import ConversationSession, WorkflowDefinition, WorkflowInstance, WorkflowSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,10 @@ celery_app.conf.beat_schedule = {
     "prune-old-snapshots": {
         "task": "orchestrator.prune_old_snapshots",
         "schedule": crontab(hour=3, minute=0),  # daily at 3:00 AM
+    },
+    "archive-stale-conversation-episodes": {
+        "task": "orchestrator.archive_stale_conversation_episodes",
+        "schedule": 900.0,
     },
 }
 
@@ -127,6 +133,82 @@ def prune_old_snapshots():
         db.rollback()
     finally:
         db.close()
+
+
+@celery_app.task(name="orchestrator.archive_stale_conversation_episodes")
+def archive_stale_conversation_episodes():
+    """Archive inactive active episodes so working memory stays issue-scoped."""
+    db = SessionLocal()
+    try:
+        candidate_ids = [
+            row[0]
+            for row in (
+                db.query(ConversationEpisode.id)
+                .filter(ConversationEpisode.status == "active")
+                .order_by(ConversationEpisode.last_activity_at.asc())
+                .limit(500)
+                .all()
+            )
+        ]
+    except Exception:
+        logger.exception("Error listing stale conversation episode candidates")
+        return
+    finally:
+        db.close()
+
+    archived_count = 0
+    for episode_id in candidate_ids:
+        item_db = SessionLocal()
+        try:
+            episode = (
+                item_db.query(ConversationEpisode)
+                .filter_by(id=episode_id, status="active")
+                .first()
+            )
+            if episode is None:
+                continue
+
+            session = (
+                item_db.query(ConversationSession)
+                .filter_by(id=episode.session_ref_id, tenant_id=episode.tenant_id)
+                .with_for_update()
+                .first()
+            )
+            if session is None:
+                continue
+
+            policy = resolve_episode_policy(
+                item_db,
+                tenant_id=episode.tenant_id,
+                episode=episode,
+            )
+            if policy.episode_inactivity_minutes <= 0 or episode.last_activity_at is None:
+                continue
+            idle_seconds = (datetime.now(timezone.utc) - episode.last_activity_at).total_seconds()
+            if idle_seconds < policy.episode_inactivity_minutes * 60:
+                continue
+
+            archived_episode, _ = archive_active_episode(
+                item_db,
+                tenant_id=episode.tenant_id,
+                session=session,
+                workflow_def_id=str(episode.workflow_def_id) if episode.workflow_def_id else None,
+                instance_id=None,
+                node_id="scheduler_archive_episode",
+                context={},
+                reason="inactive",
+            )
+            item_db.commit()
+            if archived_episode and archived_episode.status == "archived":
+                archived_count += 1
+        except Exception:
+            item_db.rollback()
+            logger.exception("Error archiving stale conversation episode %s", episode_id)
+        finally:
+            item_db.close()
+
+    if archived_count:
+        logger.info("Archived %d stale conversation episodes", archived_count)
 
 
 def _extract_schedule_cron(graph_json: dict) -> str | None:

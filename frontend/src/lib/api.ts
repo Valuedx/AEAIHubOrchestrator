@@ -149,6 +149,35 @@ export interface ConversationSessionOut {
   updated_at: string;
 }
 
+export interface ConversationEpisodeOut {
+  id: string;
+  session_id: string;
+  status: string;
+  start_turn: number;
+  end_turn: number | null;
+  title: string | null;
+  checkpoint_summary_text: string | null;
+  summary_through_turn: number;
+  archive_reason: string | null;
+  last_activity_at: string;
+  archived_at: string | null;
+  archived_memory_record_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArchiveConversationEpisodeOut {
+  session_id: string;
+  archived: boolean;
+  episode_id: string | null;
+  title: string | null;
+  archive_reason: string | null;
+  archived_at: string | null;
+  memory_record_ids: string[];
+  memory_records_created: number;
+  summary_text: string;
+}
+
 export interface MemoryProfileOut {
   id: string;
   tenant_id: string;
@@ -164,6 +193,14 @@ export interface MemoryProfileOut {
   summary_trigger_messages: number;
   summary_recent_turns: number;
   summary_max_tokens: number;
+  summary_provider: string;
+  summary_model: string;
+  episode_archive_provider: string;
+  episode_archive_model: string;
+  episode_inactivity_minutes: number;
+  episode_min_turns: number;
+  auto_archive_on_resolved: boolean;
+  promote_interactions: boolean;
   history_order: "summary_first" | "recent_first";
   semantic_score_threshold: number;
   embedding_provider: string;
@@ -497,6 +534,25 @@ export const api = {
 
   getConversationSession(sessionId: string): Promise<ConversationSessionOut> {
     return request(`/api/v1/conversations/${sessionId}`);
+  },
+
+  listConversationEpisodes(sessionId: string): Promise<ConversationEpisodeOut[]> {
+    return request(`/api/v1/conversations/${sessionId}/episodes`);
+  },
+
+  archiveConversationEpisode(
+    sessionId: string,
+    body: {
+      reason?: "resolved" | "inactive" | "manual";
+      summary_text?: string | null;
+      title?: string | null;
+      memory_profile_id?: string | null;
+    } = {},
+  ): Promise<ArchiveConversationEpisodeOut> {
+    return request(`/api/v1/conversations/${sessionId}/archive-active-episode`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   },
 
   deleteConversationSession(sessionId: string): Promise<void> {

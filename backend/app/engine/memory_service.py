@@ -14,13 +14,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.engine.embedding_provider import get_embedding_sync, get_embeddings_batch_sync
+from app.engine.llm_providers import call_llm
 from app.engine.memory_vector_store import MemoryVectorData, get_memory_vector_store
 from app.engine.prompt_template import (
     build_structured_context_block,
     count_prompt_tokens,
     truncate_to_tokens,
 )
-from app.models.memory import ConversationMessage, EntityFact, MemoryProfile, MemoryRecord
+from app.models.memory import (
+    ConversationEpisode,
+    ConversationMessage,
+    EntityFact,
+    MemoryProfile,
+    MemoryRecord,
+)
 from app.models.workflow import ConversationSession
 
 logger = logging.getLogger(__name__)
@@ -32,6 +39,14 @@ DEFAULT_SUMMARY_TRIGGER_MESSAGES = 12
 DEFAULT_SUMMARY_RECENT_TURNS = 6
 DEFAULT_SUMMARY_MAX_TOKENS = 400
 DEFAULT_HISTORY_ORDER = "summary_first"
+DEFAULT_SUMMARY_PROVIDER = "google"
+DEFAULT_SUMMARY_MODEL = "gemini-2.5-flash"
+DEFAULT_EPISODE_ARCHIVE_PROVIDER = "google"
+DEFAULT_EPISODE_ARCHIVE_MODEL = "gemini-2.5-flash"
+DEFAULT_EPISODE_INACTIVITY_MINUTES = 10080
+DEFAULT_EPISODE_MIN_TURNS = 2
+DEFAULT_AUTO_ARCHIVE_ON_RESOLVED = True
+DEFAULT_PROMOTE_INTERACTIONS = True
 DEFAULT_EMBEDDING_PROVIDER = "openai"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_VECTOR_STORE = "pgvector"
@@ -150,6 +165,23 @@ def build_memory_record_dedupe_key(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def build_episode_archive_dedupe_key(
+    *,
+    session_id: str,
+    episode_id: str,
+    end_turn: int,
+    reason: str,
+) -> str:
+    payload = {
+        "session_id": session_id,
+        "episode_id": episode_id,
+        "end_turn": end_turn,
+        "reason": reason,
+    }
+    encoded = repr(sorted(payload.items())).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def get_or_create_session(
     db: Session,
     *,
@@ -185,6 +217,133 @@ def get_or_create_session(
     return session
 
 
+def get_active_episode(
+    db: Session,
+    *,
+    session: ConversationSession,
+    lock: bool = False,
+) -> ConversationEpisode | None:
+    if not hasattr(db, "query"):
+        return None
+    active_episode_id = getattr(session, "active_episode_id", None)
+    query = db.query(ConversationEpisode).filter_by(
+        session_ref_id=session.id,
+        status="active",
+    )
+    if active_episode_id:
+        query = query.filter(ConversationEpisode.id == active_episode_id)
+    if lock:
+        query = query.with_for_update()
+    query = query.order_by(ConversationEpisode.created_at.desc())
+    episode = query.first() if hasattr(query, "first") else ((query.all() or [None])[0])
+    if episode is not None and not hasattr(episode, "start_turn"):
+        episode = None
+    if episode:
+        if active_episode_id != episode.id:
+            setattr(session, "active_episode_id", episode.id)
+            session.updated_at = _utcnow()
+        return episode
+
+    fallback = db.query(ConversationEpisode).filter_by(
+        session_ref_id=session.id,
+        status="active",
+    )
+    if lock:
+        fallback = fallback.with_for_update()
+    fallback = fallback.order_by(ConversationEpisode.created_at.desc())
+    episode = fallback.first() if hasattr(fallback, "first") else ((fallback.all() or [None])[0])
+    if episode is not None and not hasattr(episode, "start_turn"):
+        episode = None
+    if episode:
+        setattr(session, "active_episode_id", episode.id)
+        session.updated_at = _utcnow()
+        return episode
+
+    if active_episode_id is not None:
+        setattr(session, "active_episode_id", None)
+        session.updated_at = _utcnow()
+    return None
+
+
+def _sync_session_working_summary(
+    session: ConversationSession,
+    episode: ConversationEpisode | None,
+    *,
+    clear: bool = False,
+) -> None:
+    changed = False
+    if episode and episode.status == "active":
+        if getattr(session, "active_episode_id", None) != episode.id:
+            setattr(session, "active_episode_id", episode.id)
+            changed = True
+        if getattr(session, "summary_text", None) != episode.checkpoint_summary_text:
+            session.summary_text = episode.checkpoint_summary_text
+            changed = True
+        if getattr(session, "summary_updated_at", None) != episode.summary_updated_at:
+            session.summary_updated_at = episode.summary_updated_at
+            changed = True
+        if getattr(session, "summary_through_turn", None) != episode.summary_through_turn:
+            session.summary_through_turn = episode.summary_through_turn
+            changed = True
+    elif clear:
+        if getattr(session, "active_episode_id", None) is not None:
+            setattr(session, "active_episode_id", None)
+            changed = True
+        if getattr(session, "summary_text", None) is not None:
+            session.summary_text = None
+            changed = True
+        if getattr(session, "summary_updated_at", None) is not None:
+            session.summary_updated_at = None
+            changed = True
+        if getattr(session, "summary_through_turn", None) != session.message_count:
+            session.summary_through_turn = session.message_count
+            changed = True
+    else:
+        if getattr(session, "active_episode_id", None) is not None:
+            setattr(session, "active_episode_id", None)
+            changed = True
+    if changed:
+        session.updated_at = _utcnow()
+
+
+def get_or_create_active_episode(
+    db: Session,
+    *,
+    session: ConversationSession,
+    tenant_id: str,
+    workflow_def_id: str | None,
+    memory_profile_id: str | None,
+    starting_turn: int,
+) -> ConversationEpisode:
+    existing = get_active_episode(db, session=session, lock=True)
+    if existing:
+        if workflow_def_id:
+            existing.workflow_def_id = uuid.UUID(workflow_def_id)
+        if memory_profile_id:
+            existing.memory_profile_id = uuid.UUID(memory_profile_id)
+        existing.last_activity_at = session.last_message_at or _utcnow()
+        existing.updated_at = _utcnow()
+        _sync_session_working_summary(session, existing)
+        db.flush()
+        return existing
+
+    episode = ConversationEpisode(
+        tenant_id=tenant_id,
+        session_ref_id=session.id,
+        workflow_def_id=uuid.UUID(workflow_def_id) if workflow_def_id else None,
+        memory_profile_id=uuid.UUID(memory_profile_id) if memory_profile_id else None,
+        status="active",
+        start_turn=max(1, starting_turn),
+        summary_through_turn=max(0, starting_turn - 1),
+        last_activity_at=session.last_message_at or _utcnow(),
+    )
+    db.add(episode)
+    db.flush()
+    _sync_session_working_summary(session, episode)
+    db.flush()
+    return episode
+
+
 def load_conversation_state(
     db: Session,
     *,
@@ -192,6 +351,8 @@ def load_conversation_state(
     session_id: str,
 ) -> dict[str, Any]:
     session = get_or_create_session(db, tenant_id=tenant_id, session_id=session_id)
+    active_episode = get_active_episode(db, session=session)
+    _sync_session_working_summary(session, active_episode)
     messages = (
         db.query(ConversationMessage)
         .filter_by(session_ref_id=session.id)
@@ -205,6 +366,21 @@ def load_conversation_state(
         "message_count": session.message_count,
         "summary_text": session.summary_text or "",
         "summary_through_turn": session.summary_through_turn,
+        "active_episode_id": str(active_episode.id) if active_episode else None,
+        "active_episode": (
+            {
+                "id": str(active_episode.id),
+                "status": active_episode.status,
+                "start_turn": active_episode.start_turn,
+                "end_turn": active_episode.end_turn,
+                "title": active_episode.title,
+                "checkpoint_summary_text": active_episode.checkpoint_summary_text or "",
+                "summary_through_turn": active_episode.summary_through_turn,
+                "last_activity_at": _iso(active_episode.last_activity_at),
+                "archived_at": _iso(active_episode.archived_at),
+            }
+            if active_episode else None
+        ),
     }
 
 
@@ -322,25 +498,86 @@ def _summary_text_from_messages(
     return truncate_to_tokens("\n".join(lines), max_tokens)
 
 
+def _llm_checkpoint_summary(
+    *,
+    existing_summary: str,
+    messages: list[ConversationMessage],
+    max_tokens: int,
+    provider: str,
+    model: str,
+    mode: str,
+) -> str:
+    message_lines = [
+        f"{msg.role.upper()}: {' '.join((msg.content or '').split())}"
+        for msg in messages
+        if (msg.content or "").strip()
+    ]
+    if not message_lines:
+        return truncate_to_tokens(existing_summary or "", max_tokens)
+
+    system_prompt = (
+        "You maintain concise issue-scoped working memory for a workflow agent. "
+        "Return plain text only. Preserve the current issue, decisions, facts, open questions, and next actions. "
+        "Do not include markdown bullets unless the content naturally needs them."
+    )
+    if mode == "archive":
+        system_prompt = (
+            "You write a final archived issue summary for a workflow agent. Return plain text only. "
+            "Capture the original problem, important facts, actions taken, and the current resolution or handoff state. "
+            "Do not invent details."
+        )
+
+    user_message = "\n\n".join(
+        part
+        for part in [
+            f"Existing summary:\n{existing_summary.strip()}" if existing_summary.strip() else "",
+            "New conversation turns:\n" + "\n".join(message_lines),
+            f"Keep the summary within roughly {max_tokens} tokens.",
+        ]
+        if part
+    )
+    try:
+        result = call_llm(
+            provider=provider,
+            model=model,
+            system_prompt=system_prompt,
+            user_message=user_message,
+            temperature=0.0,
+            max_tokens=max_tokens,
+        )
+        text = str(result.get("response", "") or "").strip()
+        if text:
+            return truncate_to_tokens(text, max_tokens)
+    except Exception as exc:
+        logger.warning("LLM %s summary generation failed for %s/%s: %s", mode, provider, model, exc)
+    return _summary_text_from_messages(existing_summary, messages, max_tokens=max_tokens)
+
+
 def refresh_rolling_summary(
     db: Session,
     *,
     session: ConversationSession,
-    summary_trigger_messages: int,
-    summary_recent_turns: int,
-    summary_max_tokens: int,
+    episode: ConversationEpisode | None,
+    policy: "EffectiveMemoryPolicy",
 ) -> bool:
-    target_turn = max(0, session.message_count - summary_recent_turns)
-    if target_turn <= 0:
+    if episode is None or episode.status != "active":
         return False
-    if session.summary_text and (target_turn - session.summary_through_turn) < summary_trigger_messages:
+
+    target_turn = max(episode.start_turn - 1, session.message_count - policy.summary_recent_turns)
+    if target_turn <= episode.summary_through_turn:
+        return False
+    if (
+        episode.checkpoint_summary_text
+        and (target_turn - episode.summary_through_turn) < policy.summary_trigger_messages
+    ):
         return False
 
     new_rows = (
         db.query(ConversationMessage)
         .filter(
             ConversationMessage.session_ref_id == session.id,
-            ConversationMessage.turn_index > session.summary_through_turn,
+            ConversationMessage.turn_index >= episode.start_turn,
+            ConversationMessage.turn_index > episode.summary_through_turn,
             ConversationMessage.turn_index <= target_turn,
         )
         .order_by(ConversationMessage.turn_index)
@@ -349,14 +586,19 @@ def refresh_rolling_summary(
     if not new_rows:
         return False
 
-    session.summary_text = _summary_text_from_messages(
-        session.summary_text or "",
-        new_rows,
-        max_tokens=summary_max_tokens,
+    episode.checkpoint_summary_text = _llm_checkpoint_summary(
+        existing_summary=episode.checkpoint_summary_text or "",
+        messages=new_rows,
+        max_tokens=policy.summary_max_tokens,
+        provider=policy.summary_provider,
+        model=policy.summary_model,
+        mode="checkpoint",
     )
-    session.summary_updated_at = _utcnow()
-    session.summary_through_turn = target_turn
-    session.updated_at = session.summary_updated_at
+    episode.summary_updated_at = _utcnow()
+    episode.summary_through_turn = target_turn
+    episode.last_activity_at = session.last_message_at or episode.last_activity_at
+    episode.updated_at = episode.summary_updated_at
+    _sync_session_working_summary(session, episode)
     db.flush()
     return True
 
@@ -374,6 +616,14 @@ class EffectiveMemoryPolicy:
     summary_recent_turns: int = DEFAULT_SUMMARY_RECENT_TURNS
     summary_max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS
     history_order: str = DEFAULT_HISTORY_ORDER
+    summary_provider: str = DEFAULT_SUMMARY_PROVIDER
+    summary_model: str = DEFAULT_SUMMARY_MODEL
+    episode_archive_provider: str = DEFAULT_EPISODE_ARCHIVE_PROVIDER
+    episode_archive_model: str = DEFAULT_EPISODE_ARCHIVE_MODEL
+    episode_inactivity_minutes: int = DEFAULT_EPISODE_INACTIVITY_MINUTES
+    episode_min_turns: int = DEFAULT_EPISODE_MIN_TURNS
+    auto_archive_on_resolved: bool = DEFAULT_AUTO_ARCHIVE_ON_RESOLVED
+    promote_interactions: bool = DEFAULT_PROMOTE_INTERACTIONS
     semantic_score_threshold: float = 0.0
     embedding_provider: str = DEFAULT_EMBEDDING_PROVIDER
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
@@ -506,8 +756,52 @@ def resolve_memory_policy(
             node_config.get(
                 "historyOrder",
                 primary.history_order if primary else (
-                    tenant_profile.history_order if tenant_profile else DEFAULT_HISTORY_ORDER
-                ),
+                tenant_profile.history_order if tenant_profile else DEFAULT_HISTORY_ORDER
+            ),
+        )
+        ),
+        summary_provider=(
+            primary.summary_provider if primary else (
+                tenant_profile.summary_provider if tenant_profile else DEFAULT_SUMMARY_PROVIDER
+            )
+        ),
+        summary_model=(
+            primary.summary_model if primary else (
+                tenant_profile.summary_model if tenant_profile else DEFAULT_SUMMARY_MODEL
+            )
+        ),
+        episode_archive_provider=(
+            primary.episode_archive_provider if primary else (
+                tenant_profile.episode_archive_provider
+                if tenant_profile else DEFAULT_EPISODE_ARCHIVE_PROVIDER
+            )
+        ),
+        episode_archive_model=(
+            primary.episode_archive_model if primary else (
+                tenant_profile.episode_archive_model
+                if tenant_profile else DEFAULT_EPISODE_ARCHIVE_MODEL
+            )
+        ),
+        episode_inactivity_minutes=int(
+            primary.episode_inactivity_minutes if primary else (
+                tenant_profile.episode_inactivity_minutes
+                if tenant_profile else DEFAULT_EPISODE_INACTIVITY_MINUTES
+            )
+        ),
+        episode_min_turns=int(
+            primary.episode_min_turns if primary else (
+                tenant_profile.episode_min_turns if tenant_profile else DEFAULT_EPISODE_MIN_TURNS
+            )
+        ),
+        auto_archive_on_resolved=bool(
+            primary.auto_archive_on_resolved if primary else (
+                tenant_profile.auto_archive_on_resolved
+                if tenant_profile else DEFAULT_AUTO_ARCHIVE_ON_RESOLVED
+            )
+        ),
+        promote_interactions=bool(
+            primary.promote_interactions if primary else (
+                tenant_profile.promote_interactions if tenant_profile else DEFAULT_PROMOTE_INTERACTIONS
             )
         ),
         semantic_score_threshold=float(
@@ -705,6 +999,7 @@ def promote_memory_records(
     *,
     tenant_id: str,
     session: ConversationSession | None,
+    episode: ConversationEpisode | None,
     workflow_def_id: str | None,
     instance_id: str | None,
     node_id: str | None,
@@ -722,7 +1017,7 @@ def promote_memory_records(
         ]
         if part
     ).strip()
-    if not text:
+    if not text or not policy.promote_interactions:
         return []
 
     workflow_uuid = uuid.UUID(workflow_def_id) if workflow_def_id else None
@@ -745,7 +1040,7 @@ def promote_memory_records(
             tenant_id=tenant_id,
             scope=scope,
             scope_key=scope_key,
-            kind="episode",
+            kind="interaction",
             conversation_idempotency_key=conversation_idempotency_key,
         )
         for attempt in range(2):
@@ -763,11 +1058,13 @@ def promote_memory_records(
                         tenant_id=tenant_id,
                         scope=scope,
                         scope_key=scope_key,
-                        kind="episode",
+                        kind="interaction",
                         content=text,
                         metadata_json={
                             "session_id": session.session_id if session else None,
                             "workflow_def_id": workflow_def_id,
+                            "episode_id": str(episode.id) if episode else None,
+                            "memory_class": "interaction",
                         },
                         session_ref_id=session.id if scope == "session" and session else None,
                         workflow_def_id=workflow_uuid,
@@ -819,6 +1116,290 @@ def promote_memory_records(
     return created
 
 
+def resolve_episode_policy(
+    db: Session,
+    *,
+    tenant_id: str,
+    episode: ConversationEpisode | None,
+    workflow_def_id: str | None = None,
+    memory_profile_id: str | None = None,
+) -> EffectiveMemoryPolicy:
+    node_config: dict[str, Any] = {}
+    selected_profile_id = memory_profile_id or (
+        str(episode.memory_profile_id) if episode and episode.memory_profile_id else ""
+    )
+    if selected_profile_id:
+        node_config["memoryProfileId"] = selected_profile_id
+    effective_workflow_def_id = workflow_def_id or (
+        str(episode.workflow_def_id) if episode and episode.workflow_def_id else None
+    )
+    return resolve_memory_policy(
+        db,
+        tenant_id=tenant_id,
+        workflow_def_id=effective_workflow_def_id,
+        node_config=node_config,
+        context={},
+    )
+
+
+def _load_episode_messages(
+    db: Session,
+    *,
+    session: ConversationSession,
+    episode: ConversationEpisode,
+    start_turn: int | None = None,
+    end_turn: int | None = None,
+) -> list[ConversationMessage]:
+    lower = episode.start_turn if start_turn is None else max(episode.start_turn, start_turn)
+    upper_bound = episode.end_turn if episode.end_turn is not None else session.message_count
+    upper = upper_bound if end_turn is None else min(upper_bound, end_turn)
+    if upper < lower:
+        return []
+    return (
+        db.query(ConversationMessage)
+        .filter(
+            ConversationMessage.session_ref_id == session.id,
+            ConversationMessage.turn_index >= lower,
+            ConversationMessage.turn_index <= upper,
+        )
+        .order_by(ConversationMessage.turn_index)
+        .all()
+    )
+
+
+def _derive_episode_title(
+    *,
+    summary_text: str,
+    messages: list[ConversationMessage],
+) -> str:
+    for msg in messages:
+        if msg.role == "user" and (msg.content or "").strip():
+            return truncate_to_tokens(" ".join(msg.content.split()), 32)
+    if summary_text.strip():
+        return truncate_to_tokens(summary_text.strip(), 32)
+    return "Conversation episode"
+
+
+def _persist_episode_memory_records(
+    db: Session,
+    *,
+    tenant_id: str,
+    session: ConversationSession,
+    episode: ConversationEpisode,
+    workflow_def_id: str | None,
+    instance_id: str | None,
+    node_id: str | None,
+    context: dict[str, Any],
+    policy: EffectiveMemoryPolicy,
+    content: str,
+    title: str,
+    archive_reason: str,
+    archive_dedupe_key: str,
+) -> list[MemoryRecord]:
+    workflow_uuid = uuid.UUID(workflow_def_id) if workflow_def_id else None
+    instance_uuid = uuid.UUID(instance_id) if instance_id else None
+    entity_refs = _entity_refs_from_policy(policy, context) if "entity" in policy.scopes else []
+    scope_targets: list[tuple[str, str, str | None, str | None]] = []
+    if "session" in policy.scopes:
+        scope_targets.append(("session", session.session_id, None, None))
+    if "workflow" in policy.scopes and workflow_def_id:
+        scope_targets.append(("workflow", workflow_def_id, None, None))
+    if "tenant" in policy.scopes:
+        scope_targets.append(("tenant", tenant_id, None, None))
+    if "entity" in policy.scopes:
+        for entity_type, entity_key in entity_refs:
+            scope_targets.append(("entity", f"{entity_type}:{entity_key}", entity_type, entity_key))
+
+    created: list[MemoryRecord] = []
+    for scope, scope_key, entity_type, entity_key in scope_targets:
+        dedupe_key = build_memory_record_dedupe_key(
+            tenant_id=tenant_id,
+            scope=scope,
+            scope_key=scope_key,
+            kind="episode",
+            conversation_idempotency_key=archive_dedupe_key,
+        )
+        for attempt in range(2):
+            try:
+                with db.begin_nested():
+                    existing = (
+                        db.query(MemoryRecord)
+                        .filter_by(tenant_id=tenant_id, dedupe_key=dedupe_key)
+                        .first()
+                    )
+                    if existing:
+                        created.append(existing)
+                        break
+
+                    record = MemoryRecord(
+                        tenant_id=tenant_id,
+                        scope=scope,
+                        scope_key=scope_key,
+                        kind="episode",
+                        content=content,
+                        metadata_json={
+                            "session_id": session.session_id,
+                            "workflow_def_id": workflow_def_id,
+                            "episode_id": str(episode.id),
+                            "title": title,
+                            "archive_reason": archive_reason,
+                            "memory_class": "episode",
+                        },
+                        session_ref_id=session.id if scope == "session" else None,
+                        workflow_def_id=workflow_uuid,
+                        entity_type=entity_type,
+                        entity_key=entity_key,
+                        source_instance_id=instance_uuid,
+                        source_node_id=node_id,
+                        dedupe_key=dedupe_key,
+                        embedding_provider=policy.embedding_provider,
+                        embedding_model=policy.embedding_model,
+                        vector_store=policy.vector_store,
+                    )
+                    db.add(record)
+                    db.flush()
+                    created.append(record)
+                    break
+            except IntegrityError:
+                if attempt == 0:
+                    continue
+                logger.warning(
+                    "Episode archive raced for %s/%s/%s; using winner from concurrent transaction",
+                    tenant_id,
+                    scope,
+                    scope_key,
+                )
+
+    if not created:
+        return created
+
+    new_records = [record for record in created if record.embedding is None]
+    if not new_records:
+        return created
+
+    try:
+        embeddings = get_embeddings_batch_sync(
+            [record.content for record in new_records],
+            policy.embedding_provider,
+            policy.embedding_model,
+        )
+        store = get_memory_vector_store(policy.vector_store, db=db)
+        store.add_embeddings(
+            tenant_id=tenant_id,
+            provider=policy.embedding_provider,
+            model=policy.embedding_model,
+            records=[
+                MemoryVectorData(record_id=record.id, embedding=embedding)
+                for record, embedding in zip(new_records, embeddings)
+            ],
+        )
+    except Exception as exc:
+        logger.warning("Episode embedding promotion failed: %s", exc)
+
+    return created
+
+
+def archive_active_episode(
+    db: Session,
+    *,
+    tenant_id: str,
+    session: ConversationSession,
+    workflow_def_id: str | None,
+    instance_id: str | None,
+    node_id: str | None,
+    context: dict[str, Any],
+    reason: str,
+    provided_summary: str = "",
+    provided_title: str = "",
+    memory_profile_id: str | None = None,
+) -> tuple[ConversationEpisode | None, list[MemoryRecord]]:
+    episode = get_active_episode(db, session=session, lock=True)
+    if episode is None or episode.status != "active":
+        _sync_session_working_summary(session, None, clear=True)
+        db.flush()
+        return None, []
+
+    policy = resolve_episode_policy(
+        db,
+        tenant_id=tenant_id,
+        episode=episode,
+        workflow_def_id=workflow_def_id or (str(episode.workflow_def_id) if episode.workflow_def_id else None),
+        memory_profile_id=memory_profile_id,
+    )
+    if memory_profile_id:
+        episode.memory_profile_id = uuid.UUID(memory_profile_id)
+    if reason == "resolved" and not policy.auto_archive_on_resolved:
+        return episode, []
+
+    end_turn = session.message_count
+    all_messages = _load_episode_messages(db, session=session, episode=episode, end_turn=end_turn)
+    turn_count = len(all_messages)
+
+    existing_summary = episode.checkpoint_summary_text or ""
+    unsummarized = [
+        msg for msg in all_messages
+        if msg.turn_index > episode.summary_through_turn
+    ]
+    final_summary = provided_summary.strip() or _llm_checkpoint_summary(
+        existing_summary=existing_summary,
+        messages=unsummarized or all_messages,
+        max_tokens=policy.summary_max_tokens,
+        provider=policy.episode_archive_provider,
+        model=policy.episode_archive_model,
+        mode="archive",
+    )
+    title = provided_title.strip() or episode.title or _derive_episode_title(
+        summary_text=final_summary,
+        messages=all_messages,
+    )
+    archive_key = build_episode_archive_dedupe_key(
+        session_id=session.session_id,
+        episode_id=str(episode.id),
+        end_turn=end_turn,
+        reason=reason,
+    )
+
+    created_records: list[MemoryRecord] = []
+    if turn_count >= policy.episode_min_turns and final_summary.strip():
+        created_records = _persist_episode_memory_records(
+            db,
+            tenant_id=tenant_id,
+            session=session,
+            episode=episode,
+            workflow_def_id=workflow_def_id or (str(episode.workflow_def_id) if episode.workflow_def_id else None),
+            instance_id=instance_id,
+            node_id=node_id,
+            context=context,
+            policy=policy,
+            content=final_summary.strip(),
+            title=title,
+            archive_reason=reason,
+            archive_dedupe_key=archive_key,
+        )
+
+    now = _utcnow()
+    episode.status = "archived"
+    episode.end_turn = end_turn
+    episode.title = title
+    episode.archive_reason = reason
+    episode.archive_metadata_json = {
+        "summary_text": final_summary.strip(),
+        "memory_record_ids": [str(record.id) for record in created_records],
+        "memory_profile_id": str(episode.memory_profile_id) if episode.memory_profile_id else None,
+        "turn_count": turn_count,
+    }
+    episode.archived_memory_record_id = created_records[0].id if created_records else None
+    episode.archived_at = now
+    episode.updated_at = now
+    episode.summary_updated_at = now
+    episode.summary_through_turn = end_turn
+    episode.checkpoint_summary_text = final_summary.strip()
+    session.active_episode_id = None
+    _sync_session_working_summary(session, None, clear=True)
+    db.flush()
+    return episode, created_records
+
+
 def _active_entity_facts(
     db: Session,
     *,
@@ -863,6 +1444,7 @@ def retrieve_memory_records(
     tenant_id: str,
     workflow_def_id: str | None,
     session: ConversationSession | None,
+    active_episode: ConversationEpisode | None,
     query_text: str,
     policy: EffectiveMemoryPolicy,
     context: dict[str, Any],
@@ -897,6 +1479,18 @@ def retrieve_memory_records(
     )
     if not candidates:
         return []
+    if active_episode is not None:
+        active_episode_id = str(active_episode.id)
+        candidates = [
+            record
+            for record in candidates
+            if not (
+                record.kind == "interaction"
+                and str((record.metadata_json or {}).get("episode_id") or "") == active_episode_id
+            )
+        ]
+        if not candidates:
+            return []
 
     by_backend: dict[tuple[str, str, str], list[MemoryRecord]] = {}
     for record in candidates:
@@ -928,7 +1522,12 @@ def retrieve_memory_records(
                 continue
             record = index.get(hit.record_id)
             if record is not None:
-                scored.append((record, hit.score))
+                adjusted_score = float(hit.score)
+                if record.kind == "episode":
+                    adjusted_score += 0.15
+                if session and record.scope == "session" and record.scope_key == session.session_id:
+                    adjusted_score += 0.05
+                scored.append((record, adjusted_score))
 
     scored.sort(key=lambda item: item[1], reverse=True)
     return scored[: policy.max_semantic_hits]
@@ -937,12 +1536,24 @@ def retrieve_memory_records(
 def build_history_block(
     *,
     session: ConversationSession | None,
+    active_episode: ConversationEpisode | None = None,
     all_messages: list[ConversationMessage],
     policy: EffectiveMemoryPolicy,
 ) -> tuple[str, list[ConversationMessage]]:
-    summary_text = session.summary_text.strip() if session and session.summary_text else ""
-    cutoff = session.summary_through_turn if session else 0
-    recent_source = [msg for msg in all_messages if msg.turn_index > cutoff]
+    summary_text = ""
+    cutoff = 0
+    lower_bound = 1
+    if active_episode is not None:
+        summary_text = (active_episode.checkpoint_summary_text or "").strip()
+        cutoff = active_episode.summary_through_turn
+        lower_bound = active_episode.start_turn
+    elif session is not None:
+        summary_text = (session.summary_text or "").strip()
+        cutoff = session.summary_through_turn
+    recent_source = [
+        msg for msg in all_messages
+        if msg.turn_index >= lower_bound and msg.turn_index > cutoff
+    ]
     recent = _pack_recent_messages(recent_source, max_tokens=policy.recent_token_budget)
     summary_block = f"Earlier conversation summary:\n{summary_text}" if summary_text else ""
     return summary_block, recent
@@ -991,6 +1602,8 @@ def assemble_history_text(
         }
 
     session = get_or_create_session(db, tenant_id=tenant_id, session_id=session_id)
+    active_episode = get_active_episode(db, session=session)
+    _sync_session_working_summary(session, active_episode)
     all_messages = (
         db.query(ConversationMessage)
         .filter_by(session_ref_id=session.id)
@@ -999,6 +1612,7 @@ def assemble_history_text(
     )
     summary_block, recent_messages = build_history_block(
         session=session,
+        active_episode=active_episode,
         all_messages=all_messages,
         policy=policy,
     )
@@ -1020,8 +1634,11 @@ def assemble_history_text(
         "profile_id": policy.selected_profile_id,
         "history_node_id": history_node_id,
         "session_id": session.session_id,
+        "active_episode_id": str(active_episode.id) if active_episode else None,
         "summary_used": bool(summary_block),
-        "summary_through_turn": session.summary_through_turn,
+        "summary_through_turn": (
+            active_episode.summary_through_turn if active_episode else session.summary_through_turn
+        ),
         "recent_turn_count": len(recent_messages),
         "recent_turn_ids": [str(msg.id) for msg in recent_messages],
         "recent_token_budget": policy.recent_token_budget,
@@ -1031,6 +1648,8 @@ def assemble_history_text(
         "summary_trigger_messages": policy.summary_trigger_messages,
         "summary_recent_turns": policy.summary_recent_turns,
         "summary_max_tokens": policy.summary_max_tokens,
+        "summary_provider": policy.summary_provider,
+        "summary_model": policy.summary_model,
         "embedding_provider": policy.embedding_provider,
         "embedding_model": policy.embedding_model,
         "vector_store": policy.vector_store,
@@ -1062,12 +1681,15 @@ def assemble_agent_messages(
 
     history_node_id, history_output = _find_history_output(context, policy.history_node_id or "")
     session = None
+    active_episode = None
     all_messages: list[ConversationMessage] = []
     session_id = ""
     if history_output:
         session_id = str(history_output.get("session_id", "") or "")
     if session_id:
         session = get_or_create_session(db, tenant_id=tenant_id, session_id=session_id)
+        active_episode = get_active_episode(db, session=session)
+        _sync_session_working_summary(session, active_episode)
         all_messages = (
             db.query(ConversationMessage)
             .filter_by(session_ref_id=session.id)
@@ -1077,6 +1699,7 @@ def assemble_agent_messages(
 
     summary_block, recent_messages = build_history_block(
         session=session,
+        active_episode=active_episode,
         all_messages=all_messages,
         policy=policy,
     )
@@ -1088,6 +1711,7 @@ def assemble_agent_messages(
         tenant_id=tenant_id,
         workflow_def_id=workflow_def_id,
         session=session,
+        active_episode=active_episode,
         query_text=_latest_user_message(context),
         policy=policy,
         context=context,
@@ -1139,8 +1763,11 @@ def assemble_agent_messages(
         "profile_id": policy.selected_profile_id,
         "history_node_id": history_node_id,
         "session_id": session.session_id if session else "",
+        "active_episode_id": str(active_episode.id) if active_episode else None,
         "summary_used": bool(summary_block),
-        "summary_through_turn": session.summary_through_turn if session else 0,
+        "summary_through_turn": (
+            active_episode.summary_through_turn if active_episode else (session.summary_through_turn if session else 0)
+        ),
         "recent_turn_count": len(recent_messages),
         "recent_turn_ids": [str(msg.id) for msg in recent_messages],
         "entity_fact_ids": [str(fact.id) for fact in facts],
@@ -1153,6 +1780,8 @@ def assemble_agent_messages(
         "summary_trigger_messages": policy.summary_trigger_messages,
         "summary_recent_turns": policy.summary_recent_turns,
         "summary_max_tokens": policy.summary_max_tokens,
+        "summary_provider": policy.summary_provider,
+        "summary_model": policy.summary_model,
         "embedding_provider": policy.embedding_provider,
         "embedding_model": policy.embedding_model,
         "vector_store": policy.vector_store,

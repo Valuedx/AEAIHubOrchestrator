@@ -33,6 +33,14 @@ class MemoryProfileBase(BaseModel):
     summary_trigger_messages: int = Field(default=12, ge=1, le=200)
     summary_recent_turns: int = Field(default=6, ge=0, le=50)
     summary_max_tokens: int = Field(default=400, ge=64, le=4000)
+    summary_provider: str = "google"
+    summary_model: str = "gemini-2.5-flash"
+    episode_archive_provider: str = "google"
+    episode_archive_model: str = "gemini-2.5-flash"
+    episode_inactivity_minutes: int = Field(default=10080, ge=1, le=525600)
+    episode_min_turns: int = Field(default=2, ge=1, le=500)
+    auto_archive_on_resolved: bool = True
+    promote_interactions: bool = True
     history_order: str = Field(default="summary_first", pattern="^(summary_first|recent_first)$")
     semantic_score_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     embedding_provider: str = "openai"
@@ -58,6 +66,14 @@ class MemoryProfileUpdate(BaseModel):
     summary_trigger_messages: int | None = Field(default=None, ge=1, le=200)
     summary_recent_turns: int | None = Field(default=None, ge=0, le=50)
     summary_max_tokens: int | None = Field(default=None, ge=64, le=4000)
+    summary_provider: str | None = None
+    summary_model: str | None = None
+    episode_archive_provider: str | None = None
+    episode_archive_model: str | None = None
+    episode_inactivity_minutes: int | None = Field(default=None, ge=1, le=525600)
+    episode_min_turns: int | None = Field(default=None, ge=1, le=500)
+    auto_archive_on_resolved: bool | None = None
+    promote_interactions: bool | None = None
     history_order: str | None = Field(default=None, pattern="^(summary_first|recent_first)$")
     semantic_score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     embedding_provider: str | None = None
@@ -138,6 +154,14 @@ def _profile_to_out(profile: MemoryProfile) -> MemoryProfileOut:
         summary_trigger_messages=profile.summary_trigger_messages,
         summary_recent_turns=profile.summary_recent_turns,
         summary_max_tokens=profile.summary_max_tokens,
+        summary_provider=profile.summary_provider,
+        summary_model=profile.summary_model,
+        episode_archive_provider=profile.episode_archive_provider,
+        episode_archive_model=profile.episode_archive_model,
+        episode_inactivity_minutes=profile.episode_inactivity_minutes,
+        episode_min_turns=profile.episode_min_turns,
+        auto_archive_on_resolved=profile.auto_archive_on_resolved,
+        promote_interactions=profile.promote_interactions,
         history_order=profile.history_order,
         semantic_score_threshold=profile.semantic_score_threshold,
         embedding_provider=profile.embedding_provider,

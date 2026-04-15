@@ -96,6 +96,43 @@ def test_build_history_block_respects_recent_token_budget():
     assert [msg.turn_index for msg in recent_messages] == [2]
 
 
+def test_build_history_block_prefers_active_episode_summary_and_bounds():
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id="tenant-a",
+        session_id="sess-1",
+        summary_text="Legacy session summary",
+        summary_through_turn=2,
+        message_count=6,
+    )
+    active_episode = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="active",
+        start_turn=3,
+        checkpoint_summary_text="Active issue summary",
+        summary_through_turn=4,
+    )
+    all_messages = [
+        _message(1, "user", "Older archived issue"),
+        _message(2, "assistant", "Older archived answer"),
+        _message(3, "user", "Active issue opened"),
+        _message(4, "assistant", "Active issue triage"),
+        _message(5, "user", "Active issue follow-up"),
+        _message(6, "assistant", "Active issue latest"),
+    ]
+
+    summary_block, recent_messages = build_history_block(
+        session=session,
+        active_episode=active_episode,
+        all_messages=all_messages,
+        policy=EffectiveMemoryPolicy(recent_token_budget=1000),
+    )
+
+    assert "Active issue summary" in summary_block
+    assert "Legacy session summary" not in summary_block
+    assert [msg.turn_index for msg in recent_messages] == [5, 6]
+
+
 def test_assemble_history_text_formats_summary_and_recent_turns(monkeypatch):
     session = SimpleNamespace(
         id=uuid.uuid4(),

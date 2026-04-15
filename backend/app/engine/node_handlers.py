@@ -53,6 +53,8 @@ def dispatch_node(
         return _handle_load_conversation_state(node_data, context, tenant_id)
     if label == "Save Conversation State":
         return _handle_save_conversation_state(node_data, context, tenant_id)
+    if label == "Archive Active Episode":
+        return _handle_archive_conversation_episode(node_data, context, tenant_id)
     if label == "Bridge User Reply":
         return _handle_bridge_user_reply(node_data, context, tenant_id)
     if label == "LLM Router":
@@ -476,6 +478,8 @@ def _handle_save_conversation_state(
 
     from app.database import SessionLocal
     from app.engine.memory_service import (
+        get_active_episode,
+        get_or_create_active_episode,
         append_conversation_turns,
         build_conversation_idempotency_key,
         memory_debug_to_node_config,
@@ -504,7 +508,7 @@ def _handle_save_conversation_state(
             assistant_response=assistant_response,
         )
 
-        session, _ = append_conversation_turns(
+        session, persisted_rows = append_conversation_turns(
             db,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -528,13 +532,24 @@ def _handle_save_conversation_state(
         summary_updated = False
         fact_rows: list[Any] = []
         memory_rows: list[Any] = []
+        active_episode = None
         if policy.enabled:
+            if persisted_rows:
+                active_episode = get_or_create_active_episode(
+                    db,
+                    session=session,
+                    tenant_id=tenant_id,
+                    workflow_def_id=workflow_def_id or None,
+                    memory_profile_id=policy.selected_profile_id,
+                    starting_turn=min(row.turn_index for row in persisted_rows),
+                )
+            else:
+                active_episode = get_active_episode(db, session=session, lock=True)
             summary_updated = refresh_rolling_summary(
                 db,
                 session=session,
-                summary_trigger_messages=policy.summary_trigger_messages,
-                summary_recent_turns=policy.summary_recent_turns,
-                summary_max_tokens=policy.summary_max_tokens,
+                episode=active_episode,
+                policy=policy,
             )
             fact_rows = promote_entity_facts(
                 db,
@@ -551,6 +566,7 @@ def _handle_save_conversation_state(
                     db,
                     tenant_id=tenant_id,
                     session=session,
+                    episode=active_episode,
                     workflow_def_id=workflow_def_id or None,
                     instance_id=instance_id or None,
                     node_id=current_node_id or None,
@@ -560,6 +576,11 @@ def _handle_save_conversation_state(
                     assistant_response=assistant_response,
                     conversation_idempotency_key=idempotency_key,
                 )
+        else:
+            active_episode = get_active_episode(db, session=session, lock=True)
+            if active_episode is not None:
+                active_episode.last_activity_at = session.last_message_at or active_episode.last_activity_at
+                active_episode.updated_at = active_episode.last_activity_at
         db.commit()
 
         total = session.message_count
@@ -571,9 +592,84 @@ def _handle_save_conversation_state(
             "session_ref_id": str(session.id),
             "message_count": total,
             "saved": True,
+            "active_episode_id": str(active_episode.id) if active_episode else None,
             "summary_updated": summary_updated,
             "promoted_memory_records": len(memory_rows),
             "promoted_entity_facts": len(fact_rows),
+        }
+    finally:
+        db.close()
+
+
+def _handle_archive_conversation_episode(
+    node_data: dict, context: dict[str, Any], tenant_id: str
+) -> dict[str, Any]:
+    """Archive and reset the active episode for a long-lived conversation session."""
+    config = node_data.get("config", {})
+    session_id_expr = str(config.get("sessionIdExpression", "trigger.session_id") or "trigger.session_id")
+    summary_expr = str(config.get("summaryExpression", "") or "").strip()
+    title_expr = str(config.get("titleExpression", "") or "").strip()
+    reason = str(config.get("reason", "manual") or "manual").strip().lower()
+    if reason not in {"resolved", "inactive", "manual"}:
+        reason = "manual"
+    memory_profile_id = str(config.get("memoryProfileId", "") or "").strip() or None
+
+    raw = _resolve_expr(session_id_expr, context)
+    session_id = str(raw) if raw else str(context.get("trigger", {}).get("session_id", ""))
+    if not session_id:
+        return {"error": "session_id could not be resolved", "archived": False}
+
+    summary_text = ""
+    if summary_expr:
+        summary_value = _resolve_expr(summary_expr, context)
+        summary_text = str(summary_value).strip() if summary_value is not None else ""
+
+    title = ""
+    if title_expr:
+        title_value = _resolve_expr(title_expr, context)
+        title = str(title_value).strip() if title_value is not None else ""
+
+    from app.database import SessionLocal
+    from app.engine.memory_service import archive_active_episode, get_or_create_session
+
+    db = SessionLocal()
+    try:
+        workflow_def_id = str(context.get("_workflow_def_id", "") or "") or None
+        instance_id = str(context.get("_instance_id", "") or "") or None
+        current_node_id = str(context.get("_current_node_id", "") or "") or None
+
+        session = get_or_create_session(
+            db,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            lock=True,
+        )
+        episode, memory_rows = archive_active_episode(
+            db,
+            tenant_id=tenant_id,
+            session=session,
+            workflow_def_id=workflow_def_id,
+            instance_id=instance_id,
+            node_id=current_node_id,
+            context=context,
+            reason=reason,
+            provided_summary=summary_text,
+            provided_title=title,
+            memory_profile_id=memory_profile_id,
+        )
+        db.commit()
+
+        archived = bool(episode and episode.status == "archived")
+        return {
+            "session_id": session_id,
+            "archived": archived,
+            "episode_id": str(episode.id) if episode else None,
+            "title": episode.title if episode else None,
+            "archive_reason": episode.archive_reason if archived and episode else None,
+            "archived_at": episode.archived_at.isoformat() if archived and episode and episode.archived_at else None,
+            "memory_record_ids": [str(row.id) for row in memory_rows],
+            "memory_records_created": len(memory_rows),
+            "summary_text": episode.checkpoint_summary_text if episode else "",
         }
     finally:
         db.close()

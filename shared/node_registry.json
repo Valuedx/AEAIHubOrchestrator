@@ -478,6 +478,41 @@
       }
     },
     {
+      "type": "archive_conversation_episode",
+      "category": "action",
+      "label": "Archive Active Episode",
+      "description": "Finalize the current issue-scoped episode into episodic memory and clear the active working summary so the next request starts fresh.",
+      "icon": "archive",
+      "config_schema": {
+        "sessionIdExpression": {
+          "type": "string",
+          "default": "trigger.session_id",
+          "description": "Expression that resolves to the conversation session identifier"
+        },
+        "summaryExpression": {
+          "type": "string",
+          "default": "",
+          "description": "Optional expression that resolves to a final archived summary. Leave empty to let the memory system generate one."
+        },
+        "titleExpression": {
+          "type": "string",
+          "default": "",
+          "description": "Optional expression that resolves to a short episode title."
+        },
+        "reason": {
+          "type": "string",
+          "default": "manual",
+          "enum": ["resolved", "inactive", "manual"],
+          "description": "Why the current episode is being archived."
+        },
+        "memoryProfileId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional memory profile override used for archive summarization and episodic write scope."
+        }
+      }
+    },
+    {
       "type": "llm_router",
       "category": "agent",
       "label": "LLM Router",
