@@ -102,6 +102,8 @@ All return **InstanceOut**:
 | `completed_at` | ISO datetime or null |
 | `created_at` | ISO datetime |
 | `definition_version_at_start` | integer or null |
+| `parent_instance_id` | UUID or null |
+| `parent_node_id` | string or null |
 
 ### Status, versions, graph history
 
@@ -121,7 +123,20 @@ All return **InstanceOut**:
 | `GET` | `.../{instance_id}/checkpoints` | 200 | List HITL checkpoints |
 | `GET` | `.../{instance_id}/checkpoints/{checkpoint_id}` | 200 | Checkpoint detail with context |
 
-**InstanceDetailOut:** extends `InstanceOut` with `logs` — list of `ExecutionLogOut`:
+**InstanceDetailOut:** extends `InstanceOut` with `logs` and `children`:
+
+**`children`** — list of `ChildInstanceSummary` (sub-workflow instances spawned during execution):
+
+| Field | Type |
+|-------|------|
+| `id` | UUID |
+| `workflow_def_id` | UUID |
+| `parent_node_id` | string |
+| `status` | string |
+| `started_at` | ISO datetime or null |
+| `completed_at` | ISO datetime or null |
+
+**`logs`** — list of `ExecutionLogOut`:
 
 | Field | Type |
 |-------|------|

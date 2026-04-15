@@ -140,6 +140,14 @@ class InstanceOut(BaseModel):
             "Use with GET …/graph-at-version/{version} to restore the canvas for replay."
         ),
     )
+    parent_instance_id: uuid.UUID | None = Field(
+        None,
+        description="ID of the parent instance if this is a sub-workflow execution.",
+    )
+    parent_node_id: str | None = Field(
+        None,
+        description="Node ID in the parent workflow that spawned this sub-workflow.",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -159,8 +167,25 @@ class ExecutionLogOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ChildInstanceSummary(BaseModel):
+    """Summary of a child sub-workflow instance shown in parent detail."""
+    id: uuid.UUID
+    workflow_def_id: uuid.UUID
+    workflow_name: str | None = None
+    parent_node_id: str | None = None
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class InstanceDetailOut(InstanceOut):
     logs: list[ExecutionLogOut] = []
+    children: list[ChildInstanceSummary] = Field(
+        default_factory=list,
+        description="Child sub-workflow instances spawned by this execution.",
+    )
 
 
 # ---------------------------------------------------------------------------

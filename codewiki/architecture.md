@@ -159,9 +159,10 @@ The DAG engine (`engine/dag_runner.py`) performs **topological execution** of th
 2. **Topological sort** to determine execution order.
 3. **Execute** each node via `dispatch_node`, passing in a context dict containing outputs from upstream nodes.
 4. **Special control flow**: ForEach (fan-out / fan-in), Loop (iteration with break condition), Merge (join), Condition (branching).
-5. **Stream** execution events (node start, node done, errors) to SSE subscribers.
-6. **Persist** execution logs to the `execution_logs` table.
-7. **Checkpointing**: HITL nodes (Human Approval, Bridge User Reply) pause the instance and await callback.
+5. **Sub-workflow execution**: Sub-Workflow nodes load a child workflow definition, create a linked child `WorkflowInstance`, execute it synchronously inline, and return the child's outputs to the parent context. Recursion protection via `_parent_chain` prevents cycles and depth limit violations.
+6. **Stream** execution events (node start, node done, errors) to SSE subscribers.
+7. **Persist** execution logs to the `execution_logs` table.
+8. **Checkpointing**: HITL nodes (Human Approval, Bridge User Reply) pause the instance and await callback.
 
 ## Multi-tenancy
 

@@ -13,7 +13,7 @@ Gap analysis comparing AEAIHubOrchestrator against top DAG workflow builders for
 | **P0** | 3 | Integration Ecosystem (native connectors) | n8n (400+), Dify, Flowise | **Partial** |
 | **P0** | 4 | Credential Management UI | n8n, Dify | **Done** |
 | **P1** | 5 | In-Process Multi-Agent Patterns | CrewAI, LangGraph, AutoGen | Planned |
-| **P1** | 6 | Subgraphs / Nested Workflows | LangGraph, Dify | Planned |
+| **P1** | 6 | Subgraphs / Nested Workflows | LangGraph, Dify | **Done** |
 | **P1** | 7 | Cyclic Graph Support | LangGraph | Planned |
 | **P1** | 8 | Built-in Observability Dashboard | Dify, LangSmith | Planned |
 | **P1** | 9 | Per-Node Error Handling & Retry | n8n | Planned |
@@ -77,11 +77,13 @@ See [API Reference](api-reference.md) and [Security](security.md) for details.
 
 We have A2A delegation (remote agents) but no native in-process multi-agent patterns (supervisor, swarm, debate, voting, hierarchical delegation within one workflow). Implementing supervisor and team coordination nodes would close this gap.
 
-#### 6. Subgraphs / Nested Workflows — Planned
+#### 6. Subgraphs / Nested Workflows — Done
 
 > LangGraph has composable subgraphs (a compiled graph used as a node inside a larger graph). Dify supports nested workflow calls.
 
-No sub-workflow or nested workflow capability exists. Every workflow is flat. Adding a "Sub-Workflow" node that references another saved workflow would enable modularity, reusability, and testing of workflow fragments.
+**Implemented:** Sub-Workflow logic node (`sub_workflow`) that executes another saved workflow as a single step. Child workflows run synchronously inline, creating a separate `WorkflowInstance` linked via `parent_instance_id` / `parent_node_id`. Input mapping via `safe_eval` expressions builds the child's `trigger_payload`; output filtering restricts which child node outputs are returned. Version policy: `latest` (live definition) or `pinned` (specific snapshot version). Recursion protection via `_parent_chain` prevents cycles and enforces configurable `maxDepth` (default 10, max 20). Cancellation cascades from parent to child instances. Frontend includes custom `WorkflowSelect`, `InputMappingEditor`, and `OutputNodePicker` widgets, canvas version-policy badge, and drill-down child execution logs.
+
+See [Node Types — Sub-Workflow](node-types.md) for full config reference.
 
 #### 7. Cyclic Graph Support — Planned
 

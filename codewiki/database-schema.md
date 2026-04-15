@@ -59,8 +59,10 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `created_at` | `TIMESTAMPTZ` | | |
 | `cancel_requested` | `BOOLEAN` | NOT NULL, default false | DAG runner checks between nodes |
 | `pause_requested` | `BOOLEAN` | NOT NULL, default false | DAG runner checks between nodes |
+| `parent_instance_id` | `UUID` | FK → `workflow_instances.id` CASCADE, nullable | Parent instance for sub-workflow children |
+| `parent_node_id` | `VARCHAR(128)` | nullable | Node ID in the parent workflow that spawned this child |
 
-**Indexes:** `ix_wf_inst_tenant_status` on `(tenant_id, status)`.
+**Indexes:** `ix_wf_inst_tenant_status` on `(tenant_id, status)`, `ix_wf_inst_parent` on `(parent_instance_id)`.
 
 ### `workflow_snapshots`
 
@@ -284,6 +286,7 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0008 | `0008_instance_definition_version_at_start.py` | Add `definition_version_at_start` to `workflow_instances` |
 | 0009 | `0009_add_knowledge_base_tables.py` | `CREATE EXTENSION vector`, `knowledge_bases`, `kb_documents`, `kb_chunks` with HNSW index + RLS |
 | 0010 | `0010_add_embedding_cache.py` | `embedding_cache` table with pgvector `VECTOR` column, HNSW cosine index, and RLS |
+| 0011 | `0011_add_subworkflow_parent_tracking.py` | Add `parent_instance_id` (FK), `parent_node_id` columns and `ix_wf_inst_parent` index to `workflow_instances` |
 
 ### Running migrations
 

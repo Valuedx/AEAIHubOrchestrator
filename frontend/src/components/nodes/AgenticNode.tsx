@@ -22,6 +22,8 @@ import {
   Bell,
   Target,
   ListFilter,
+  Layers,
+  Network,
   type LucideIcon,
 } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -51,6 +53,9 @@ const ICON_MAP: Record<string, LucideIcon> = {
   bell: Bell,
   target: Target,
   "list-filter": ListFilter,
+  workflow: Layers,
+  network: Network,
+  layers: Layers,
 };
 
 const CATEGORY_STYLES: Record<
@@ -195,6 +200,11 @@ function AgenticNodeComponent({ id, data, selected }: NodeProps) {
               ≤{String(config.maxIterations)}×
             </Badge>
           )}
+          {label === "Sub-Workflow" && (
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+              {config?.versionPolicy === "pinned" ? `v${config.pinnedVersion ?? "?"}` : "latest"}
+            </Badge>
+          )}
         </div>
         {label === "ForEach" && config?.arrayExpression != null && config.arrayExpression !== "" && (
           <p
@@ -264,6 +274,10 @@ function getDefaultIcon(category: NodeCategory): string {
       return "database";
     case "notification":
       return "bell";
+    case "nlp":
+      return "target";
+    default:
+      return "brain";
   }
 }
 

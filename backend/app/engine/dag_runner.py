@@ -50,6 +50,19 @@ def _finalize_cancelled(
     instance.pause_requested = False
     instance.context_json = _get_clean_context(context)
     instance.completed_at = _utcnow()
+
+    # Cascade cancel to any running/queued child sub-workflow instances
+    children = (
+        db.query(WorkflowInstance)
+        .filter(
+            WorkflowInstance.parent_instance_id == instance.id,
+            WorkflowInstance.status.in_(["running", "queued"]),
+        )
+        .all()
+    )
+    for child in children:
+        child.cancel_requested = True
+
     db.commit()
     logger.info("Workflow %s cancelled (cooperative, between nodes)", instance.id)
 
@@ -211,6 +224,19 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
         context["trigger"] = instance.trigger_payload
     # Expose instance_id so node handlers can route LLM tokens to the right Redis channel
     context["_instance_id"] = str(instance.id)
+    context["_workflow_def_id"] = str(instance.workflow_def_id)
+
+    # Sub-workflow recursion detection: build the parent chain if not already
+    # present (child instances have _parent_chain pre-set in their context_json).
+    if "_parent_chain" not in context:
+        parent_chain: list[str] = []
+        ancestor = instance
+        while ancestor.parent_instance_id:
+            ancestor = db.query(WorkflowInstance).filter_by(id=ancestor.parent_instance_id).first()
+            if not ancestor:
+                break
+            parent_chain.append(str(ancestor.workflow_def_id))
+        context["_parent_chain"] = parent_chain
 
     det_tag = ["deterministic"] if deterministic_mode else []
     with trace_workflow(
@@ -657,7 +683,7 @@ def _execute_single_node(
         input_data=_build_node_input(node_data, context),
     ) as span:
         try:
-            output = dispatch_node(node_data, context, instance.tenant_id)
+            output = dispatch_node(node_data, context, instance.tenant_id, db=db)
             context[node_id] = output
             _promote_orchestrator_user_reply(context, output)
 
@@ -749,21 +775,25 @@ def _execute_parallel(
 
         # V0.9 (Component 7): Use explicit trace object from context
         from app.observability import span_node
-        with span_node(
-            trace,
-            node_id=node_id,
-            node_type=f"{node_category}:{node_label}",
-            node_label=node_label,
-            input_data=_build_node_input(node_data, context),
-        ) as span:
-            try:
-                output = dispatch_node(node_data, context, instance.tenant_id)
-                span.update(output={"status": "completed", "has_output": output is not None})
-                return node_id, "completed", output, None
-            except Exception as exc:
-                logger.exception("Node %s failed in workflow %s", node_id, instance.id)
-                span.update(output={"status": "failed", "error": str(exc)})
-                return node_id, "failed", None, str(exc)
+        thread_db = SessionLocal()
+        try:
+            with span_node(
+                trace,
+                node_id=node_id,
+                node_type=f"{node_category}:{node_label}",
+                node_label=node_label,
+                input_data=_build_node_input(node_data, context),
+            ) as span:
+                try:
+                    output = dispatch_node(node_data, context, instance.tenant_id, db=thread_db)
+                    span.update(output={"status": "completed", "has_output": output is not None})
+                    return node_id, "completed", output, None
+                except Exception as exc:
+                    logger.exception("Node %s failed in workflow %s", node_id, instance.id)
+                    span.update(output={"status": "failed", "error": str(exc)})
+                    return node_id, "failed", None, str(exc)
+        finally:
+            thread_db.close()
 
     def _apply_result(node_id: str, status: str, output: dict | None, error: str | None) -> None:
         results[node_id] = status

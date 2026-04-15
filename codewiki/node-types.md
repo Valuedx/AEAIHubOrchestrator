@@ -281,6 +281,34 @@ Repeats downstream nodes while a condition is true.
 
 **Special variables:** `_loop_index` is available in expressions.
 
+### Sub-Workflow (`sub_workflow`)
+
+Executes another saved workflow as a single step within the current workflow. Creates a child `WorkflowInstance` with its own execution logs and checkpoints.
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `workflowId` | string | `""` | ID of the workflow definition to execute as a sub-workflow |
+| `versionPolicy` | enum | `latest` | `latest` (current live definition) or `pinned` (specific snapshot version) |
+| `pinnedVersion` | integer | `1` | Version number when `versionPolicy` is `pinned` |
+| `inputMapping` | object | `{}` | Map of child trigger keys to parent context expressions (e.g. `{"message": "node_2.response", "user_id": "trigger.user_id"}`) |
+| `outputNodeIds` | string[] | `[]` | Only return outputs from these child node IDs; empty = all outputs |
+| `maxDepth` | integer | `10` | Maximum nesting depth for recursion protection (1–20) |
+
+**Execution model:**
+
+- The child workflow runs **synchronously** within the parent's execution thread (not a separate Celery task).
+- A new `WorkflowInstance` row is created for the child, linked to the parent via `parent_instance_id` and `parent_node_id`.
+- **Input mapping** evaluates each expression against the parent's context via `safe_eval` and builds the child's `trigger_payload`.
+- **Output filtering** returns either all child node outputs (`node_*` + `trigger`) or a subset matching `outputNodeIds`.
+
+**Output:** `{ child_instance_id: string, child_workflow_name: string, child_status: string, outputs: object }`
+
+**Recursion protection:** The engine tracks a `_parent_chain` of ancestor workflow definition IDs. If a sub-workflow would create a cycle (e.g. A → B → A) or exceed `maxDepth`, execution fails with a descriptive error.
+
+**Version pinning:** Use `latest` during development (always picks the current graph). Pin to a specific version in production for stability — the child uses the snapshot at that version number.
+
+**Limitations (v1):** Child workflows containing Human Approval nodes cause the parent sub-workflow node to fail. HITL bubbling from child to parent will be supported in a future release.
+
 ---
 
 ## Knowledge nodes

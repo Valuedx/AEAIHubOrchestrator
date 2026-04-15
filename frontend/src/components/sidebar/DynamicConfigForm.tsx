@@ -30,6 +30,7 @@ import { ExpressionInput } from "@/components/sidebar/ExpressionInput";
 import { KBMultiSelect } from "@/components/sidebar/KBMultiSelect";
 import { getExpressionVariables } from "@/lib/expressionVariables";
 import { useFlowStore } from "@/store/flowStore";
+import { useWorkflowStore } from "@/store/workflowStore";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -707,6 +708,245 @@ function EntityListEditor({
 }
 
 // ---------------------------------------------------------------------------
+// WorkflowSelect — searchable dropdown for sub_workflow workflowId field
+// ---------------------------------------------------------------------------
+
+function WorkflowSelect({
+  selected,
+  onChange,
+  excludeId,
+}: {
+  selected: string;
+  onChange: (id: string) => void;
+  excludeId?: string | null;
+}) {
+  const [workflows, setWorkflows] = useState<{ id: string; name: string; version: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.listWorkflows().then((wfs) => {
+      setWorkflows(wfs.map((w) => ({ id: w.id, name: w.name, version: w.version })));
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <p className="text-xs text-muted-foreground">Loading workflows...</p>;
+  }
+
+  const available = workflows.filter((w) => w.id !== excludeId);
+
+  if (available.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        No other workflows available. Create and save a workflow first.
+      </p>
+    );
+  }
+
+  const selectedWf = available.find((w) => w.id === selected);
+
+  return (
+    <div className="space-y-1.5">
+      {selectedWf && (
+        <div className="flex items-center gap-1.5 rounded-md bg-primary/10 border border-primary/20 px-2.5 py-1.5">
+          <span className="text-xs text-primary truncate flex-1">{selectedWf.name}</span>
+          <Badge variant="outline" className="text-[9px] px-1 py-0 shrink-0">
+            v{selectedWf.version}
+          </Badge>
+          <button
+            onClick={() => onChange("")}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0"
+            title="Clear selection"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      <Select
+        value={selected || "__none__"}
+        onValueChange={(v) => onChange(v === "__none__" ? "" : v)}
+      >
+        <SelectTrigger className="text-xs">
+          <SelectValue placeholder="Select a workflow..." />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__none__">— None —</SelectItem>
+          {available.map((w) => (
+            <SelectItem key={w.id} value={w.id}>
+              {w.name} (v{w.version})
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// InputMappingEditor — key-value pair editor for sub_workflow inputMapping
+// ---------------------------------------------------------------------------
+
+function InputMappingEditor({
+  value,
+  onChange,
+  exprSuggestions,
+  description,
+}: {
+  value: Record<string, string>;
+  onChange: (v: Record<string, string>) => void;
+  exprSuggestions: { label: string; value: string }[];
+  description?: string;
+}) {
+  const entries = Object.entries(value || {});
+
+  const addEntry = () => {
+    onChange({ ...value, "": "" });
+  };
+
+  const removeEntry = (oldKey: string) => {
+    const next = { ...value };
+    delete next[oldKey];
+    onChange(next);
+  };
+
+  const updateKey = (oldKey: string, newKey: string) => {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(value || {})) {
+      next[k === oldKey ? newKey : k] = v;
+    }
+    onChange(next);
+  };
+
+  const updateValue = (key: string, newVal: string) => {
+    onChange({ ...value, [key]: newVal });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <Label>Input Mapping</Label>
+        <button
+          type="button"
+          onClick={addEntry}
+          className="text-xs text-primary hover:underline"
+        >
+          + Add mapping
+        </button>
+      </div>
+      {entries.length === 0 && (
+        <p className="text-[10px] text-muted-foreground italic">
+          No input mappings — the child workflow will receive an empty trigger
+        </p>
+      )}
+      {entries.map(([key, expr], idx) => (
+        <div key={idx} className="flex items-start gap-2 border rounded-md p-2 bg-muted/30">
+          <div className="flex-1 space-y-1">
+            <Input
+              value={key}
+              onChange={(e) => updateKey(key, e.target.value)}
+              placeholder="trigger key"
+              className="h-7 text-xs font-mono"
+            />
+            <ExpressionInput
+              value={String(expr || "")}
+              onChange={(v) => updateValue(key, v)}
+              suggestions={exprSuggestions}
+              placeholder="e.g. node_2.response"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => removeEntry(key)}
+            className="text-xs text-destructive hover:underline mt-1 shrink-0"
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {description && <FieldHint text={description} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OutputNodePicker — checkbox list from child workflow's graph nodes
+// ---------------------------------------------------------------------------
+
+function OutputNodePicker({
+  workflowId,
+  selected,
+  onChange,
+  description,
+}: {
+  workflowId: string;
+  selected: string[];
+  onChange: (ids: string[]) => void;
+  description?: string;
+}) {
+  const [childNodes, setChildNodes] = useState<{ id: string; label: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!workflowId) {
+      setChildNodes([]);
+      return;
+    }
+    setLoading(true);
+    api.getWorkflow(workflowId).then((wf) => {
+      const nodes = (wf.graph_json?.nodes || []) as { id: string; data?: { label?: string; displayName?: string } }[];
+      setChildNodes(
+        nodes.map((n) => ({
+          id: n.id,
+          label: n.data?.displayName || n.data?.label || n.id,
+        }))
+      );
+      setLoading(false);
+    }).catch(() => {
+      setChildNodes([]);
+      setLoading(false);
+    });
+  }, [workflowId]);
+
+  if (!workflowId) return null;
+  if (loading) return <p className="text-xs text-muted-foreground">Loading child nodes...</p>;
+  if (childNodes.length === 0) return null;
+
+  const toggle = (id: string) => {
+    if (selected.includes(id)) {
+      onChange(selected.filter((x) => x !== id));
+    } else {
+      onChange([...selected, id]);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <Label>Output Node Filter</Label>
+      {selected.length === 0 && (
+        <p className="text-[10px] text-muted-foreground italic">
+          None selected — all child node outputs will be returned
+        </p>
+      )}
+      <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+        {childNodes.map((n) => (
+          <label key={n.id} className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.includes(n.id)}
+              onChange={() => toggle(n.id)}
+            />
+            <span className="text-xs">{n.label}</span>
+            <span className="text-[9px] text-muted-foreground font-mono">{n.id}</span>
+          </label>
+        ))}
+      </div>
+      {description && <FieldHint text={description} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -720,6 +960,7 @@ export function DynamicConfigForm({
   // Expression autocomplete — build variable suggestions from canvas state
   const nodes = useFlowStore((s) => s.nodes);
   const selectedNodeId = useFlowStore((s) => s.selectedNodeId);
+  const currentWorkflowId = useWorkflowStore((s) => s.currentWorkflow?.id ?? null);
   const exprSuggestions = getExpressionVariables(nodes, selectedNodeId, "expression");
   const nodeIdSuggestions = getExpressionVariables(nodes, selectedNodeId, "nodeId");
   const jinja2Suggestions = getExpressionVariables(nodes, selectedNodeId, "jinja2");
@@ -815,6 +1056,50 @@ export function DynamicConfigForm({
               <EntityListEditor
                 value={Array.isArray(value) ? (value as EntityItem[]) : []}
                 onChange={(v) => update(key, v)}
+                description={field.description}
+              />
+            </div>
+          );
+        }
+
+        // ---- workflowId on sub_workflow → WorkflowSelect ----
+        if (field.type === "string" && key === "workflowId" && nodeType === "sub_workflow") {
+          return (
+            <div key={key} className="space-y-2">
+              <Label>{humanize(key)}</Label>
+              <WorkflowSelect
+                selected={String(value ?? "")}
+                onChange={(id) => update(key, id)}
+                excludeId={currentWorkflowId}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- inputMapping on sub_workflow → InputMappingEditor ----
+        if (field.type === "object" && key === "inputMapping" && nodeType === "sub_workflow") {
+          return (
+            <div key={key}>
+              <InputMappingEditor
+                value={(value as Record<string, string>) ?? {}}
+                onChange={(v) => update(key, v)}
+                exprSuggestions={exprSuggestions}
+                description={field.description}
+              />
+            </div>
+          );
+        }
+
+        // ---- outputNodeIds on sub_workflow → OutputNodePicker ----
+        if (field.type === "array" && key === "outputNodeIds" && nodeType === "sub_workflow") {
+          const wfId = String(config["workflowId"] ?? "");
+          return (
+            <div key={key}>
+              <OutputNodePicker
+                workflowId={wfId}
+                selected={Array.isArray(value) ? (value as string[]) : []}
+                onChange={(ids) => update(key, ids)}
                 description={field.description}
               />
             </div>

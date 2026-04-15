@@ -35,6 +35,7 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   "Loop":                    ["continueExpression"],
   "Bridge User Reply":       [], // at least one of messageExpression / responseNodeId — checked below
   "Notification":            ["channel", "destination", "messageTemplate"],
+  "Sub-Workflow":            ["workflowId"],
 };
 
 // Fields that reference another node ID by value — must exist in the graph
@@ -203,6 +204,23 @@ export function validateWorkflow(
           message: `"${title}" (${node.id}): maxIterations is ${maxIter} but the backend hard cap is 25 — the loop will stop at 25.`,
           severity: "warning",
         });
+      }
+    }
+
+    // Sub-Workflow: validate version policy, warn about HITL limitation
+    if (data.label === "Sub-Workflow") {
+      const cfg = data.config as Record<string, unknown>;
+      const versionPolicy = String(cfg.versionPolicy ?? "latest");
+      if (versionPolicy === "pinned") {
+        const pv = cfg.pinnedVersion;
+        if (pv === undefined || pv === null || (typeof pv === "number" && pv < 1)) {
+          errors.push({
+            nodeId: node.id,
+            nodeLabel: title,
+            message: `"${title}" (${node.id}): pinnedVersion must be a positive integer when versionPolicy is "pinned".`,
+            severity: "error",
+          });
+        }
       }
     }
   }

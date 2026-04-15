@@ -312,6 +312,50 @@
       }
     },
     {
+      "type": "sub_workflow",
+      "category": "logic",
+      "label": "Sub-Workflow",
+      "description": "Execute another saved workflow as a single step. Maps inputs from parent context to child trigger, and returns child outputs.",
+      "icon": "workflow",
+      "config_schema": {
+        "workflowId": {
+          "type": "string",
+          "default": "",
+          "description": "ID of the workflow definition to execute as a sub-workflow"
+        },
+        "versionPolicy": {
+          "type": "string",
+          "enum": ["latest", "pinned"],
+          "default": "latest",
+          "description": "Use the latest version or pin to a specific snapshot version"
+        },
+        "pinnedVersion": {
+          "type": "integer",
+          "default": 1,
+          "description": "Version number to use when versionPolicy is pinned",
+          "visibleWhen": { "field": "versionPolicy", "values": ["pinned"] }
+        },
+        "inputMapping": {
+          "type": "object",
+          "default": {},
+          "description": "Map of child trigger keys to parent context expressions evaluated via safe_eval (e.g. {\"message\": \"node_2.response\", \"user_id\": \"trigger.user_id\"})"
+        },
+        "outputNodeIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Only return outputs from these child node IDs. Leave empty to return all child node outputs."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "default": 10,
+          "min": 1,
+          "max": 20,
+          "description": "Maximum nesting depth for recursion protection"
+        }
+      }
+    },
+    {
       "type": "load_conversation_state",
       "category": "action",
       "label": "Load Conversation State",

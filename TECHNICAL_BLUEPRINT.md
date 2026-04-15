@@ -1,3 +1,5 @@
+> - **V0.9.15 Sub-Workflows (2026-04-14)**: **Sub-Workflow** logic node (`sub_workflow` in `node_registry.json`). Executes another saved workflow as a single synchronous step within the parent DAG. Creates a linked child `WorkflowInstance` (`parent_instance_id` / `parent_node_id` columns, Alembic `0011`). Input mapping via `safe_eval` expressions builds child `trigger_payload`; output filtering by child node IDs. Version policy: `latest` (live definition) or `pinned` (snapshot). Recursion protection: `_parent_chain` tracks ancestor workflow IDs; rejects cycles and `maxDepth` violations. Cancellation cascades from parent to child instances. API: `InstanceOut` gains `parent_instance_id` / `parent_node_id`; `InstanceDetailOut` gains `children: list[ChildInstanceSummary]`. Frontend: `WorkflowSelect`, `InputMappingEditor`, `OutputNodePicker` custom widgets in `DynamicConfigForm.tsx`; `Layers` icon + version-policy badge on canvas; drill-down child instance logs in `ExecutionPanel`. Server-side and client-side validation for `workflowId`, `versionPolicy`, `pinnedVersion`, `inputMapping`, `outputNodeIds`.
+>
 > - **V0.9.14 NLP Nodes (2026-04-15)**: New `nlp` category with **Intent Classifier** (`intent_classifier.py`) and **Entity Extractor** (`entity_extractor.py`). Intent Classifier: hybrid scoring (lexical substring + embedding cosine + optional LLM fallback) with three configurable modes (`hybrid`, `heuristic_only`, `llm_only`); optional save-time embedding precomputation via `embedding_cache_helper.py` into new `embedding_cache` table (Alembic `0010`, pgvector VECTOR column, HNSW index, RLS). Entity Extractor: 5 rule-based types (regex, enum, number, date, free_text) with intent-entity scoping from upstream classifier and optional LLM fallback for missing required entities. Backend: `config_validator.py` validates both nodes on save; `precompute_node_embeddings()` hooked into create/update workflow endpoints. Frontend: `IntentListEditor` / `EntityListEditor` custom components in `DynamicConfigForm.tsx`; `visibleWhen` extended to support boolean values; `nlp` category (indigo) added to palette and canvas styling; validation and expression autocomplete for both nodes.
 >
 > - **V0.9.13 Tier 1 product UX (2026-04-10)**: **Template gallery** — bundled starter DAGs (`frontend/src/lib/templates/index.ts`), `TemplateGalleryDialog`, toolbar **Templates** button; import/export portable `{nodes, edges}` JSON via `workflowStore.importGraphJson` / `exportCurrentGraph`. **Native synchronous execute** — `POST /{workflow_id}/execute` with `sync: true` runs `execute_graph` inline in a worker thread (`run_in_threadpool` + `asyncio.wait_for`); returns **200** + `SyncExecuteOut` (`instance_id`, `status`, timestamps, `output` context with `_…` keys stripped); default remains **202** + `InstanceOut` + Celery. Request fields `sync_timeout` (5–3600 s, default 120). **Visual debug / replay** — after terminal runs (`completed`, `failed`, `cancelled`, `paused`), Execution panel **Debug** loads checkpoints, timeline scrubber (`DebugReplayBar`), context JSON viewer; canvas node status overlays + indigo ring on the active checkpoint node (`workflowStore` + `AgenticNode`). Hub UI checkbox **Sync run** for local testing. See `SETUP_GUIDE.md` §7.1.2, §4.5 / §6.10 here, `HOW_IT_WORKS.md` Step 6.
@@ -32,9 +34,9 @@
 
 ## AE AI Hub — Agentic Orchestrator Technical Blueprint
 
-**Version:** 0.9.14
-**Last updated:** 2026-04-15
-**Status:** V0.9.14 NLP Nodes (Intent Classifier + Entity Extractor); V0.9.13 Template gallery + sync execute + debug replay; V0.9.12 A2A Protocol; V0.9.11 Operator cancel/pause/resume; V0.9.10 Bridge User Reply + sync reply formatting + `displayName`; V0.9.9 Loop Node; V0.9.8 Rich Token Streaming; V0.9.7 Checkpoint-aware Langfuse; V0.9.6 Checkpointing; V0.9.5 Reflection; V0.9.4 HITL UX; V0.9.3 Deterministic batch; V0.9.2 UX; V0.9.1 Stateful DAGs; V0.9 execution; V0.8 enterprise; earlier milestones through V0.1
+**Version:** 0.9.15
+**Last updated:** 2026-04-14
+**Status:** V0.9.15 Sub-Workflows; V0.9.14 NLP Nodes (Intent Classifier + Entity Extractor); V0.9.13 Template gallery + sync execute + debug replay; V0.9.12 A2A Protocol; V0.9.11 Operator cancel/pause/resume; V0.9.10 Bridge User Reply + sync reply formatting + `displayName`; V0.9.9 Loop Node; V0.9.8 Rich Token Streaming; V0.9.7 Checkpoint-aware Langfuse; V0.9.6 Checkpointing; V0.9.5 Reflection; V0.9.4 HITL UX; V0.9.3 Deterministic batch; V0.9.2 UX; V0.9.1 Stateful DAGs; V0.9 execution; V0.8 enterprise; earlier milestones through V0.1
 > - **V0.7 Observability, MCP Streaming & Tenant Tools (2026-03-20)**: Langfuse v4 integration (`app/observability.py`) — root trace per workflow execution, child spans per node, LLM generation recording with token usage, tool call spans. MCP client rewritten to use MCP Python SDK with Streamable HTTP transport (`app/engine/mcp_client.py`) — replaces raw httpx REST bridge with standard MCP protocol. Tool listing and ReAct tool definitions now fetched live from MCP server. TenantToolOverride consumed by tools endpoint to filter MCP tools per tenant.
 >
 > - **V0.6 Advanced Agent Capabilities (2026-03-20)**: ReAct iterative tool-calling loop (`app/engine/react_loop.py`) with multi-provider support (Google/OpenAI/Anthropic tool-calling APIs). SSE real-time execution updates (`app/api/sse.py`) replacing frontend polling. Celery Beat cron scheduler (`app/workers/scheduler.py`) for schedule triggers with croniter. Frontend palette now hydrated from `shared/node_registry.json` via `src/lib/registry.ts`. Backend config validation against registry schemas on save (`app/engine/config_validator.py`).
@@ -557,8 +559,10 @@ One row per execution run of a workflow definition.
 | `created_at` | `TIMESTAMPTZ` | Auto |
 | `cancel_requested` | `BOOLEAN` | Set by `POST …/cancel` (worker clears when finalizing `cancelled`) — migration `0005` |
 | `pause_requested` | `BOOLEAN` | Set by `POST …/pause` (worker clears when finalizing `paused`) — migration `0006` |
+| `parent_instance_id` | `UUID` (FK, nullable) | Parent instance for sub-workflow children — cascade delete — migration `0011` |
+| `parent_node_id` | `VARCHAR(128)` (nullable) | Node ID in parent workflow that spawned this child — migration `0011` |
 
-Index: `(tenant_id, status)`.
+Indexes: `(tenant_id, status)`, `(parent_instance_id)`.
 
 ### 5.3 ExecutionLog
 
@@ -760,6 +764,7 @@ File: `app/engine/node_handlers.py`
 | `LLM Router` | `_handle_llm_router` | Classification call, returns `{intent}` |
 | `Reflection` | `_handle_reflection` (in `reflection_handler.py`) | Builds execution summary, calls LLM, parses JSON — read-only |
 | `Bridge User Reply` | `_handle_bridge_user_reply` | Resolves `messageExpression` (safe_eval) or `responseNodeId` → `{orchestrator_user_reply, text, source}` |
+| `Sub-Workflow` | `_handle_sub_workflow` → `_execute_sub_workflow` | Loads child definition, recursion check, builds input mapping, creates child `WorkflowInstance`, runs `execute_graph` inline, returns child outputs |
 
 **`orchestrator_user_reply` promotion (V0.9.10):** After any node completes successfully, `dag_runner._promote_orchestrator_user_reply(context, output)` copies a non-empty string `output["orchestrator_user_reply"]` onto **context root** (`context["orchestrator_user_reply"]`). The API strips only `_*` keys, so this field is visible in `GET …/instances/{id}/context` and is the first source a polling client should use when it wants a single user-facing reply. Place one Bridge node per terminal branch when multiple LLM paths exist so the chat text is explicit (avoids longest-response heuristics picking the wrong node). Example workflows demonstrate this pattern.
 
@@ -1137,8 +1142,8 @@ File: `shared/node_registry.json`
 
 A version-controlled JSON file defining all node types with their `config_schema`. This serves as the canonical schema that both frontend and backend can reference:
 
-- 4 categories: `trigger`, `agent`, `action`, `logic`.
-- **14 node types** (triggers, agents including Router/ReAct/Reflection, actions including MCP/HTTP/Human Approval/Bridge User Reply/conversation memory/**A2A Agent Call**, logic including Condition/Merge/ForEach/Loop) with typed `config_schema` objects (type, default, enum, min/max).
+- 6 categories: `trigger`, `agent`, `action`, `logic`, `knowledge`, `nlp`.
+- **17 node types** (triggers, agents including Router/ReAct/Reflection, actions including MCP/HTTP/Human Approval/Bridge User Reply/conversation memory/**A2A Agent Call**/Code, logic including Condition/Merge/ForEach/Loop/**Sub-Workflow**, knowledge including Knowledge Retrieval, NLP including Intent Classifier/Entity Extractor) with typed `config_schema` objects (type, default, enum, min/max).
 - Drives `DynamicConfigForm` in the UI and server-side config validation on save.
 
 ---

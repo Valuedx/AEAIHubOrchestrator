@@ -16,8 +16,9 @@ import {
   Maximize2,
   ClipboardCheck,
   Bug,
+  Layers,
 } from "lucide-react";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,7 @@ import {
 import { useWorkflowStore } from "@/store/workflowStore";
 import { HITLResumeDialog } from "@/components/toolbar/HITLResumeDialog";
 import { DebugReplayBar } from "@/components/toolbar/DebugReplayBar";
-import type { ExecutionLogOut } from "@/lib/api";
+import { api, type ExecutionLogOut, type ChildInstanceSummary } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // CopyButton — clipboard copy with 2s checkmark confirmation
@@ -156,6 +157,76 @@ const STATUS_COLOR: Record<string, string> = {
   queued: "text-muted-foreground",
 };
 
+// ---------------------------------------------------------------------------
+// ChildInstanceLogs — inline drill-down for sub-workflow child instances
+// ---------------------------------------------------------------------------
+
+function ChildInstanceLogs({
+  childInstanceId,
+  childWorkflowName,
+  workflowDefId,
+}: {
+  childInstanceId: string;
+  childWorkflowName?: string;
+  workflowDefId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [logs, setLogs] = useState<ExecutionLogOut[]>([]);
+  const [childStatus, setChildStatus] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) return;
+    setLoading(true);
+    api.getInstanceDetail(workflowDefId, childInstanceId).then((detail) => {
+      setLogs(detail.logs);
+      setChildStatus(detail.status);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [expanded, childInstanceId, workflowDefId]);
+
+  const StatusIcon = STATUS_ICON[childStatus] ?? CircleDot;
+  const statusColor = STATUS_COLOR[childStatus] ?? "text-muted-foreground";
+
+  return (
+    <div className="border border-dashed rounded-md bg-muted/20">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-accent/50 transition-colors"
+      >
+        <Layers className="h-3 w-3 text-emerald-500 shrink-0" />
+        <span className="text-xs font-medium truncate flex-1">
+          Child: {childWorkflowName || childInstanceId.slice(0, 8)}
+        </span>
+        {childStatus && (
+          <Badge variant="outline" className={`text-[9px] px-1 py-0 shrink-0 ${statusColor}`}>
+            {childStatus}
+          </Badge>
+        )}
+        {expanded ? (
+          <ChevronUp className="h-3 w-3 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="h-3 w-3 text-muted-foreground" />
+        )}
+      </button>
+      {expanded && (
+        <div className="px-2.5 pb-2 space-y-1">
+          <Separator />
+          {loading ? (
+            <p className="text-[10px] text-muted-foreground py-1">Loading child logs...</p>
+          ) : logs.length === 0 ? (
+            <p className="text-[10px] text-muted-foreground py-1">No logs for child instance.</p>
+          ) : (
+            logs.map((log) => (
+              <LogEntry key={log.id} log={log} />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LogEntry({
   log,
   streamingText,
@@ -171,6 +242,18 @@ function LogEntry({
     log.started_at && log.completed_at
       ? `${((new Date(log.completed_at).getTime() - new Date(log.started_at).getTime()) / 1000).toFixed(1)}s`
       : null;
+
+  const isSubWorkflow = log.node_type?.includes("Sub-Workflow");
+  const childInstanceId = isSubWorkflow
+    ? (log.output_json as Record<string, unknown> | null)?.child_instance_id as string | undefined
+    : undefined;
+  const childWorkflowName = isSubWorkflow
+    ? (log.output_json as Record<string, unknown> | null)?.child_workflow_name as string | undefined
+    : undefined;
+  const childWorkflowDefId = isSubWorkflow
+    ? (log.input_json as Record<string, unknown> | null)?.config as Record<string, unknown> | undefined
+    : undefined;
+  const workflowDefIdForChild = childWorkflowDefId?.workflowId as string | undefined;
 
   return (
     <div className="border rounded-md">
@@ -206,6 +289,14 @@ function LogEntry({
             <div className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 rounded p-2 font-mono whitespace-pre-wrap">
               {log.error}
             </div>
+          )}
+          {/* Child instance drill-down for Sub-Workflow nodes */}
+          {childInstanceId && workflowDefIdForChild && (
+            <ChildInstanceLogs
+              childInstanceId={childInstanceId}
+              childWorkflowName={childWorkflowName}
+              workflowDefId={workflowDefIdForChild}
+            />
           )}
           {/* Live token stream — shown for running nodes while the LLM is generating */}
           {log.status === "running" && streamingText && (

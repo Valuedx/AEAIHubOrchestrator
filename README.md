@@ -6,7 +6,7 @@ Portable visual workflow orchestration service built as:
 - `backend/`: FastAPI execution engine + optional Celery workers
 - `shared/`: node registry consumed by both frontend and backend
 
-Key capabilities: multi-provider LLM agents, ReAct tool-calling loops, RAG knowledge bases, NLP nodes (Intent Classifier with hybrid scoring, Entity Extractor with rule-based + LLM fallback), A2A protocol, HITL approval gates, operator pause/resume/cancel, version history with rollback, 8-channel notifications, MCP tool integration, and visual debug replay.
+Key capabilities: multi-provider LLM agents, ReAct tool-calling loops, RAG knowledge bases, NLP nodes (Intent Classifier with hybrid scoring, Entity Extractor with rule-based + LLM fallback), sub-workflows / nested workflow execution, A2A protocol, HITL approval gates, operator pause/resume/cancel, version history with rollback, 8-channel notifications, MCP tool integration, and visual debug replay.
 
 This subtree is designed to be lift-and-shift into its own repository. It does not import code from any parent application. External integrations are runtime contracts only:
 

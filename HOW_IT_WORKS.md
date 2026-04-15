@@ -1,3 +1,5 @@
+> - **V0.9.15 Sub-Workflows (2026-04-14)**: **Sub-Workflow** logic node — execute another saved workflow as a single step. Child workflow runs synchronously inline as a linked `WorkflowInstance` (`parent_instance_id` / `parent_node_id`). Input mapping via `safe_eval` expressions, output filtering by child node IDs. Version policy: `latest` (live definition) or `pinned` (specific snapshot). Recursion protection via `_parent_chain` with configurable `maxDepth` (default 10, max 20). Cancellation cascades from parent to child instances. Frontend: `WorkflowSelect` (searchable, excludes current workflow), `InputMappingEditor`, `OutputNodePicker` custom widgets in `DynamicConfigForm.tsx`; `Layers` icon and version-policy badge on canvas node; drill-down child instance logs in `ExecutionPanel`. New Alembic migration `0011`. See `codewiki/node-types.md` for full config reference.
+>
 > - **V0.9.14 NLP Nodes (2026-04-15)**: **Intent Classifier** and **Entity Extractor** nodes under a new `nlp` category. Intent Classifier supports three modes: `heuristic_only` (lexical + embedding, zero LLM cost), `hybrid` (heuristic with LLM fallback below confidence threshold), and `llm_only`. Optional save-time embedding precomputation (`cacheEmbeddings`) for high-throughput workflows. Entity Extractor supports 5 rule-based extraction types (regex, enum, number, date, free_text) with optional LLM fallback for missing required entities. Intent-entity scoping restricts extraction based on upstream classification results. New `embedding_cache` table (Alembic `0010`). Custom UI editors `IntentListEditor` and `EntityListEditor` in `DynamicConfigForm.tsx`. See `codewiki/node-types.md` for full config reference.
 >
 > - **V0.9.13 Tier 1 UX (2026-04-10)**: **Template gallery** (toolbar **Templates**) — starter workflows, category filters, search, **Import JSON** / **Export current** (`{nodes, edges}`). **Sync run** — toolbar checkbox; `POST /execute` with `sync: true` holds the HTTP connection until a terminal status and returns final context (**200** + `SyncExecuteOut`); default async **202** unchanged. **Debug replay** — after **completed** / **failed** / **cancelled** / **paused**, **Debug** loads checkpoints, timeline scrubber, full `context_json` per step; canvas highlights the checkpoint node. See `SETUP_GUIDE.md` §7.1.2, `TECHNICAL_BLUEPRINT.md` V0.9.13 / §4.5 / §6.10.
@@ -44,8 +46,8 @@
 
 **Purpose:** This document explains how the orchestrator works end-to-end, from building a visual workflow to executing it asynchronously. Each step includes pointers to the relevant **code files** so you can trace behavior or extend it. For contributor-focused topics (custom nodes, `safe_eval`, pause/cancel internals), see `DEVELOPER_GUIDE.md`.
 
-**Version:** 0.9.14
-**Last updated:** 2026-04-15
+**Version:** 0.9.15
+**Last updated:** 2026-04-14
 
 ---
 
@@ -68,7 +70,9 @@
 15. [Step 14 — ForEach Loop Iteration](#15-step-14--foreach-loop-iteration)
 16. [Step 15 — Retry from Failed Node](#16-step-15--retry-from-failed-node)
 17. [Step 17 — External Gateway Bridge](#18-step-17--external-gateway-bridge)
-18. [End-to-End Example](#19-end-to-end-example)
+18. [Step 18 — NLP Nodes](#step-18--nlp-nodes-intent-classifier-and-entity-extractor)
+19. [Step 19 — Sub-Workflow Execution](#step-19--sub-workflow-execution)
+20. [End-to-End Example](#19-end-to-end-example)
 
 ---
 
@@ -1073,6 +1077,76 @@ Source text (from expression)
 ```
 
 The Entity Extractor's `scopeFromNode` points at the Intent Classifier. The `intentEntityMapping` restricts which entities are relevant per intent. Downstream Condition nodes branch on `node_X.intents[0]` or `node_Y.missing_required`.
+
+---
+
+## Step 19 — Sub-Workflow Execution
+
+**Code:** `backend/app/engine/node_handlers.py` → `_handle_sub_workflow`, `_execute_sub_workflow`; `backend/app/engine/dag_runner.py` (child instance creation, cancellation cascade)
+
+The **Sub-Workflow** node (category: `logic`) lets you execute another saved workflow as a single step within the current workflow. This enables modularity — break complex pipelines into reusable building blocks.
+
+### Configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workflowId` | string | ID of the child workflow definition |
+| `versionPolicy` | enum | `latest` (live definition) or `pinned` (specific snapshot) |
+| `pinnedVersion` | integer | Version number when using `pinned` policy |
+| `inputMapping` | object | Map of child trigger keys → parent context expressions |
+| `outputNodeIds` | string[] | Return only these child node outputs (empty = all) |
+| `maxDepth` | integer | Maximum nesting depth (1–20, default 10) |
+
+### Execution Flow
+
+```
+Parent DAG runner reaches Sub-Workflow node
+      │
+      ├─ Load child WorkflowDefinition (by workflowId)
+      │    ├─ versionPolicy == "latest" → use live graph_json
+      │    └─ versionPolicy == "pinned" → load from workflow_snapshots
+      │
+      ├─ Recursion check
+      │    ├─ Is workflowId already in _parent_chain? → FAIL (cycle)
+      │    └─ len(_parent_chain) >= maxDepth? → FAIL (depth exceeded)
+      │
+      ├─ Build child trigger_payload
+      │    └─ For each key in inputMapping: safe_eval(expression, parent_context)
+      │
+      ├─ Create child WorkflowInstance
+      │    ├─ parent_instance_id = parent.id
+      │    ├─ parent_node_id = current node ID
+      │    └─ context_json._parent_chain = [ancestor IDs...]
+      │
+      ├─ execute_graph(child_instance) — synchronous, inline
+      │
+      ├─ Check child status
+      │    ├─ completed → extract and return outputs
+      │    ├─ suspended → FAIL (HITL in child not supported v1)
+      │    └─ failed/cancelled → FAIL with child error details
+      │
+      └─ Return { child_instance_id, child_workflow_name,
+                  child_status, outputs: {...} }
+```
+
+### Parent-Child Instance Linking
+
+Each child execution creates a separate `WorkflowInstance` row linked via:
+- `parent_instance_id` — FK to the parent instance
+- `parent_node_id` — the Sub-Workflow node's ID in the parent graph
+
+This enables:
+- **Independent logs:** Each child has its own `execution_logs` entries
+- **Drill-down debugging:** The Execution Panel shows a collapsible child log section under Sub-Workflow nodes
+- **Cancellation cascade:** When a parent is cancelled, all running/queued children are also cancelled
+
+### Frontend
+
+- **WorkflowSelect** — searchable dropdown that lists all workflows (excluding the current one to prevent self-reference)
+- **InputMappingEditor** — key-value editor for mapping child trigger keys to parent context expressions
+- **OutputNodePicker** — fetches child workflow nodes and lets you select which outputs to return
+- **Canvas badge** — shows `latest` or `v{N}` version policy on the node card
+- **Execution Panel** — Sub-Workflow log entries with `child_instance_id` in the output render an expandable child instance section with its own logs
 
 ---
 

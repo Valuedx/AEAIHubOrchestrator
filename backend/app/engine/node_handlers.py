@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 def dispatch_node(
-    node_data: dict, context: dict[str, Any], tenant_id: str
+    node_data: dict, context: dict[str, Any], tenant_id: str,
+    db: Any = None,
 ) -> dict[str, Any]:
     # ── Resolve {{ env.* }} references in config (Component 6) ──
     try:
@@ -59,6 +60,8 @@ def dispatch_node(
         return _handle_llm_router(node_data, context, tenant_id)
     if label == "A2A Agent Call":
         return _handle_a2a_call(node_data, context, tenant_id)
+    if label == "Sub-Workflow":
+        return _handle_sub_workflow(node_data, context, tenant_id, db)
     if label == "Reflection":
         from app.engine.reflection_handler import _handle_reflection
         return _handle_reflection(node_data, context, tenant_id)
@@ -829,6 +832,224 @@ def _handle_knowledge_retrieval(
         "context_text": context_text,
         "query": query,
         "chunk_count": len(chunks),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sub-Workflow — nested workflow execution
+# ---------------------------------------------------------------------------
+
+def _handle_sub_workflow(
+    node_data: dict, context: dict[str, Any], tenant_id: str,
+    db: Any = None,
+) -> dict[str, Any]:
+    """Execute another saved workflow as a child instance and return its outputs.
+
+    Creates a real WorkflowInstance for the child so it gets its own logs,
+    checkpoints, and debuggability.  The child runs synchronously within the
+    parent's execution thread.
+    """
+    from app.engine.safe_eval import safe_eval, SafeEvalError
+
+    config = node_data.get("config", {})
+    workflow_id = config.get("workflowId", "").strip()
+    version_policy = config.get("versionPolicy", "latest")
+    pinned_version = int(config.get("pinnedVersion", 1))
+    input_mapping: dict = config.get("inputMapping", {})
+    output_node_ids: list = config.get("outputNodeIds", [])
+    max_depth = int(config.get("maxDepth", 10))
+
+    if not workflow_id:
+        raise ValueError("Sub-Workflow: workflowId is not configured")
+
+    need_own_session = db is None
+    if need_own_session:
+        from app.database import SessionLocal
+        db = SessionLocal()
+
+    try:
+        return _execute_sub_workflow(
+            db=db,
+            context=context,
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            version_policy=version_policy,
+            pinned_version=pinned_version,
+            input_mapping=input_mapping,
+            output_node_ids=output_node_ids,
+            max_depth=max_depth,
+        )
+    finally:
+        if need_own_session:
+            db.close()
+
+
+def _execute_sub_workflow(
+    db: Any,
+    context: dict[str, Any],
+    tenant_id: str,
+    workflow_id: str,
+    version_policy: str,
+    pinned_version: int,
+    input_mapping: dict,
+    output_node_ids: list,
+    max_depth: int,
+) -> dict[str, Any]:
+    from app.engine.safe_eval import safe_eval, SafeEvalError
+    from app.models.workflow import WorkflowDefinition, WorkflowSnapshot, WorkflowInstance
+
+    # 1. Load the workflow definition
+    wf_def = db.query(WorkflowDefinition).filter_by(
+        id=workflow_id, tenant_id=tenant_id,
+    ).first()
+    if not wf_def:
+        raise ValueError(f"Sub-Workflow: workflow definition '{workflow_id}' not found")
+
+    # 2. Resolve graph_json based on version policy
+    if version_policy == "pinned":
+        if pinned_version == wf_def.version:
+            graph_json = wf_def.graph_json
+        else:
+            snap = db.query(WorkflowSnapshot).filter_by(
+                workflow_def_id=workflow_id, version=pinned_version,
+            ).first()
+            if not snap:
+                raise ValueError(
+                    f"Sub-Workflow: snapshot version {pinned_version} not found "
+                    f"for workflow '{wf_def.name}'"
+                )
+            graph_json = snap.graph_json
+    else:
+        graph_json = wf_def.graph_json
+
+    # 3. Recursion protection: walk the parent chain
+    parent_chain: list[str] = list(context.get("_parent_chain", []))
+    current_wf_id = str(context.get("_workflow_def_id", ""))
+    if current_wf_id:
+        full_chain = parent_chain + [current_wf_id]
+    else:
+        full_chain = parent_chain
+
+    if str(workflow_id) in full_chain:
+        raise ValueError(
+            f"Sub-Workflow: recursive cycle detected — workflow '{wf_def.name}' "
+            f"is already in the call chain"
+        )
+    if len(full_chain) >= max_depth:
+        raise ValueError(
+            f"Sub-Workflow: maximum nesting depth ({max_depth}) exceeded"
+        )
+
+    # 4. Build trigger_payload from input mapping
+    trigger_payload: dict[str, Any] = {}
+    if input_mapping:
+        upstream = {k: v for k, v in context.items() if k.startswith("node_")}
+        eval_env = {
+            "output": upstream,
+            "context": context,
+            "trigger": context.get("trigger", {}),
+        }
+        eval_env.update(upstream)
+        if "_loop_item" in context:
+            eval_env[context.get("_loop_item_var", "item")] = context["_loop_item"]
+
+        for child_key, expr in input_mapping.items():
+            if not isinstance(expr, str) or not expr.strip():
+                continue
+            try:
+                trigger_payload[child_key] = safe_eval(expr.strip(), eval_env)
+            except SafeEvalError as exc:
+                logger.warning(
+                    "Sub-Workflow inputMapping key '%s' expression rejected: %s",
+                    child_key, exc,
+                )
+                trigger_payload[child_key] = None
+
+    # 5. Create the child WorkflowInstance
+    parent_instance_id = context.get("_instance_id")
+    parent_node_id = context.get("_current_node_id")
+
+    child_instance = WorkflowInstance(
+        tenant_id=tenant_id,
+        workflow_def_id=wf_def.id,
+        status="queued",
+        trigger_payload=trigger_payload,
+        definition_version_at_start=wf_def.version if version_policy == "latest" else pinned_version,
+        parent_instance_id=parent_instance_id,
+        parent_node_id=parent_node_id,
+    )
+    db.add(child_instance)
+    db.commit()
+    db.refresh(child_instance)
+
+    child_id = str(child_instance.id)
+    logger.info(
+        "Sub-Workflow: created child instance %s for workflow '%s' (parent=%s node=%s)",
+        child_id, wf_def.name, parent_instance_id, parent_node_id,
+    )
+
+    # 6. Inject parent chain into the child's context for nested recursion checks
+    child_instance.context_json = {
+        "_parent_chain": full_chain,
+        "_workflow_def_id": str(workflow_id),
+    }
+    db.commit()
+
+    # 7. Execute the child workflow
+    from app.engine.dag_runner import execute_graph
+    execute_graph(db, child_id)
+
+    # 8. Read the result
+    db.refresh(child_instance)
+    child_status = child_instance.status
+
+    if child_status == "suspended":
+        raise ValueError(
+            f"Sub-Workflow: child workflow '{wf_def.name}' suspended (HITL). "
+            f"Human Approval nodes inside sub-workflows are not supported in v1. "
+            f"Child instance: {child_id}"
+        )
+
+    if child_status == "failed":
+        from app.models.workflow import ExecutionLog
+        failed_log = (
+            db.query(ExecutionLog)
+            .filter_by(instance_id=child_instance.id, status="failed")
+            .first()
+        )
+        error_detail = failed_log.error if failed_log else "unknown error"
+        raise ValueError(
+            f"Sub-Workflow: child workflow '{wf_def.name}' failed — {error_detail}"
+        )
+
+    if child_status == "cancelled":
+        raise ValueError(
+            f"Sub-Workflow: child workflow '{wf_def.name}' was cancelled"
+        )
+
+    # 9. Extract child outputs
+    child_context = child_instance.context_json or {}
+    if output_node_ids:
+        result = {
+            k: v for k, v in child_context.items()
+            if k in output_node_ids
+        }
+    else:
+        result = {
+            k: v for k, v in child_context.items()
+            if k.startswith("node_") or k == "trigger"
+        }
+
+    logger.info(
+        "Sub-Workflow: child %s completed with %d output keys (workflow='%s')",
+        child_id, len(result), wf_def.name,
+    )
+
+    return {
+        "child_instance_id": child_id,
+        "child_workflow_name": wf_def.name,
+        "child_status": child_status,
+        "outputs": result,
     }
 
 

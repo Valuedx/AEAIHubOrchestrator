@@ -77,6 +77,8 @@ export interface InstanceOut {
   created_at: string;
   /** WorkflowDefinition.version when this run was queued (null for older instances). */
   definition_version_at_start?: number | null;
+  parent_instance_id?: string | null;
+  parent_node_id?: string | null;
 }
 
 /** Response when `sync: true` on execute — HTTP 200. */
@@ -101,8 +103,19 @@ export interface ExecutionLogOut {
   completed_at: string | null;
 }
 
+export interface ChildInstanceSummary {
+  id: string;
+  workflow_def_id: string;
+  workflow_name: string | null;
+  parent_node_id: string | null;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 export interface InstanceDetailOut extends InstanceOut {
   logs: ExecutionLogOut[];
+  children?: ChildInstanceSummary[];
 }
 
 export interface ToolOut {

@@ -1,5 +1,7 @@
 # AE AI Hub — Agentic Orchestrator Developer Guide
 
+> - **V0.9.15 (2026-04-14):** **§27** — Sub-Workflows (nested workflow execution). `_handle_sub_workflow` + `_execute_sub_workflow` in `node_handlers.py`. Child `WorkflowInstance` linked via `parent_instance_id` / `parent_node_id` (Alembic `0011`). Input mapping via `safe_eval`; output filtering by node IDs. Version policy (`latest` / `pinned`). Recursion protection via `_parent_chain`. Cancellation cascade. Frontend: `WorkflowSelect`, `InputMappingEditor`, `OutputNodePicker` widgets; drill-down child logs in `ExecutionPanel`. See `codewiki/node-types.md` §Sub-Workflow.
+>
 > - **V0.9.14 (2026-04-15):** **§26** — NLP nodes (Intent Classifier + Entity Extractor). `intent_classifier.py` — hybrid scoring (lexical + embedding cosine + LLM fallback); three modes (`hybrid`, `heuristic_only`, `llm_only`). `entity_extractor.py` — rule-based extraction (regex/enum/number/date/free_text) with LLM fallback for missing required entities; intent-entity scoping via `scopeFromNode`. `embedding_cache_helper.py` — DB-backed embedding cache with `get_or_embed()` (batch query + upsert) and `precompute_node_embeddings()` called at save time. New `EmbeddingCache` model + Alembic `0010_add_embedding_cache.py` (pgvector VECTOR column, HNSW index, RLS). Frontend: `IntentListEditor` / `EntityListEditor` custom components in `DynamicConfigForm.tsx`; `nlp` category (indigo) in palette and canvas. `visibleWhen` supports boolean values. See `codewiki/node-types.md` §NLP nodes.
 >
 > - **V0.9.13 (2026-04-10):** **Templates** — add or edit entries in `frontend/src/lib/templates/index.ts` (import graphs from `example*.ts` or inline `nodes`/`edges`). **Sync execute** — `app/api/workflows.py` `execute_workflow` async branch; `schemas.py` `SyncExecuteOut`, `ExecuteRequest.sync` / `sync_timeout`. **Debug replay** — `workflowStore` checkpoint actions; `DebugReplayBar.tsx`; `api.listCheckpoints` / `getCheckpointDetail`. See `TECHNICAL_BLUEPRINT.md` V0.9.13.
@@ -10,8 +12,8 @@
 >
 > - **Earlier sections:** Custom nodes (§1), `safe_eval` (§2), ReAct (§3), ForEach / retry / HITL (§4), vault (§5), conversational memory (§6), through Loop node (§22).
 
-**Version:** 0.9.14
-**Last updated:** 2026-04-15
+**Version:** 0.9.15
+**Last updated:** 2026-04-14
 
 Welcome to the Developer Guide! 🚀 
 
@@ -1460,5 +1462,100 @@ Both are wired into `DynamicConfigForm` before the generic array/JSON fallback, 
 | `frontend/src/components/nodes/AgenticNode.tsx` | `Target`, `ListFilter` icons; `nlp` category styles |
 | `frontend/src/lib/expressionVariables.ts` | Output fields for both nodes |
 | `frontend/src/lib/validateWorkflow.ts` | Validation rules for both nodes |
+
+**Run migration:** `alembic upgrade head`
+
+---
+
+## 🧩 27. Sub-Workflows — Nested Workflow Execution (V0.9.15)
+
+The **Sub-Workflow** node executes another saved workflow as a single step. This enables workflow composition — build reusable modules (e.g. an "Email Validation" workflow) and embed them inside larger pipelines.
+
+### 27.1 How It Works
+
+When the DAG runner reaches a Sub-Workflow node:
+
+1. **Load child definition** — resolves `workflowId` to a `WorkflowDefinition`. If `versionPolicy` is `pinned`, loads the graph from `workflow_snapshots` at the specified version.
+2. **Recursion check** — the engine maintains `_parent_chain` (a list of ancestor workflow definition IDs). If the child's ID already appears in the chain (cycle) or the chain length exceeds `maxDepth`, execution fails.
+3. **Build trigger payload** — each key in `inputMapping` is evaluated as a `safe_eval` expression against the parent's context. The result becomes the child's `trigger_payload`.
+4. **Create child instance** — a new `WorkflowInstance` row with `parent_instance_id` and `parent_node_id` linking it to the parent.
+5. **Execute inline** — `execute_graph()` runs the child workflow synchronously within the parent's thread. The child gets its own execution logs and checkpoints.
+6. **Return outputs** — if `outputNodeIds` is non-empty, only those child node outputs are returned. Otherwise all `node_*` and `trigger` context keys are included.
+
+```python
+return {
+    "child_instance_id": str(child_instance.id),
+    "child_workflow_name": child_def.name,
+    "child_status": child_instance.status,
+    "outputs": filtered_outputs,
+}
+```
+
+### 27.2 Recursion Protection
+
+```
+Parent workflow A
+  └─ Sub-Workflow node → executes workflow B
+       └─ Sub-Workflow node → executes workflow C
+            └─ Sub-Workflow node → executes workflow A  ← BLOCKED (cycle!)
+```
+
+The `_parent_chain` grows by one entry per nesting level. `_workflow_def_id` tracks the current workflow's ID separately. Before executing a child, the engine checks:
+- **Cycle detection:** `child_workflow_id in full_chain` → fail
+- **Depth limit:** `len(full_chain) >= maxDepth` → fail
+
+### 27.3 Cancellation Cascade
+
+When a parent instance is cancelled (via `POST .../cancel`), `_finalize_cancelled` in `dag_runner.py` queries all child `WorkflowInstance` rows where `parent_instance_id == instance.id` and `status in ('queued', 'running')`, and marks them as cancelled too.
+
+### 27.4 Frontend Widgets
+
+Three custom UI components in `DynamicConfigForm.tsx`:
+
+| Widget | Purpose |
+|--------|---------|
+| `WorkflowSelect` | Searchable dropdown of available workflows; excludes the current workflow via `currentWorkflowId` to prevent self-reference |
+| `InputMappingEditor` | Key-value editor where keys are child trigger field names and values are parent context expressions (e.g. `node_2.response`) |
+| `OutputNodePicker` | Fetches the child workflow's nodes and renders checkboxes; selected IDs filter which child outputs are returned to the parent |
+
+Canvas: the Sub-Workflow node shows a `Layers` icon and a badge with the version policy (`latest` or `v{N}`).
+
+Execution Panel: when a Sub-Workflow log entry's `output_json` contains `child_instance_id`, a `ChildInstanceLogs` component renders the child's execution logs in a collapsible section below the parent log entry.
+
+### 27.5 Validation
+
+**Server-side** (`config_validator.py`):
+- `workflowId` must be non-empty
+- `versionPolicy` must be `latest` or `pinned`
+- `pinnedVersion` must be a positive integer when policy is `pinned`
+- `inputMapping` must be an object
+- `outputNodeIds` must be an array of strings
+
+**Client-side** (`validateWorkflow.ts`):
+- `workflowId` is a required field (blocks execution if empty)
+- `pinnedVersion` must be a positive integer when `versionPolicy` is `pinned`
+
+### 27.6 Limitations (v1)
+
+- **HITL in child:** If the child workflow encounters a Human Approval node, the Sub-Workflow node fails. HITL bubbling (surfacing child approval to parent caller) is planned for a future release.
+- **Async child execution:** Child workflows always run synchronously inline. Long-running children block the parent thread.
+
+### 27.7 Files Added / Changed
+
+| File | Change |
+|---|---|
+| `backend/app/models/workflow.py` | `parent_instance_id`, `parent_node_id` columns + `children` relationship on `WorkflowInstance` |
+| `backend/alembic/versions/0011_add_subworkflow_parent_tracking.py` | New — migration for parent tracking columns + index |
+| `backend/app/engine/node_handlers.py` | `_handle_sub_workflow`, `_execute_sub_workflow` + dispatch line |
+| `backend/app/engine/dag_runner.py` | `db` param threading, `_parent_chain` initialization, cancellation cascade |
+| `backend/app/engine/config_validator.py` | `_validate_sub_workflow()` |
+| `backend/app/api/schemas.py` | `parent_instance_id`, `parent_node_id` on `InstanceOut`; `ChildInstanceSummary`; `children` on `InstanceDetailOut` |
+| `backend/app/api/workflows.py` | Child instance query in `get_instance_detail` |
+| `shared/node_registry.json` | `sub_workflow` type under `logic` category |
+| `frontend/src/lib/api.ts` | `parent_instance_id`, `parent_node_id`, `ChildInstanceSummary`, `children` types |
+| `frontend/src/components/sidebar/DynamicConfigForm.tsx` | `WorkflowSelect`, `InputMappingEditor`, `OutputNodePicker` |
+| `frontend/src/components/nodes/AgenticNode.tsx` | `Layers` icon + version-policy badge |
+| `frontend/src/components/toolbar/ExecutionPanel.tsx` | `ChildInstanceLogs` drill-down component |
+| `frontend/src/lib/validateWorkflow.ts` | `"Sub-Workflow": ["workflowId"]` + `pinnedVersion` validation |
 
 **Run migration:** `alembic upgrade head`

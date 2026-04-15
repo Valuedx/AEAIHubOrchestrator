@@ -31,6 +31,7 @@ from app.api.schemas import (
     GraphAtVersionOut,
     CheckpointOut,
     CheckpointDetailOut,
+    ChildInstanceSummary,
 )
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
@@ -745,7 +746,30 @@ def get_instance_detail(
         .all()
     )
 
+    # Fetch child sub-workflow instances
+    child_instances = (
+        db.query(WorkflowInstance)
+        .filter(WorkflowInstance.parent_instance_id == instance.id)
+        .order_by(WorkflowInstance.created_at)
+        .all()
+    )
+    children_out = []
+    for child in child_instances:
+        wf_name = None
+        if child.definition:
+            wf_name = child.definition.name
+        children_out.append(ChildInstanceSummary(
+            id=child.id,
+            workflow_def_id=child.workflow_def_id,
+            workflow_name=wf_name,
+            parent_node_id=child.parent_node_id,
+            status=child.status,
+            started_at=child.started_at,
+            completed_at=child.completed_at,
+        ))
+
     return InstanceDetailOut(
         **{c.name: getattr(instance, c.name) for c in instance.__table__.columns},
         logs=[ExecutionLogOut.model_validate(log) for log in logs],
+        children=children_out,
     )

@@ -71,12 +71,26 @@ class WorkflowInstance(Base):
     cancel_requested = Column(Boolean, nullable=False, default=False)
     # Set by POST …/pause; runner checks between nodes and sets status paused.
     pause_requested = Column(Boolean, nullable=False, default=False)
+    # Sub-workflow lineage: links a child instance back to the parent that spawned it.
+    parent_instance_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_instances.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    parent_node_id = Column(String(128), nullable=True)
 
     definition = relationship("WorkflowDefinition", back_populates="instances")
     execution_logs = relationship("ExecutionLog", back_populates="instance")
+    children = relationship(
+        "WorkflowInstance",
+        backref="parent_instance_rel",
+        foreign_keys=[parent_instance_id],
+        lazy="dynamic",
+    )
 
     __table_args__ = (
         Index("ix_wf_inst_tenant_status", "tenant_id", "status"),
+        Index("ix_wf_inst_parent", "parent_instance_id"),
     )
 
 
