@@ -162,8 +162,8 @@ export interface ConversationEpisodeOut {
   last_activity_at: string;
   archived_at: string | null;
   archived_memory_record_id: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface ArchiveConversationEpisodeOut {

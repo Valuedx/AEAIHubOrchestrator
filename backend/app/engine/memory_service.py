@@ -223,44 +223,41 @@ def get_active_episode(
     session: ConversationSession,
     lock: bool = False,
 ) -> ConversationEpisode | None:
-    if not hasattr(db, "query"):
-        return None
-    active_episode_id = getattr(session, "active_episode_id", None)
-    query = db.query(ConversationEpisode).filter_by(
-        session_ref_id=session.id,
-        status="active",
-    )
+    active_episode_id = session.active_episode_id
+
+    # Fast path: session already tracks its active episode by ID.
     if active_episode_id:
-        query = query.filter(ConversationEpisode.id == active_episode_id)
+        q = (
+            db.query(ConversationEpisode)
+            .filter_by(id=active_episode_id, session_ref_id=session.id, status="active")
+        )
+        if lock:
+            q = q.with_for_update()
+        episode = q.first()
+        if episode is not None:
+            return episode
+        # Pointer is stale — fall through to full scan below.
+
+    # Full scan: find the most recent active episode for this session.
+    q = (
+        db.query(ConversationEpisode)
+        .filter_by(session_ref_id=session.id, status="active")
+        .order_by(ConversationEpisode.created_at.desc())
+    )
     if lock:
-        query = query.with_for_update()
-    query = query.order_by(ConversationEpisode.created_at.desc())
-    episode = query.first() if hasattr(query, "first") else ((query.all() or [None])[0])
-    if episode is not None and not hasattr(episode, "start_turn"):
-        episode = None
-    if episode:
-        if active_episode_id != episode.id:
-            setattr(session, "active_episode_id", episode.id)
+        q = q.with_for_update()
+    episode = q.first()
+
+    if episode is not None:
+        # Sync the session pointer if it was absent or stale.
+        if session.active_episode_id != episode.id:
+            session.active_episode_id = episode.id
             session.updated_at = _utcnow()
         return episode
 
-    fallback = db.query(ConversationEpisode).filter_by(
-        session_ref_id=session.id,
-        status="active",
-    )
-    if lock:
-        fallback = fallback.with_for_update()
-    fallback = fallback.order_by(ConversationEpisode.created_at.desc())
-    episode = fallback.first() if hasattr(fallback, "first") else ((fallback.all() or [None])[0])
-    if episode is not None and not hasattr(episode, "start_turn"):
-        episode = None
-    if episode:
-        setattr(session, "active_episode_id", episode.id)
-        session.updated_at = _utcnow()
-        return episode
-
+    # No active episode found — clear stale pointer if present.
     if active_episode_id is not None:
-        setattr(session, "active_episode_id", None)
+        session.active_episode_id = None
         session.updated_at = _utcnow()
     return None
 
@@ -1559,6 +1556,37 @@ def build_history_block(
     return summary_block, recent
 
 
+def _empty_memory_debug(
+    policy: "EffectiveMemoryPolicy",
+    history_node_id: str | None,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Return a fully-keyed memory debug dict with zeroed-out history fields."""
+    return {
+        "enabled": bool(policy.enabled),
+        "profile_id": policy.selected_profile_id,
+        "history_node_id": history_node_id,
+        "session_id": session_id,
+        "active_episode_id": None,
+        "summary_used": False,
+        "summary_through_turn": 0,
+        "recent_turn_count": 0,
+        "recent_turn_ids": [],
+        "recent_token_budget": policy.recent_token_budget,
+        "scopes": policy.scopes,
+        "include_entity_memory": policy.include_entity_memory,
+        "history_order": policy.history_order,
+        "summary_trigger_messages": policy.summary_trigger_messages,
+        "summary_recent_turns": policy.summary_recent_turns,
+        "summary_max_tokens": policy.summary_max_tokens,
+        "summary_provider": policy.summary_provider,
+        "summary_model": policy.summary_model,
+        "embedding_provider": policy.embedding_provider,
+        "embedding_model": policy.embedding_model,
+        "vector_store": policy.vector_store,
+    }
+
+
 def assemble_history_text(
     db: Session,
     *,
@@ -1577,29 +1605,11 @@ def assemble_history_text(
     )
     history_node_id, history_output = _find_history_output(context, policy.history_node_id or "")
     if not history_output:
-        return "(no prior messages)", {
-            "enabled": bool(policy.enabled),
-            "profile_id": policy.selected_profile_id,
-            "history_node_id": history_node_id,
-            "session_id": "",
-            "summary_used": False,
-            "recent_turn_count": 0,
-            "recent_turn_ids": [],
-            "recent_token_budget": policy.recent_token_budget,
-        }
+        return "(no prior messages)", _empty_memory_debug(policy, history_node_id)
 
     session_id = str(history_output.get("session_id", "") or "")
     if not session_id:
-        return "(no prior messages)", {
-            "enabled": bool(policy.enabled),
-            "profile_id": policy.selected_profile_id,
-            "history_node_id": history_node_id,
-            "session_id": "",
-            "summary_used": False,
-            "recent_turn_count": 0,
-            "recent_turn_ids": [],
-            "recent_token_budget": policy.recent_token_budget,
-        }
+        return "(no prior messages)", _empty_memory_debug(policy, history_node_id)
 
     session = get_or_create_session(db, tenant_id=tenant_id, session_id=session_id)
     active_episode = get_active_episode(db, session=session)

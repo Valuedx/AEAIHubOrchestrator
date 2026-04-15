@@ -153,6 +153,7 @@ const STATUS_COLOR: Record<string, string> = {
   completed: "text-green-500",
   failed: "text-red-500",
   suspended: "text-yellow-500",
+  paused: "text-cyan-500",
   cancelled: "text-orange-500",
   queued: "text-muted-foreground",
 };

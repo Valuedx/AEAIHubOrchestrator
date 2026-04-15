@@ -85,6 +85,8 @@ const EXPRESSION_KEYS = new Set([
   "smtpPass",
   "utteranceExpression",
   "sourceExpression",
+  "summaryExpression",
+  "titleExpression",
 ]);
 
 // Fields that accept a bare node ID (e.g. node_3)

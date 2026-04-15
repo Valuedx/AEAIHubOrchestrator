@@ -287,8 +287,9 @@ class ConversationEpisodeOut(BaseModel):
     last_activity_at: datetime
     archived_at: datetime | None
     archived_memory_record_id: uuid.UUID | None
-    created_at: datetime
-    updated_at: datetime
+    # The migration declares these nullable=True; use Optional to match the DB contract.
+    created_at: datetime | None
+    updated_at: datetime | None
 
     model_config = {"from_attributes": True}
 

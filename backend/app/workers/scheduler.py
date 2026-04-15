@@ -137,19 +137,40 @@ def prune_old_snapshots():
 
 @celery_app.task(name="orchestrator.archive_stale_conversation_episodes")
 def archive_stale_conversation_episodes():
-    """Archive inactive active episodes so working memory stays issue-scoped."""
+    """Archive inactive active episodes so working memory stays issue-scoped.
+
+    Candidates are collected per-tenant (up to 50 each) so no single tenant
+    can monopolise the global 500-row archival window.
+    """
+    _PER_TENANT_LIMIT = 50
+    _GLOBAL_LIMIT = 500
+
     db = SessionLocal()
     try:
-        candidate_ids = [
+        # Collect distinct tenants that have active episodes.
+        tenant_ids = [
             row[0]
-            for row in (
+            for row in db.query(ConversationEpisode.tenant_id)
+            .filter(ConversationEpisode.status == "active")
+            .distinct()
+            .all()
+        ]
+
+        candidate_ids: list = []
+        for tenant_id in tenant_ids:
+            if len(candidate_ids) >= _GLOBAL_LIMIT:
+                break
+            rows = (
                 db.query(ConversationEpisode.id)
-                .filter(ConversationEpisode.status == "active")
+                .filter(
+                    ConversationEpisode.tenant_id == tenant_id,
+                    ConversationEpisode.status == "active",
+                )
                 .order_by(ConversationEpisode.last_activity_at.asc())
-                .limit(500)
+                .limit(_PER_TENANT_LIMIT)
                 .all()
             )
-        ]
+            candidate_ids.extend(row[0] for row in rows)
     except Exception:
         logger.exception("Error listing stale conversation episode candidates")
         return
