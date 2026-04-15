@@ -18,6 +18,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -140,9 +141,11 @@ class MemoryRecord(Base):
     entity_key = Column(String(256), nullable=True, index=True)
     source_instance_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     source_node_id = Column(String(128), nullable=True)
+    dedupe_key = Column(String(128), nullable=True)
     embedding_provider = Column(String(32), nullable=False, default="openai")
     embedding_model = Column(String(128), nullable=False, default="text-embedding-3-small")
     vector_store = Column(String(32), nullable=False, default="pgvector")
+    embedding = Column(Vector(), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     session = relationship("ConversationSession", back_populates="memory_records")
@@ -150,6 +153,7 @@ class MemoryRecord(Base):
     __table_args__ = (
         Index("ix_mem_record_scope_lookup", "tenant_id", "scope", "scope_key"),
         Index("ix_mem_record_entity_lookup", "tenant_id", "entity_type", "entity_key"),
+        Index("ux_mem_record_tenant_dedupe", "tenant_id", "dedupe_key", unique=True),
     )
 
 

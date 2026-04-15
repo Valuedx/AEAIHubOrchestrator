@@ -67,9 +67,11 @@ AE AI Hub Orchestrator is a **no-code visual DAG workflow builder** for agentic 
 | **Knowledge API** | `api/knowledge.py` | KB CRUD, document upload, search |
 | **Tools API** | `api/tools.py` | MCP tool listing |
 | **Conversations API** | `api/conversations.py` | Chat session management |
+| **Memory API** | `api/memory.py` | Memory profile CRUD plus memory/entity inspection |
 | **A2A API** | `api/a2a.py` | Agent-to-Agent protocol, keys, discovery |
 | **DAG engine** | `engine/dag_runner.py` | Topological execution, loop/forEach, parallelism |
 | **Node handlers** | `engine/node_handlers.py` | `dispatch_node` — routes to category/label-specific handler |
+| **Memory service** | `engine/memory_service.py` | Policy resolution, summaries, turn packing, semantic retrieval, promotion |
 | **Notification handler** | `engine/notification_handler.py` | Channel-aware notification dispatch (Slack, Teams, Discord, Telegram, WhatsApp, PagerDuty, email, generic webhook) |
 | **Intent Classifier** | `engine/intent_classifier.py` | Hybrid intent scoring (lexical + embedding + optional LLM fallback) |
 | **Entity Extractor** | `engine/entity_extractor.py` | Rule-based entity extraction (regex, enum, number, date, free_text) with LLM fallback |
@@ -160,9 +162,29 @@ The DAG engine (`engine/dag_runner.py`) performs **topological execution** of th
 3. **Execute** each node via `dispatch_node`, passing in a context dict containing outputs from upstream nodes.
 4. **Special control flow**: ForEach (fan-out / fan-in), Loop (iteration with break condition), Merge (join), Condition (branching).
 5. **Sub-workflow execution**: Sub-Workflow nodes load a child workflow definition, create a linked child `WorkflowInstance`, execute it synchronously inline, and return the child's outputs to the parent context. Recursion protection via `_parent_chain` prevents cycles and depth limit violations.
-6. **Stream** execution events (node start, node done, errors) to SSE subscribers.
-7. **Persist** execution logs to the `execution_logs` table.
-8. **Checkpointing**: HITL nodes (Human Approval, Bridge User Reply) pause the instance and await callback.
+6. **Advanced memory assembly**: Agent/ReAct, router, and classifier nodes call `memory_service.py` to resolve policy, load summaries and recent turns, retrieve semantic/entity memory, and capture `memory_debug`.
+7. **Stream** execution events (node start, node done, errors) to SSE subscribers.
+8. **Persist** execution logs to the `execution_logs` table.
+9. **Checkpointing**: HITL nodes (Human Approval, Bridge User Reply) pause the instance and await callback.
+
+## Memory architecture
+
+The advanced memory subsystem sits beside the DAG engine and is used whenever a workflow includes conversation-state nodes or memory-enabled agent nodes.
+
+- `conversation_sessions` stores session metadata and rolling summary state.
+- `conversation_messages` stores append-only user/assistant turns.
+- `memory_profiles` stores tenant/workflow policy for prompt packing and promotion.
+- `memory_records` stores semantic and episodic memory plus embeddings.
+- `entity_facts` stores active relational entity memory with last-write-wins semantics.
+
+At runtime:
+
+1. `Load Conversation State` resolves the session and exposes the transcript summary to downstream nodes.
+2. `LLM Agent` and `ReAct Agent` build turn-aware prompts from profile instructions, summary, recent turns, entity facts, semantic hits, latest user message, and non-memory workflow context.
+3. `LLM Router` and `Intent Classifier` use the same token-budgeted history packer instead of fixed message-count windows.
+4. `Save Conversation State` appends normalized turns, refreshes rolling summaries, promotes entity facts, and promotes episodic memory for successful outputs only.
+
+See [Memory Management](memory-management.md) for the full storage and runtime contract.
 
 ## Multi-tenancy
 

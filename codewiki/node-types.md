@@ -47,7 +47,7 @@ Starts a workflow on a cron schedule.
 
 ### LLM Agent (`llm_agent`)
 
-Single-turn LLM call with a system prompt.
+Single-turn LLM call with optional turn-aware advanced memory assembly.
 
 | Config field | Type | Default | Description |
 |-------------|------|---------|-------------|
@@ -56,8 +56,17 @@ Single-turn LLM call with a system prompt.
 | `systemPrompt` | string | `""` | Jinja2 template. Use `{{ trigger.field }}` or `{{ node_2.response }}` |
 | `temperature` | number | `0.7` | 0 = deterministic, 2 = very creative |
 | `maxTokens` | integer | `4096` | Maximum output tokens |
+| `historyNodeId` | string | `""` | Optional `Load Conversation State` node ID. Empty = auto-detect first upstream history node |
+| `memoryEnabled` | boolean | `true` | Enable advanced memory assembly. False falls back to plain structured-context prompting |
+| `memoryProfileId` | string | `""` | Optional explicit memory profile override |
+| `memoryScopes` | string[] | `[]` | Optional scope override for semantic retrieval |
+| `maxRecentTokens` | integer | `1200` | Token budget for recent raw turns |
+| `maxSemanticHits` | integer | `4` | Max semantic or episodic memory hits to inject |
+| `includeEntityMemory` | boolean | `true` | Include active entity facts from the resolved profile |
 
-**Output:** `{ response: string }`
+**Output:** `{ response, usage, provider, model, memory_debug }`
+
+When advanced memory is enabled, the runtime assembles prompts from profile instructions, rolling summary, recent turns, entity facts, semantic hits, the latest user message, and non-memory workflow context.
 
 ### ReAct Agent (`react_agent`)
 
@@ -70,8 +79,17 @@ Iterative Reason-Act-Observe loop with MCP tool access.
 | `systemPrompt` | string | `""` | Jinja2 template |
 | `maxIterations` | integer | `10` | Max Reason-Act cycles |
 | `tools` | string[] | `[]` | MCP tool names; empty = auto-discover all |
+| `temperature` | number | `0.7` | Sampling temperature used on each reasoning step |
+| `maxTokens` | integer | `4096` | Maximum output tokens for each reasoning step |
+| `historyNodeId` | string | `""` | Optional `Load Conversation State` node ID. Empty = auto-detect first upstream history node |
+| `memoryEnabled` | boolean | `true` | Enable advanced memory assembly. False falls back to plain structured-context prompting |
+| `memoryProfileId` | string | `""` | Optional explicit memory profile override |
+| `memoryScopes` | string[] | `[]` | Optional scope override for semantic retrieval |
+| `maxRecentTokens` | integer | `1200` | Token budget for recent raw turns |
+| `maxSemanticHits` | integer | `4` | Max semantic or episodic memory hits to inject |
+| `includeEntityMemory` | boolean | `true` | Include active entity facts from the resolved profile |
 
-**Output:** `{ response: string, tool_calls: [...], iterations: number }`
+**Output:** `{ response, provider, model, usage, iterations, total_iterations, memory_debug }`
 
 ### LLM Router (`llm_router`)
 
@@ -85,7 +103,9 @@ Classifies user intent into one of the configured labels. Pair with downstream C
 | `historyNodeId` | string | `""` | Node ID of Load Conversation State node |
 | `userMessageExpression` | string | `trigger.message` | Expression resolving to user message |
 
-**Output:** `{ intent: string }`
+**Output:** `{ intent, raw_response, usage, memory_debug }`
+
+History is assembled with token budgets and rolling summaries, not a fixed message-count window.
 
 ### Reflection (`reflection`)
 
@@ -161,6 +181,10 @@ Sets the text a sync caller receives when using the orchestrator bridge.
 | `messageExpression` | string | `""` | safe_eval expression for the reply |
 | `responseNodeId` | string | `""` | Node ID whose response becomes the reply |
 
+**Output:** `{ orchestrator_user_reply, text, source, memory_debug }`
+
+If `responseNodeId` points at an upstream output that already contains `memory_debug`, the bridge forwards that metadata so the downstream save node can reuse the same memory policy on the write path.
+
 ### Load Conversation State (`load_conversation_state`)
 
 Fetches multi-turn chat history from persistent storage.
@@ -169,17 +193,28 @@ Fetches multi-turn chat history from persistent storage.
 |-------------|------|---------|-------------|
 | `sessionIdExpression` | string | `trigger.session_id` | Expression resolving to session ID |
 
-**Output:** `{ messages: [...], message_count: number }`
+**Output:** `{ session_id, session_ref_id, messages, message_count, summary_text, summary_through_turn }`
+
+The transcript is read from normalized `conversation_messages` rows. The session row stores metadata and rolling-summary state.
 
 ### Save Conversation State (`save_conversation_state`)
 
-Appends the current user/assistant exchange to persistent chat history.
+Appends the current user/assistant exchange to persistent chat history and drives memory promotion.
 
 | Config field | Type | Default | Description |
 |-------------|------|---------|-------------|
 | `sessionIdExpression` | string | `trigger.session_id` | |
 | `responseNodeId` | string | `""` | Node whose `response` field is saved |
 | `userMessageExpression` | string | `trigger.message` | Expression for user message |
+
+**Output:** `{ saved, session_id, session_ref_id, message_count, summary_updated, promoted_memory_records, promoted_entity_facts }`
+
+Runtime behavior:
+
+- writes normalized turn rows to `conversation_messages`
+- updates `conversation_sessions` counters and rolling summary
+- promotes episodic `memory_records` for successful outputs only
+- promotes `entity_facts` from profile-defined mappings
 
 ### A2A Agent Call (`a2a_call`)
 
@@ -412,7 +447,7 @@ Classifies user intent using hybrid scoring (lexical + embedding + optional LLM 
 - Embedding: `max(0, cosine_similarity) × 4.0`
 - Multi-intent: picks all intents within 1.0 of the best score
 
-**Output:** `{ intents: string[], confidence: number, fallback: boolean, scores: object, mode_used: string }`
+**Output:** `{ intents: string[], confidence: number, fallback: boolean, scores: object, mode_used: string, memory_debug }`
 
 When the LLM fallback fires in hybrid mode, `mode_used` is `"hybrid_llm_fallback"` and `heuristic_scores` contains the pre-fallback scoring.
 
@@ -475,6 +510,8 @@ Expressions are evaluated via `safe_eval` — a restricted Python subset that pr
 Fields named `systemPrompt` and `reflectionPrompt` use **Jinja2 templating** instead, supporting `{{ variable }}` syntax with filters and conditionals.
 
 Fields named with `Expression` suffix (e.g. `messageExpression`, `queryExpression`) use `safe_eval`.
+
+See [Memory Management](memory-management.md) for the storage model, policy resolution order, promotion rules, and inspection APIs behind the advanced-memory fields documented above.
 
 ## `{{ env.* }}` references
 

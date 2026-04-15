@@ -18,7 +18,7 @@ Gap analysis comparing AEAIHubOrchestrator against top DAG workflow builders for
 | **P1** | 8 | Built-in Observability Dashboard | Dify, LangSmith | Planned |
 | **P1** | 9 | Per-Node Error Handling & Retry | n8n | Planned |
 | **P1** | 10 | Dynamic Fan-Out Map-Reduce | LangGraph | Planned |
-| **P2** | 11 | Advanced Memory (semantic, entity) | CrewAI, LangGraph | Planned |
+| **P2** | 11 | Advanced Memory (semantic, entity) | CrewAI, LangGraph | **Done** |
 | **P2** | 12 | Data Transformation Nodes | n8n, Dify | Planned |
 | **P2** | 13 | Evaluation / Testing Framework | LangSmith, Dify | Planned |
 | **P2** | 14 | RBAC / Team Collaboration | Dify | Planned |
@@ -113,11 +113,13 @@ ForEach runs downstream nodes per-element but lacks dynamic fan-out where the nu
 
 ### P2 — Moderate gaps (nice-to-have, common in mature tools)
 
-#### 11. Advanced Memory Systems — Planned
+#### 11. Advanced Memory Systems — Done
 
 > CrewAI has short-term, long-term, and entity memory. LangGraph has typed state with reducers and cross-thread memory stores.
 
-We have conversation sessions only — no semantic memory, entity memory, episodic memory, or shared cross-workflow memory. A memory abstraction layer with pluggable backends would enable more sophisticated agent behavior.
+**Implemented:** Advanced Memory v1 hard cutover. Conversation transcripts are normalized into `conversation_messages`; `conversation_sessions` now stores summary metadata only. `memory_profiles` define tenant/workflow memory policy, `memory_records` store semantic and episodic memories across `session`, `workflow`, `tenant`, and `entity` scopes, and `entity_facts` stores relational entity memory with last-write-wins semantics. Agent/ReAct prompts are now turn-aware and token-budgeted, router/classifier history packing is shared, and operators can inspect the exact memories used by a run through `/api/v1/memory/instances/{instance_id}/resolved`.
+
+See [Memory Management](memory-management.md) for the full design.
 
 #### 12. Data Transformation Nodes — Planned
 
@@ -192,6 +194,7 @@ Features where AEAIHubOrchestrator is competitive or ahead:
 |----------|---------|
 | **A2A Protocol** | First-class inter-agent delegation that most competitors lack natively |
 | **NLP Nodes** | Dedicated Intent Classifier (hybrid scoring) and Entity Extractor (rule-based + LLM fallback) with optional embedding caching |
+| **Advanced Memory** | Normalized conversation storage, rolling summaries, semantic/episodic/entity memory, profile-driven prompt assembly, and inspection APIs |
 | **MCP Integration** | Extensible tool discovery via a standard protocol |
 | **HITL + Pause/Resume/Cancel** | Richer operator control than most visual builders |
 | **Checkpointing + Debug Replay** | On par with LangGraph's checkpointing |

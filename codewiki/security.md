@@ -91,14 +91,21 @@ This means even if application-level filtering has a bug, the database prevents 
 - `execution_logs`
 - `instance_checkpoints`
 - `conversation_sessions`
+- `conversation_messages`
+- `memory_profiles`
+- `memory_records`
+- `entity_facts`
 - `a2a_api_keys`
 - `tenant_tool_overrides`
 - `tenant_secrets`
 - `knowledge_bases`
 - `kb_documents`
 - `kb_chunks`
+- `embedding_cache`
 
-RLS is enabled in migrations `0001` (original tables) and `0009` (knowledge base tables).
+RLS is enabled across the original tables and extended again as new tenant-scoped tables were added, including the advanced-memory tables introduced in migration `0012`.
+
+The memory inspection endpoint (`GET /api/v1/memory/instances/{instance_id}/resolved`) also tenant-filters the resolved `conversation_messages`, `memory_records`, and `entity_facts` rows before returning them, so execution-log metadata cannot be used to bypass tenant isolation.
 
 ---
 

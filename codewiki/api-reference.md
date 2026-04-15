@@ -206,6 +206,8 @@ All return **InstanceOut**:
 | `GET` | `/api/v1/conversations/{session_id}` | 200 | Get session with messages |
 | `DELETE` | `/api/v1/conversations/{session_id}` | 204 | Delete a session |
 
+These endpoints still return the same transcript-focused payload shape as before, but reads now come from normalized `conversation_messages` rows and session metadata from `conversation_sessions`.
+
 **ConversationSessionOut:**
 
 | Field | Type |
@@ -216,6 +218,133 @@ All return **InstanceOut**:
 | `message_count` | integer |
 | `created_at` | ISO datetime |
 | `updated_at` | ISO datetime |
+
+---
+
+## Memory Profiles — `/api/v1/memory-profiles`
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `GET` | `/api/v1/memory-profiles` | 200 | List tenant and workflow memory profiles |
+| `POST` | `/api/v1/memory-profiles` | 201 | Create a memory profile |
+| `GET` | `/api/v1/memory-profiles/{profile_id}` | 200 | Get one memory profile |
+| `PUT` | `/api/v1/memory-profiles/{profile_id}` | 200 | Update a memory profile |
+| `DELETE` | `/api/v1/memory-profiles/{profile_id}` | 204 | Delete a memory profile |
+
+**MemoryProfileOut:**
+
+| Field | Type |
+|-------|------|
+| `id` | UUID |
+| `tenant_id` | string |
+| `name` | string |
+| `description` | string or null |
+| `workflow_def_id` | UUID or null |
+| `is_default` | boolean |
+| `instructions_text` | string or null |
+| `enabled_scopes` | string[] |
+| `max_recent_tokens` | integer |
+| `max_semantic_hits` | integer |
+| `include_entity_memory` | boolean |
+| `summary_trigger_messages` | integer |
+| `summary_recent_turns` | integer |
+| `summary_max_tokens` | integer |
+| `history_order` | `summary_first` or `recent_first` |
+| `semantic_score_threshold` | number |
+| `embedding_provider` | string |
+| `embedding_model` | string |
+| `vector_store` | string |
+| `entity_mappings_json` | object[] |
+| `created_at` | ISO datetime |
+| `updated_at` | ISO datetime |
+
+Profiles are optional. Agent/ReAct nodes can reference one explicitly via `memoryProfileId`, otherwise the runtime resolves workflow default, tenant default, then built-in defaults.
+
+## Memory Inspection — `/api/v1/memory`
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `GET` | `/api/v1/memory/records` | 200 | List semantic or episodic memory rows |
+| `GET` | `/api/v1/memory/entity-facts` | 200 | List active and historical entity facts |
+| `GET` | `/api/v1/memory/instances/{instance_id}/resolved` | 200 | Resolve the exact memory inputs used by logged agent/classifier runs |
+
+### `GET /api/v1/memory/records`
+
+Query params:
+
+- `scope` optional
+- `scope_key` optional
+- `kind` optional
+- `workflow_def_id` optional
+- `entity_type` optional
+- `entity_key` optional
+- `limit` optional, default `100`, max `500`
+
+**MemoryRecordOut:**
+
+| Field | Type |
+|-------|------|
+| `id` | UUID |
+| `tenant_id` | string |
+| `scope` | string |
+| `scope_key` | string |
+| `kind` | string |
+| `content` | string |
+| `metadata_json` | object |
+| `session_ref_id` | UUID or null |
+| `workflow_def_id` | UUID or null |
+| `entity_type` | string or null |
+| `entity_key` | string or null |
+| `source_instance_id` | UUID or null |
+| `source_node_id` | string or null |
+| `embedding_provider` | string |
+| `embedding_model` | string |
+| `vector_store` | string |
+| `created_at` | ISO datetime |
+
+### `GET /api/v1/memory/entity-facts`
+
+Query params:
+
+- `entity_type` optional
+- `entity_key` optional
+- `include_inactive` optional, default `false`
+- `limit` optional, default `100`, max `500`
+
+**EntityFactOut:**
+
+| Field | Type |
+|-------|------|
+| `id` | UUID |
+| `tenant_id` | string |
+| `entity_type` | string |
+| `entity_key` | string |
+| `fact_name` | string |
+| `fact_value` | string |
+| `confidence` | number |
+| `valid_from` | ISO datetime |
+| `valid_to` | ISO datetime or null |
+| `superseded_by` | UUID or null |
+| `session_ref_id` | UUID or null |
+| `workflow_def_id` | UUID or null |
+| `source_instance_id` | UUID or null |
+| `source_node_id` | string or null |
+| `metadata_json` | object |
+| `created_at` | ISO datetime |
+
+### `GET /api/v1/memory/instances/{instance_id}/resolved`
+
+Returns `ResolvedMemoryLogOut[]` keyed by execution log entry. Each item contains:
+
+- `node_id`
+- `node_type`
+- `completed_at`
+- `memory_debug`
+- `recent_turns`
+- `entity_facts`
+- `memory_records`
+
+The backend rehydrates these rows from `memory_debug` recorded during execution and tenant-filters the resolved turn, memory-record, and entity-fact lookups before returning them.
 
 ---
 

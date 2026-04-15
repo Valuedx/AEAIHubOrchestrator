@@ -46,8 +46,10 @@
 
 **Purpose:** This document explains how the orchestrator works end-to-end, from building a visual workflow to executing it asynchronously. Each step includes pointers to the relevant **code files** so you can trace behavior or extend it. For contributor-focused topics (custom nodes, `safe_eval`, pause/cancel internals), see `DEVELOPER_GUIDE.md`.
 
-**Version:** 0.9.15
-**Last updated:** 2026-04-14
+**Advanced Memory note:** Advanced Memory v1 adds normalized conversation storage, rolling summaries, memory profiles, semantic or episodic memory, relational entity facts, and memory inspection APIs. See `codewiki/memory-management.md`.
+
+**Version:** 0.9.16
+**Last updated:** 2026-04-15
 
 ---
 
@@ -340,8 +342,9 @@ validateWorkflow(nodes, edges)
       │              intents (≥1), entities (≥1) → ERROR
       │
       └── Check 4: Node ID cross-references
-                     responseNodeId, historyNodeId,
-                     scopeFromNode
+                     responseNodeId (Save/Bridge),
+                     historyNodeId (Router/Intent Classifier),
+                     scopeFromNode (Entity Extractor)
                      must point to existing node IDs → ERROR
 
       │
@@ -531,10 +534,22 @@ When `dispatch_node()` routes to an **LLM Agent** node:
 1. Read config: provider, model, systemPrompt, temperature, maxTokens
 2. Render system prompt via Jinja2:
    "Analyze {{ trigger.user_query }}"  →  "Analyze Why did request 12345 fail?"
-3. Build user message from all upstream node outputs (JSON-formatted)
-4. Route to provider SDK (Google / OpenAI / Anthropic)
-5. Return: { "response": "...", "usage": {...}, "model": "...", "provider": "..." }
-6. Token counts persisted in ExecutionLog.output_json
+3. Resolve advanced memory policy:
+   - explicit `memoryProfileId` if set
+   - else workflow default profile
+   - else tenant default profile
+   - else built-in defaults
+4. If advanced memory is enabled:
+   - load rolling summary + recent raw turns from the resolved session
+   - retrieve active entity facts from profile mappings
+   - retrieve semantic or episodic memories from enabled scopes
+   - assemble prompt from instructions, history, entity memory, semantic hits,
+     latest user message, and non-memory workflow context
+5. If advanced memory is disabled:
+   - fall back to one structured user block built from upstream context
+6. Route to provider SDK (Google / OpenAI / Anthropic)
+7. Return: { "response": "...", "usage": {...}, "model": "...", "provider": "...", "memory_debug": {...} }
+8. Token counts and memory metadata are persisted in `ExecutionLog.output_json`
 ```
 
 ### ReAct Agent Node
@@ -551,13 +566,14 @@ react_loop.py
 2. Load tool definitions in OpenAI function-calling format
 
 3. Iterative loop (max maxIterations, hard cap 25):
-   a. Call LLM with system prompt + conversation history + tool schemas
-   b. If LLM returns tool_calls:
+   a. Build initial messages with the same advanced-memory packer used by LLM Agent
+   b. Call LLM with system prompt + conversation history + tool schemas
+   c. If LLM returns tool_calls:
       - Execute each tool via call_tool()
       - Append tool results to conversation
       - Continue loop
-   c. If LLM returns text (no tool calls):
-      - Return final response + token usage + iteration log
+   d. If LLM returns text (no tool calls):
+      - Return final response + token usage + iteration log + `memory_debug`
 
 4. If max iterations reached: return "Maximum iterations reached"
 ```

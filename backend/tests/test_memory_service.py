@@ -7,6 +7,8 @@ from app.engine.memory_service import (
     assemble_history_text,
     build_conversation_idempotency_key,
     build_history_block,
+    build_memory_record_dedupe_key,
+    memory_debug_to_node_config,
 )
 
 
@@ -277,3 +279,58 @@ def test_conversation_idempotency_key_changes_with_loop_iteration_and_content():
     assert base == same
     assert base != different_loop
     assert base != different_content
+
+
+def test_memory_record_dedupe_key_changes_with_scope_and_content():
+    base = build_memory_record_dedupe_key(
+        tenant_id="tenant-a",
+        scope="session",
+        scope_key="sess-1",
+        kind="episode",
+        conversation_idempotency_key="conv-idem-1",
+    )
+    same = build_memory_record_dedupe_key(
+        tenant_id="tenant-a",
+        scope="session",
+        scope_key="sess-1",
+        kind="episode",
+        conversation_idempotency_key="conv-idem-1",
+    )
+    different_scope = build_memory_record_dedupe_key(
+        tenant_id="tenant-a",
+        scope="tenant",
+        scope_key="tenant-a",
+        kind="episode",
+        conversation_idempotency_key="conv-idem-1",
+    )
+    different_content = build_memory_record_dedupe_key(
+        tenant_id="tenant-a",
+        scope="session",
+        scope_key="sess-1",
+        kind="episode",
+        conversation_idempotency_key="conv-idem-2",
+    )
+
+    assert base == same
+    assert base != different_scope
+    assert base != different_content
+
+
+def test_memory_debug_to_node_config_extracts_save_time_overrides():
+    node_config = memory_debug_to_node_config(
+        {
+            "enabled": False,
+            "profile_id": str(uuid.uuid4()),
+            "scopes": ["session", "entity", "bogus"],
+            "include_entity_memory": False,
+            "history_order": "recent_first",
+        }
+    )
+
+    assert node_config == {
+        "memoryEnabled": False,
+        "memoryProfileId": node_config["memoryProfileId"],
+        "memoryScopes": ["session", "entity"],
+        "includeEntityMemory": False,
+        "historyOrder": "recent_first",
+    }

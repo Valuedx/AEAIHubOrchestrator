@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 
 from alembic import op
+from pgvector.sqlalchemy import Vector
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -172,9 +173,11 @@ def upgrade() -> None:
         sa.Column("entity_key", sa.String(256), nullable=True),
         sa.Column("source_instance_id", UUID(as_uuid=True), nullable=True),
         sa.Column("source_node_id", sa.String(128), nullable=True),
+        sa.Column("dedupe_key", sa.String(128), nullable=True),
         sa.Column("embedding_provider", sa.String(32), nullable=False, server_default="openai"),
         sa.Column("embedding_model", sa.String(128), nullable=False, server_default="text-embedding-3-small"),
         sa.Column("vector_store", sa.String(32), nullable=False, server_default="pgvector"),
+        sa.Column("embedding", Vector(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True, server_default=sa.func.now()),
     )
     op.create_index("ix_mem_record_scope_lookup", "memory_records", ["tenant_id", "scope", "scope_key"])
@@ -183,7 +186,12 @@ def upgrade() -> None:
         "memory_records",
         ["tenant_id", "entity_type", "entity_key"],
     )
-    op.execute("ALTER TABLE memory_records ADD COLUMN embedding vector")
+    op.create_index(
+        "ux_mem_record_tenant_dedupe",
+        "memory_records",
+        ["tenant_id", "dedupe_key"],
+        unique=True,
+    )
     op.execute(
         "CREATE INDEX ix_memory_records_embedding ON memory_records "
         "USING hnsw (embedding vector_cosine_ops)"
@@ -335,6 +343,7 @@ def downgrade() -> None:
 
     op.drop_table("entity_facts")
     op.execute("DROP INDEX IF EXISTS ix_memory_records_embedding")
+    op.drop_index("ux_mem_record_tenant_dedupe", table_name="memory_records")
     op.drop_table("memory_records")
     op.drop_index("ux_mem_profile_workflow_default", table_name="memory_profiles")
     op.drop_index("ux_mem_profile_tenant_default", table_name="memory_profiles")

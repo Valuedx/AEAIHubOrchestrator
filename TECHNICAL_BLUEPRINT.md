@@ -34,9 +34,11 @@
 
 ## AE AI Hub — Agentic Orchestrator Technical Blueprint
 
-**Version:** 0.9.15
-**Last updated:** 2026-04-14
-**Status:** V0.9.15 Sub-Workflows; V0.9.14 NLP Nodes (Intent Classifier + Entity Extractor); V0.9.13 Template gallery + sync execute + debug replay; V0.9.12 A2A Protocol; V0.9.11 Operator cancel/pause/resume; V0.9.10 Bridge User Reply + sync reply formatting + `displayName`; V0.9.9 Loop Node; V0.9.8 Rich Token Streaming; V0.9.7 Checkpoint-aware Langfuse; V0.9.6 Checkpointing; V0.9.5 Reflection; V0.9.4 HITL UX; V0.9.3 Deterministic batch; V0.9.2 UX; V0.9.1 Stateful DAGs; V0.9 execution; V0.8 enterprise; earlier milestones through V0.1
+**Advanced Memory note:** Advanced Memory v1 adds normalized conversation storage, rolling summaries, memory profiles, semantic or episodic memory, relational entity facts, and memory inspection APIs. See `codewiki/memory-management.md`.
+
+**Version:** 0.9.16
+**Last updated:** 2026-04-15
+**Status:** V0.9.16 Advanced Memory v1; V0.9.15 Sub-Workflows; V0.9.14 NLP Nodes (Intent Classifier + Entity Extractor); V0.9.13 Template gallery + sync execute + debug replay; V0.9.12 A2A Protocol; V0.9.11 Operator cancel/pause/resume; V0.9.10 Bridge User Reply + sync reply formatting + `displayName`; V0.9.9 Loop Node; V0.9.8 Rich Token Streaming; V0.9.7 Checkpoint-aware Langfuse; V0.9.6 Checkpointing; V0.9.5 Reflection; V0.9.4 HITL UX; V0.9.3 Deterministic batch; V0.9.2 UX; V0.9.1 Stateful DAGs; V0.9 execution; V0.8 enterprise; earlier milestones through V0.1
 > - **V0.7 Observability, MCP Streaming & Tenant Tools (2026-03-20)**: Langfuse v4 integration (`app/observability.py`) — root trace per workflow execution, child spans per node, LLM generation recording with token usage, tool call spans. MCP client rewritten to use MCP Python SDK with Streamable HTTP transport (`app/engine/mcp_client.py`) — replaces raw httpx REST bridge with standard MCP protocol. Tool listing and ReAct tool definitions now fetched live from MCP server. TenantToolOverride consumed by tools endpoint to filter MCP tools per tenant.
 >
 > - **V0.6 Advanced Agent Capabilities (2026-03-20)**: ReAct iterative tool-calling loop (`app/engine/react_loop.py`) with multi-provider support (Google/OpenAI/Anthropic tool-calling APIs). SSE real-time execution updates (`app/api/sse.py`) replacing frontend polling. Celery Beat cron scheduler (`app/workers/scheduler.py`) for schedule triggers with croniter. Frontend palette now hydrated from `shared/node_registry.json` via `src/lib/registry.ts`. Backend config validation against registry schemas on save (`app/engine/config_validator.py`).
@@ -275,7 +277,7 @@ Before any execution begins, `validateWorkflow(nodes, edges)` is called by the T
    - `LLM Router` → `intents` array must have ≥ 1 entry
    - `Reflection` → `reflectionPrompt`
    - `Bridge User Reply` → at least one of `messageExpression` or `responseNodeId`
-4. **Node ID cross-references** — `responseNodeId` (Save Conversation State, Bridge User Reply) and `historyNodeId` (LLM Router), when set, must match an existing node ID
+4. **Node ID cross-references** — `responseNodeId` (Save Conversation State, Bridge User Reply), `historyNodeId` (LLM Router, Intent Classifier), and `scopeFromNode` (Entity Extractor), when set, must match an existing node ID
 
 `ValidationDialog` presents errors in red and warnings in yellow. If only warnings exist, a **Run Anyway** button is offered. Hard errors disable execution entirely until fixed.
 
@@ -299,15 +301,16 @@ Fields that accept runtime expressions get an autocomplete dropdown instead of a
 |------|-------------------|
 | Webhook Trigger | `trigger.body`, `trigger.message`, `trigger.session_id`, `trigger.headers`, `trigger.method`, `trigger.path` |
 | Schedule Trigger | `trigger.scheduled_at`, `trigger.cron` |
-| LLM Agent | `response`, `input_tokens`, `output_tokens` |
-| ReAct Agent | `response`, `tool_calls`, `iterations` |
-| LLM Router | `intent` |
+| LLM Agent | `response`, `usage`, `provider`, `model`, `memory_debug` |
+| ReAct Agent | `response`, `iterations`, `total_iterations`, `usage`, `memory_debug` |
+| LLM Router | `intent`, `raw_response`, `usage`, `memory_debug` |
 | Reflection | `_raw_response` (+ any user-defined `outputKeys` at runtime) |
 | MCP Tool | `result` |
 | HTTP Request | `status_code`, `body`, `headers` |
 | Human Approval | `approved`, `approver` |
-| Bridge User Reply | `orchestrator_user_reply`, `text`, `source` |
-| Load Conversation State | `messages`, `session_id`, `message_count` |
+| Bridge User Reply | `orchestrator_user_reply`, `text`, `source`, `memory_debug` |
+| Load Conversation State | `session_id`, `session_ref_id`, `messages`, `message_count`, `summary_text`, `summary_through_turn` |
+| Save Conversation State | `saved`, `session_id`, `session_ref_id`, `message_count`, `summary_updated`, `promoted_memory_records`, `promoted_entity_facts` |
 
 **Token detection:** `getCurrentToken()` walks backward from the cursor to the last word boundary (`space`, `(`, `=`, `!`, `<`, `>`, `,`, `"`) and uses that substring as the filter. `insertAtCursor()` replaces only the current token, preserving the rest of the expression.
 
@@ -486,6 +489,21 @@ prompts to be reusable across different workflow topologies.
 | `GET` | `/{session_id}` | Full message history for a session |
 | `DELETE` | `/{session_id}` | Delete session (next DAG run auto-recreates) |
 
+These endpoints still return transcript-style payloads, but the backing storage is now normalized `conversation_messages` plus `conversation_sessions` metadata.
+
+**Advanced Memory APIs**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/memory-profiles` | List tenant and workflow memory profiles |
+| `POST` | `/api/v1/memory-profiles` | Create a memory profile |
+| `GET` | `/api/v1/memory-profiles/{profile_id}` | Fetch a memory profile |
+| `PUT` | `/api/v1/memory-profiles/{profile_id}` | Update a memory profile |
+| `DELETE` | `/api/v1/memory-profiles/{profile_id}` | Delete a memory profile |
+| `GET` | `/api/v1/memory/records` | List semantic and episodic memory rows |
+| `GET` | `/api/v1/memory/entity-facts` | List entity facts |
+| `GET` | `/api/v1/memory/instances/{instance_id}/resolved` | Resolve the exact memory rows used by logged agent, router, or classifier runs |
+
 **A2A Inbound** (per-tenant, auth: Bearer A2A key)
 
 | Method | Path | Description |
@@ -583,20 +601,66 @@ Per-node execution trace within a workflow instance.
 
 ### 5.4 ConversationSession
 
-Persistent multi-turn conversation history for the Stateful Re-Trigger Pattern.
+Persistent session metadata for the Stateful Re-Trigger Pattern.
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | `UUID` (PK) | Auto-generated |
 | `session_id` | `VARCHAR(256)` | Unique conversational thread ID |
 | `tenant_id` | `VARCHAR(64)` | Indexed |
-| `messages` | `JSONB` | Array of `{"role": "user"|"assistant", "content": "...", "timestamp": "..."}` |
+| `message_count` | `INTEGER` | Total normalized turns |
+| `last_message_at` | `TIMESTAMPTZ` | Latest turn timestamp |
+| `summary_text` | `TEXT` | Rolling summary of older turns |
+| `summary_updated_at` | `TIMESTAMPTZ` | Last summary refresh |
+| `summary_through_turn` | `INTEGER` | Highest turn index already summarized |
 | `created_at` | `TIMESTAMPTZ` | Auto |
 | `updated_at` | `TIMESTAMPTZ` | Auto on update |
 
 Index: `(tenant_id, session_id)` (Unique).
 
-### 5.5 InstanceCheckpoint
+### 5.5 ConversationMessage
+
+Normalized append-only conversation turns.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `UUID` (PK) | Auto-generated |
+| `session_ref_id` | `UUID` (FK) | References `conversation_sessions.id` |
+| `tenant_id` | `VARCHAR(64)` | Indexed |
+| `session_id` | `VARCHAR(256)` | External session ID copied for lookup/debug |
+| `turn_index` | `INTEGER` | Stable ordering within the session |
+| `role` | `VARCHAR(32)` | Usually `user` or `assistant` |
+| `content` | `TEXT` | Message text |
+| `message_at` | `TIMESTAMPTZ` | Turn timestamp |
+| `workflow_def_id` | `UUID` | Nullable provenance |
+| `instance_id` | `UUID` | Nullable provenance |
+| `node_id` | `VARCHAR(128)` | Nullable provenance |
+| `idempotency_key` | `VARCHAR(128)` | Retry dedupe key |
+| `created_at` | `TIMESTAMPTZ` | Auto |
+
+Indexes: `(session_ref_id, turn_index)` unique, `(session_ref_id, idempotency_key, role)` unique.
+
+### 5.6 MemoryProfile
+
+Tenant- or workflow-scoped advanced-memory policy.
+
+Key fields: `workflow_def_id`, `is_default`, `instructions_text`, `enabled_scopes`, `max_recent_tokens`, `max_semantic_hits`, `include_entity_memory`, `summary_*`, `history_order`, `semantic_score_threshold`, embedding config, and `entity_mappings_json`.
+
+### 5.7 MemoryRecord
+
+Semantic and episodic memory rows with inline pgvector embeddings.
+
+Key fields: `scope`, `scope_key`, `kind`, `content`, `metadata_json`, provenance fields, `dedupe_key`, `embedding_provider`, `embedding_model`, `vector_store`, and `embedding`.
+
+### 5.8 EntityFact
+
+Relational entity memory with last-write-wins semantics.
+
+Key fields: `entity_type`, `entity_key`, `fact_name`, `fact_value`, `confidence`, `valid_from`, `valid_to`, `superseded_by`, and provenance fields.
+
+The partial unique index on active facts guarantees one active fact per `(tenant_id, entity_type, entity_key, fact_name)` where `valid_to IS NULL`.
+
+### 5.9 InstanceCheckpoint
 
 Point-in-time snapshot of the execution context after each successful node completion. Used for post-mortem debugging and as the foundation for checkpoint-aware Langfuse tracing (V0.9.7).
 
@@ -612,7 +676,7 @@ Indexes: `(instance_id)`, `(instance_id, node_id)`.
 
 Migration: `alembic/versions/0004_instance_checkpoints.py`
 
-### 5.6 TenantToolOverride
+### 5.10 TenantToolOverride
 
 Per-tenant MCP tool visibility and configuration overrides.
 
@@ -759,11 +823,11 @@ File: `app/engine/node_handlers.py`
 | Label | Handler | Notes |
 |-------|---------|-------|
 | `ForEach` | `_handle_forEach` | Returns `{items, itemVariable}`; DAG runner drives iteration |
-| `Load Conversation State` | `_handle_load_conversation_state` | Fetches/creates `ConversationSession` |
-| `Save Conversation State` | `_handle_save_conversation_state` | Appends turn to session |
+| `Load Conversation State` | `_handle_load_conversation_state` | Fetches or creates a session and returns messages plus summary metadata |
+| `Save Conversation State` | `_handle_save_conversation_state` | Appends normalized turns, refreshes summary, promotes entity facts, and promotes episodic memory for successful outputs |
 | `LLM Router` | `_handle_llm_router` | Classification call, returns `{intent}` |
 | `Reflection` | `_handle_reflection` (in `reflection_handler.py`) | Builds execution summary, calls LLM, parses JSON — read-only |
-| `Bridge User Reply` | `_handle_bridge_user_reply` | Resolves `messageExpression` (safe_eval) or `responseNodeId` → `{orchestrator_user_reply, text, source}` |
+| `Bridge User Reply` | `_handle_bridge_user_reply` | Resolves `messageExpression` (safe_eval) or `responseNodeId` → `{orchestrator_user_reply, text, source, memory_debug}` |
 | `Sub-Workflow` | `_handle_sub_workflow` → `_execute_sub_workflow` | Loads child definition, recursion check, builds input mapping, creates child `WorkflowInstance`, runs `execute_graph` inline, returns child outputs |
 
 **`orchestrator_user_reply` promotion (V0.9.10):** After any node completes successfully, `dag_runner._promote_orchestrator_user_reply(context, output)` copies a non-empty string `output["orchestrator_user_reply"]` onto **context root** (`context["orchestrator_user_reply"]`). The API strips only `_*` keys, so this field is visible in `GET …/instances/{id}/context` and is the first source a polling client should use when it wants a single user-facing reply. Place one Bridge node per terminal branch when multiple LLM paths exist so the chat text is explicit (avoids longest-response heuristics picking the wrong node). Example workflows demonstrate this pattern.

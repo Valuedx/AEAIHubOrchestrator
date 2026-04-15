@@ -395,21 +395,30 @@ def resolve_instance_memory(
 
         recent_turns = (
             db.query(ConversationMessage)
-            .filter(ConversationMessage.id.in_(recent_turn_ids))
+            .filter(
+                ConversationMessage.tenant_id == tenant_id,
+                ConversationMessage.id.in_(recent_turn_ids),
+            )
             .order_by(ConversationMessage.turn_index)
             .all()
             if recent_turn_ids else []
         )
         records = (
             db.query(MemoryRecord)
-            .filter(MemoryRecord.id.in_(memory_record_ids))
+            .filter(
+                MemoryRecord.tenant_id == tenant_id,
+                MemoryRecord.id.in_(memory_record_ids),
+            )
             .order_by(MemoryRecord.created_at.desc())
             .all()
             if memory_record_ids else []
         )
         facts = (
             db.query(EntityFact)
-            .filter(EntityFact.id.in_(entity_fact_ids))
+            .filter(
+                EntityFact.tenant_id == tenant_id,
+                EntityFact.id.in_(entity_fact_ids),
+            )
             .order_by(EntityFact.created_at.desc())
             .all()
             if entity_fact_ids else []

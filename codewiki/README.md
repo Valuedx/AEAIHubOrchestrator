@@ -9,6 +9,7 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [Architecture](architecture.md) | System overview, component map, request lifecycle, DAG engine |
 | [API Reference](api-reference.md) | Every REST endpoint — method, path, request/response schemas |
 | [Database Schema](database-schema.md) | All tables, columns, indexes, RLS policies, migration history |
+| [Memory Management](memory-management.md) | Advanced memory architecture, storage model, runtime assembly, profiles, and inspection APIs |
 | [Node Types](node-types.md) | Registry of trigger, agent, action, logic, knowledge, notification, and NLP nodes with config schemas |
 | [Notification Guide](notification-guide.md) | User guide for the Notification node — channel setup, config value sources, examples, troubleshooting |
 | [RAG & Knowledge Base](rag-knowledge-base.md) | Vector stores, embedding providers, chunking strategies, ingestion and retrieval pipelines |
@@ -23,12 +24,12 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 AEAIHubOrchestrator/
 ├── backend/            FastAPI app, Alembic, workers, engine
 │   ├── app/
-│   │   ├── api/        REST routers (workflows, tools, sse, conversations, a2a, knowledge)
-│   │   ├── engine/     DAG runner, node handlers, LLM providers, MCP client, RAG engine
-│   │   ├── models/     SQLAlchemy ORM models
+│   │   ├── api/        REST routers (workflows, tools, sse, conversations, memory, a2a, knowledge)
+│   │   ├── engine/     DAG runner, node handlers, memory service, LLM providers, MCP client, RAG engine
+│   │   ├── models/     SQLAlchemy ORM models, including advanced memory tables
 │   │   ├── security/   JWT, vault, rate limiter, tenant helpers
 │   │   └── workers/    Celery app, tasks, Beat scheduler
-│   ├── alembic/        Migration scripts (0000 – 0010)
+│   ├── alembic/        Migration scripts (0000 – 0012)
 │   └── main.py         App entrypoint, router wiring
 ├── frontend/           React + Vite + React Flow
 │   └── src/
@@ -46,3 +47,4 @@ AEAIHubOrchestrator/
 - **Env vars** use the prefix `ORCHESTRATOR_` (e.g. `ORCHESTRATOR_DATABASE_URL`).
 - **API paths** are relative to the backend root (default `http://localhost:8000`).
 - **Tenant ID** is passed via `X-Tenant-Id` header in dev mode, or extracted from a JWT in production.
+- **Memory docs** live in [Memory Management](memory-management.md); use that page for the normalized conversation and semantic/entity memory model introduced in migration `0012`.

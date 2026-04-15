@@ -131,6 +131,25 @@ def build_conversation_idempotency_key(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def build_memory_record_dedupe_key(
+    *,
+    tenant_id: str,
+    scope: str,
+    scope_key: str,
+    kind: str,
+    conversation_idempotency_key: str,
+) -> str:
+    payload = {
+        "tenant_id": tenant_id,
+        "scope": scope,
+        "scope_key": scope_key,
+        "kind": kind,
+        "conversation_idempotency_key": conversation_idempotency_key,
+    }
+    encoded = repr(sorted(payload.items())).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def get_or_create_session(
     db: Session,
     *,
@@ -519,6 +538,31 @@ def resolve_memory_policy(
     return policy
 
 
+def memory_debug_to_node_config(memory_debug: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(memory_debug, dict):
+        return {}
+
+    node_config: dict[str, Any] = {}
+    if "enabled" in memory_debug:
+        node_config["memoryEnabled"] = bool(memory_debug.get("enabled"))
+
+    profile_id = str(memory_debug.get("profile_id", "") or "").strip()
+    if profile_id:
+        node_config["memoryProfileId"] = profile_id
+
+    raw_scopes = memory_debug.get("scopes")
+    if isinstance(raw_scopes, list):
+        node_config["memoryScopes"] = [str(scope) for scope in raw_scopes if str(scope) in DEFAULT_SCOPES]
+
+    if "include_entity_memory" in memory_debug:
+        node_config["includeEntityMemory"] = bool(memory_debug.get("include_entity_memory"))
+
+    if "history_order" in memory_debug:
+        node_config["historyOrder"] = _parse_history_order(memory_debug.get("history_order"))
+
+    return node_config
+
+
 def _pack_recent_messages(
     messages: list[ConversationMessage],
     *,
@@ -668,6 +712,7 @@ def promote_memory_records(
     policy: EffectiveMemoryPolicy,
     user_message: str,
     assistant_response: str,
+    conversation_idempotency_key: str,
 ) -> list[MemoryRecord]:
     text = "\n".join(
         part
@@ -696,44 +741,58 @@ def promote_memory_records(
 
     created: list[MemoryRecord] = []
     for scope, scope_key, entity_type, entity_key in scope_targets:
-        existing = (
-            db.query(MemoryRecord)
-            .filter_by(
-                tenant_id=tenant_id,
-                scope=scope,
-                scope_key=scope_key,
-                source_instance_id=instance_uuid,
-                source_node_id=node_id,
-            )
-            .first()
-        )
-        if existing:
-            created.append(existing)
-            continue
-
-        record = MemoryRecord(
+        dedupe_key = build_memory_record_dedupe_key(
             tenant_id=tenant_id,
             scope=scope,
             scope_key=scope_key,
             kind="episode",
-            content=text,
-            metadata_json={
-                "session_id": session.session_id if session else None,
-                "workflow_def_id": workflow_def_id,
-            },
-            session_ref_id=session.id if scope == "session" and session else None,
-            workflow_def_id=workflow_uuid,
-            entity_type=entity_type,
-            entity_key=entity_key,
-            source_instance_id=instance_uuid,
-            source_node_id=node_id,
-            embedding_provider=policy.embedding_provider,
-            embedding_model=policy.embedding_model,
-            vector_store=policy.vector_store,
+            conversation_idempotency_key=conversation_idempotency_key,
         )
-        db.add(record)
-        created.append(record)
-    db.flush()
+        for attempt in range(2):
+            try:
+                with db.begin_nested():
+                    existing = (
+                        db.query(MemoryRecord)
+                        .filter_by(tenant_id=tenant_id, dedupe_key=dedupe_key)
+                        .first()
+                    )
+                    if existing:
+                        break
+
+                    record = MemoryRecord(
+                        tenant_id=tenant_id,
+                        scope=scope,
+                        scope_key=scope_key,
+                        kind="episode",
+                        content=text,
+                        metadata_json={
+                            "session_id": session.session_id if session else None,
+                            "workflow_def_id": workflow_def_id,
+                        },
+                        session_ref_id=session.id if scope == "session" and session else None,
+                        workflow_def_id=workflow_uuid,
+                        entity_type=entity_type,
+                        entity_key=entity_key,
+                        source_instance_id=instance_uuid,
+                        source_node_id=node_id,
+                        dedupe_key=dedupe_key,
+                        embedding_provider=policy.embedding_provider,
+                        embedding_model=policy.embedding_model,
+                        vector_store=policy.vector_store,
+                    )
+                    db.add(record)
+                    db.flush()
+                    created.append(record)
+                    break
+            except IntegrityError:
+                if attempt == 0:
+                    continue
+                logger.warning(
+                    "Memory record promotion raced for %s/%s/%s; using winner from concurrent transaction",
+                    tenant_id,
+                    scope,
+                    scope_key,
+                )
 
     if not created:
         return created
@@ -966,7 +1025,15 @@ def assemble_history_text(
         "recent_turn_count": len(recent_messages),
         "recent_turn_ids": [str(msg.id) for msg in recent_messages],
         "recent_token_budget": policy.recent_token_budget,
+        "scopes": policy.scopes,
+        "include_entity_memory": policy.include_entity_memory,
         "history_order": policy.history_order,
+        "summary_trigger_messages": policy.summary_trigger_messages,
+        "summary_recent_turns": policy.summary_recent_turns,
+        "summary_max_tokens": policy.summary_max_tokens,
+        "embedding_provider": policy.embedding_provider,
+        "embedding_model": policy.embedding_model,
+        "vector_store": policy.vector_store,
     }
 
 
@@ -1081,6 +1148,13 @@ def assemble_agent_messages(
         "recent_token_budget": policy.recent_token_budget,
         "max_semantic_hits": policy.max_semantic_hits,
         "scopes": policy.scopes,
+        "include_entity_memory": policy.include_entity_memory,
         "history_order": policy.history_order,
+        "summary_trigger_messages": policy.summary_trigger_messages,
+        "summary_recent_turns": policy.summary_recent_turns,
+        "summary_max_tokens": policy.summary_max_tokens,
+        "embedding_provider": policy.embedding_provider,
+        "embedding_model": policy.embedding_model,
+        "vector_store": policy.vector_store,
     }
     return messages, memory_debug

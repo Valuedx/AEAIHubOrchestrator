@@ -12,8 +12,10 @@
 >
 > - **Earlier sections:** Custom nodes (§1), `safe_eval` (§2), ReAct (§3), ForEach / retry / HITL (§4), vault (§5), conversational memory (§6), through Loop node (§22).
 
-**Version:** 0.9.15
-**Last updated:** 2026-04-14
+**Advanced Memory note:** Advanced Memory v1 replaces JSONB transcripts with normalized conversation rows, rolling summaries, memory profiles, semantic or episodic memory, and relational entity facts. See `codewiki/memory-management.md`.
+
+**Version:** 0.9.16
+**Last updated:** 2026-04-15
 
 Welcome to the Developer Guide! 🚀 
 
@@ -266,9 +268,9 @@ When the workflow runs, exactly 1 millisecond before the node executes, `resolve
 
 ## 💬 6. Stateful Conversational Memory
 
-By default, an Orchestrator DAG is acyclic and stateless. But what if you want to build a chatbot that remembers context over 10 messages? You use the **Stateful Re-Trigger Pattern** (introduced in V0.9.1).
+By default, an Orchestrator DAG is acyclic and stateless. Chat-style workflows still use the **Stateful Re-Trigger Pattern**: every user turn creates a fresh DAG instance. The major change after Advanced Memory v1 is that memory is no longer just a JSONB transcript.
 
-Instead of making the DAG loop infinitely, we let each user message trigger a **fresh DAG instance**. We use two "bookend" nodes to fetch and save memory to a PostgreSQL database (`conversation_sessions`).
+Instead of making the DAG loop infinitely, we let each user message trigger a **fresh DAG instance**. The bookend nodes still load and save state, but the runtime now splits memory across `conversation_messages`, `conversation_sessions`, `memory_profiles`, `memory_records`, and `entity_facts`.
 
 ### How to build a conversational DAG
 
@@ -290,11 +292,22 @@ The canonical graph for any chat-enabled workflow is:
                                        userMessageExpression = "trigger.message"
 ```
 
+Advanced Memory v1 keeps this graph shape but changes the runtime behind it:
+
+- `Load Conversation State` now exposes session summary metadata in addition to messages.
+- Router and classifier prompts use token-budgeted history built from rolling summary plus recent turns.
+- Agent and ReAct nodes can resolve memory profiles, entity facts, and semantic hits in addition to raw turn history.
+- `Save Conversation State` appends normalized turns, refreshes summaries, promotes profile-mapped entity facts, and promotes episodic memories for successful outputs only.
+- Agent, router, and classifier outputs include `memory_debug`, and operators can inspect resolved memory through `/api/v1/memory/instances/{instance_id}/resolved`.
+
+See `codewiki/memory-management.md` for the full storage model and API surface.
+
 ### Key design points:
-1. **The DAG stays acyclic** — each user message simply fires a fresh execution instance.
-2. **Load at the start / Save at the end** bookend every instance with memory fetch/store.
-3. **LLM Router** reads the full history passed from the Load State node, handling pivots and follow-ups contextually.
-4. **The intent value** flows dynamically into standard Condition nodes — keeping routine routing out of arbitrary Python code.
+1. **The DAG stays acyclic** — each user message still fires a fresh execution instance.
+2. **Load at the start / Save at the end** still bookend every conversational workflow.
+3. **History is packed by token budget** — router and classifier prompts now use rolling summary plus recent turns instead of a fixed message-count window.
+4. **Agent and ReAct nodes are memory-aware** — they can auto-detect the first upstream history node or use an explicit `historyNodeId`.
+5. **The intent value** still flows dynamically into standard Condition nodes — keeping routine routing out of arbitrary Python code.
 
 ---
 
@@ -456,7 +469,7 @@ The orchestrator validates your workflow **in the browser** the moment you hit *
 | Disconnected node | A node exists on canvas but nothing connects it to a trigger | Warning |
 | Empty required field | e.g., Condition has no expression, HTTP Request has no URL | Error |
 | LLM Router: no intents | The `intents` array is empty | Error |
-| Broken node reference | `responseNodeId` or `historyNodeId` points to a non-existent node | Error |
+| Broken node reference | A configured node-id reference points to a non-existent node | Error |
 
 **Errors** block execution entirely. **Warnings** allow you to click **"Run Anyway"** (useful when you intentionally have a disconnected utility branch you're testing).
 
@@ -484,6 +497,7 @@ If your node has a **node-ID reference field** (a field where the user types ano
 const NODE_ID_REF_FIELDS: Record<string, string[]> = {
   "Save Conversation State": ["responseNodeId"],
   "LLM Router":              ["historyNodeId"],
+  "Intent Classifier":       ["historyNodeId"],
   // 👉 Add reference fields for your node:
   "Data Aggregator":         ["sourceNodeId"],
 };
@@ -1440,7 +1454,8 @@ Both are wired into `DynamicConfigForm` before the generic array/JSON fallback, 
 
 **Client-side** (`validateWorkflow.ts`):
 - Same rules as server-side — intents/entities array must have ≥1 entry, each with a `name`
-- `historyNodeId` and `scopeFromNode` are cross-validated against existing canvas node IDs
+- `historyNodeId` is cross-validated for `LLM Router` and `Intent Classifier`; `scopeFromNode` is cross-validated for `Entity Extractor`
+- Agent/ReAct `historyNodeId` fields are available in the UI, but are not yet pre-run-validated client-side
 
 ### 26.5 Files added / changed
 

@@ -360,6 +360,7 @@ def _handle_bridge_user_reply(
     response_node_id = str(config.get("responseNodeId", "") or "").strip()
 
     text = ""
+    memory_debug = None
     if msg_expr:
         raw = _resolve_expr(msg_expr, context)
         text = str(raw).strip() if raw is not None else ""
@@ -369,6 +370,8 @@ def _handle_bridge_user_reply(
             text = str(
                 node_out.get("response", node_out.get("output", ""))
             ).strip()
+            if isinstance(node_out.get("memory_debug"), dict):
+                memory_debug = node_out.get("memory_debug")
         else:
             text = str(node_out).strip()
 
@@ -383,6 +386,7 @@ def _handle_bridge_user_reply(
         "orchestrator_user_reply": text,
         "text": text,
         "source": "messageExpression" if msg_expr else ("responseNodeId" if response_node_id else ""),
+        "memory_debug": memory_debug,
     }
 
 
@@ -448,19 +452,33 @@ def _handle_save_conversation_state(
     user_message = str(raw_user) if raw_user is not None else ""
 
     assistant_response = ""
+    response_output: Any = None
     if response_node_id and response_node_id in context:
-        node_out = context[response_node_id]
-        if isinstance(node_out, dict):
+        response_output = context[response_node_id]
+        if isinstance(response_output, dict):
             assistant_response = str(
-                node_out.get("response", node_out.get("output", ""))
+                response_output.get("response", response_output.get("output", ""))
             )
         else:
-            assistant_response = str(node_out)
+            assistant_response = str(response_output)
+
+    def _should_promote_memory_records(node_out: Any, assistant_text: str) -> bool:
+        if not assistant_text.strip():
+            return False
+        if not isinstance(node_out, dict):
+            return True
+        if node_out.get("error"):
+            return False
+        status = str(node_out.get("status", "") or "").strip().lower()
+        if status in {"error", "failed", "cancelled"}:
+            return False
+        return True
 
     from app.database import SessionLocal
     from app.engine.memory_service import (
         append_conversation_turns,
         build_conversation_idempotency_key,
+        memory_debug_to_node_config,
         promote_entity_facts,
         promote_memory_records,
         refresh_rolling_summary,
@@ -497,42 +515,51 @@ def _handle_save_conversation_state(
             node_id=current_node_id or None,
             idempotency_key=idempotency_key,
         )
+        policy_node_config = {}
+        if isinstance(response_output, dict):
+            policy_node_config = memory_debug_to_node_config(response_output.get("memory_debug"))
         policy = resolve_memory_policy(
             db,
             tenant_id=tenant_id,
             workflow_def_id=workflow_def_id or None,
-            node_config={},
+            node_config=policy_node_config,
             context=context,
         )
-        summary_updated = refresh_rolling_summary(
-            db,
-            session=session,
-            summary_trigger_messages=policy.summary_trigger_messages,
-            summary_recent_turns=policy.summary_recent_turns,
-            summary_max_tokens=policy.summary_max_tokens,
-        )
-        fact_rows = promote_entity_facts(
-            db,
-            tenant_id=tenant_id,
-            workflow_def_id=workflow_def_id or None,
-            session_ref_id=session.id,
-            instance_id=instance_id or None,
-            node_id=current_node_id or None,
-            context=context,
-            policy=policy,
-        )
-        memory_rows = promote_memory_records(
-            db,
-            tenant_id=tenant_id,
-            session=session,
-            workflow_def_id=workflow_def_id or None,
-            instance_id=instance_id or None,
-            node_id=current_node_id or None,
-            context=context,
-            policy=policy,
-            user_message=user_message,
-            assistant_response=assistant_response,
-        )
+        summary_updated = False
+        fact_rows: list[Any] = []
+        memory_rows: list[Any] = []
+        if policy.enabled:
+            summary_updated = refresh_rolling_summary(
+                db,
+                session=session,
+                summary_trigger_messages=policy.summary_trigger_messages,
+                summary_recent_turns=policy.summary_recent_turns,
+                summary_max_tokens=policy.summary_max_tokens,
+            )
+            fact_rows = promote_entity_facts(
+                db,
+                tenant_id=tenant_id,
+                workflow_def_id=workflow_def_id or None,
+                session_ref_id=session.id,
+                instance_id=instance_id or None,
+                node_id=current_node_id or None,
+                context=context,
+                policy=policy,
+            )
+            if _should_promote_memory_records(response_output, assistant_response):
+                memory_rows = promote_memory_records(
+                    db,
+                    tenant_id=tenant_id,
+                    session=session,
+                    workflow_def_id=workflow_def_id or None,
+                    instance_id=instance_id or None,
+                    node_id=current_node_id or None,
+                    context=context,
+                    policy=policy,
+                    user_message=user_message,
+                    assistant_response=assistant_response,
+                    conversation_idempotency_key=idempotency_key,
+                )
         db.commit()
 
         total = session.message_count

@@ -9,8 +9,10 @@
 
 ## AE AI Hub — Orchestrator Setup Guide
 
-**Version:** 0.9.13
-**Last updated:** 2026-04-10
+**Advanced Memory note:** Advanced Memory v1 adds normalized conversation storage, memory profiles, semantic or episodic memory, relational entity facts, and new memory APIs. Fresh installs should simply run `alembic upgrade head`, which includes migration `0012`.
+
+**Version:** 0.9.16
+**Last updated:** 2026-04-15
 
 ---
 
@@ -101,7 +103,7 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │   ├── main.py                     # App entry point (v0.8.0)
 │   ├── requirements.txt            # Python dependencies
 │   ├── alembic.ini                 # Migration config
-│   ├── alembic/versions/           # 0001 … 0006 — see §5.2
+│   ├── alembic/versions/           # 0001 … 0012 — see §5.2
 │   └── app/
 │       ├── config.py               # Settings from env (incl. OIDC)
 │       ├── database.py             # SQLAlchemy setup
@@ -111,10 +113,13 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │       │   ├── tools.py            # MCP palette + cache invalidation
 │       │   ├── sse.py              # Server-Sent Events stream
 │       │   ├── schemas.py          # Pydantic request/response models
+│       │   ├── conversations.py    # Conversation session inspection
+│       │   ├── memory.py           # Memory profile CRUD + memory inspection
 │       │   └── auth.py             # OIDC Authorization Code + PKCE flow
 │       ├── engine/
 │       │   ├── dag_runner.py       # Ready-queue DAG executor
 │       │   ├── node_handlers.py    # Per-type dispatch
+│       │   ├── memory_service.py   # Advanced memory policy, summaries, retrieval, promotion
 │       │   ├── llm_providers.py    # Google/OpenAI/Anthropic abstraction
 │       │   ├── react_loop.py       # ReAct tool-calling loop
 │       │   ├── mcp_client.py       # MCP SDK client (TTL cache)
@@ -266,6 +271,7 @@ This applies all revisions under `alembic/versions/`, including (among others):
 - **0004** — `instance_checkpoints`
 - **0005** — `workflow_instances.cancel_requested`
 - **0006** — `workflow_instances.pause_requested`
+- **0012** — advanced memory hard cutover: `conversation_messages`, `memory_profiles`, `memory_records`, `entity_facts`, and normalized conversation storage
 
 Use `alembic current` to verify the DB revision after upgrading.
 
@@ -292,11 +298,27 @@ workflow_definitions     1 ──── * workflow_snapshots
                                   graph_json (JSONB)
                                   saved_at
 
-tenant_tool_overrides             tenant_secrets
-  id (PK, UUID)                   id (PK, UUID)
-  tenant_id                       tenant_id
-  tool_name                       key_name
-  enabled                         encrypted_value
+conversation_sessions            conversation_messages
+  id (PK, UUID)                  id (PK, UUID)
+  session_id                     session_ref_id (FK)
+  tenant_id                      tenant_id
+  message_count                  session_id
+  summary_text                   turn_index
+  summary_through_turn           role, content, message_at
+
+memory_profiles                  memory_records                  entity_facts
+  id (PK, UUID)                  id (PK, UUID)                  id (PK, UUID)
+  tenant_id                      tenant_id                      tenant_id
+  workflow_def_id                scope, scope_key               entity_type, entity_key
+  enabled_scopes                 kind, content                  fact_name, fact_value
+  max_recent_tokens              embedding                      valid_from, valid_to
+  history_order                  provenance                     provenance
+
+tenant_tool_overrides            tenant_secrets
+  id (PK, UUID)                  id (PK, UUID)
+  tenant_id                      tenant_id
+  tool_name                      key_name
+  enabled                        encrypted_value
   config_json (JSONB)
 ```
 
@@ -680,5 +702,5 @@ Only works when `ORCHESTRATOR_AUTH_MODE=dev`. Use the token as `Authorization: B
 
 ---
 
-**Document version:** 0.9
-**Last updated:** 2026-03-21
+**Document version:** 0.9.16
+**Last updated:** 2026-04-15

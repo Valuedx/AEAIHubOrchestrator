@@ -13,7 +13,11 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `workflow_snapshots` | Versioned graph history | Yes |
 | `execution_logs` | Per-node execution records | Yes |
 | `instance_checkpoints` | Context snapshots after each node | Yes |
-| `conversation_sessions` | Multi-turn chat history | Yes |
+| `conversation_sessions` | Conversation session metadata + rolling summary state | Yes |
+| `conversation_messages` | Normalized append-only conversation turns | Yes |
+| `memory_profiles` | Tenant/workflow memory policies | Yes |
+| `memory_records` | Semantic and episodic memory rows | Yes |
+| `entity_facts` | Relational entity memory | Yes |
 | `a2a_api_keys` | Hashed A2A inbound keys | Yes |
 | `tenant_tool_overrides` | Per-tenant MCP tool visibility | Yes |
 | `tenant_secrets` | Fernet-encrypted env vars | Yes |
@@ -114,18 +118,144 @@ Point-in-time snapshot of execution context after each node completes.
 
 ### `conversation_sessions`
 
-Persistent multi-turn conversation history for the Stateful Re-Trigger Pattern.
+Persistent session metadata for the Stateful Re-Trigger Pattern.
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | `id` | `UUID` | PK | |
 | `session_id` | `VARCHAR(256)` | NOT NULL | External identifier |
 | `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
-| `messages` | `JSONB` | NOT NULL, default `[]` | Array of `{ role, content, timestamp }` |
+| `message_count` | `INTEGER` | NOT NULL, default `0` | Total normalized turns in `conversation_messages` |
+| `last_message_at` | `TIMESTAMPTZ` | nullable | Timestamp of newest turn |
+| `summary_text` | `TEXT` | nullable | Rolling summary of older turns |
+| `summary_updated_at` | `TIMESTAMPTZ` | nullable | |
+| `summary_through_turn` | `INTEGER` | NOT NULL, default `0` | Highest turn index already summarized |
 | `created_at` | `TIMESTAMPTZ` | | |
 | `updated_at` | `TIMESTAMPTZ` | | Auto-updated |
 
 **Indexes:** `ix_conv_session_tenant_session` on `(tenant_id, session_id)` UNIQUE.
+
+### `conversation_messages`
+
+Normalized conversation turns. This replaced the legacy `conversation_sessions.messages` JSONB transcript in migration `0012`.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `session_ref_id` | `UUID` | FK -> `conversation_sessions.id` CASCADE, indexed | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `session_id` | `VARCHAR(256)` | NOT NULL, indexed | External session ID copied for lookup/debug |
+| `turn_index` | `INTEGER` | NOT NULL | Stable ordering within the session |
+| `role` | `VARCHAR(32)` | NOT NULL | `user`, `assistant`, or future roles |
+| `content` | `TEXT` | NOT NULL | |
+| `message_at` | `TIMESTAMPTZ` | NOT NULL | |
+| `workflow_def_id` | `UUID` | nullable, indexed | Provenance |
+| `instance_id` | `UUID` | nullable, indexed | Provenance |
+| `node_id` | `VARCHAR(128)` | nullable | Provenance |
+| `idempotency_key` | `VARCHAR(128)` | nullable | Server-derived retry dedupe key |
+| `created_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:**
+
+- `ix_conv_msg_session_turn` on `(session_ref_id, turn_index)` UNIQUE
+- `ix_conv_msg_session_idem_role` on `(session_ref_id, idempotency_key, role)` UNIQUE
+
+### `memory_profiles`
+
+Tenant- or workflow-scoped advanced-memory policy.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `workflow_def_id` | `UUID` | FK -> `workflow_definitions.id` CASCADE, nullable, indexed | Null = tenant profile |
+| `name` | `VARCHAR(256)` | NOT NULL | |
+| `description` | `TEXT` | nullable | |
+| `is_default` | `BOOLEAN` | NOT NULL, default false | At most one tenant default and one workflow default |
+| `instructions_text` | `TEXT` | nullable | Auto-injected system instructions |
+| `enabled_scopes` | `JSONB` | NOT NULL | Any of `session`, `workflow`, `tenant`, `entity` |
+| `max_recent_tokens` | `INTEGER` | NOT NULL | Token budget for raw turns |
+| `max_semantic_hits` | `INTEGER` | NOT NULL | Max retrieved memory rows |
+| `include_entity_memory` | `BOOLEAN` | NOT NULL | |
+| `summary_trigger_messages` | `INTEGER` | NOT NULL | |
+| `summary_recent_turns` | `INTEGER` | NOT NULL | |
+| `summary_max_tokens` | `INTEGER` | NOT NULL | |
+| `history_order` | `VARCHAR(32)` | NOT NULL | `summary_first` or `recent_first` |
+| `semantic_score_threshold` | `FLOAT` | NOT NULL | |
+| `embedding_provider` | `VARCHAR(32)` | NOT NULL | |
+| `embedding_model` | `VARCHAR(128)` | NOT NULL | |
+| `vector_store` | `VARCHAR(32)` | NOT NULL | |
+| `entity_mappings_json` | `JSONB` | NOT NULL | Structured entity-promotion config |
+| `created_at` | `TIMESTAMPTZ` | | |
+| `updated_at` | `TIMESTAMPTZ` | | Auto-updated |
+
+**Indexes:**
+
+- `ix_mem_profile_tenant_name` on `(tenant_id, name)`
+- `ix_mem_profile_tenant_wf_default` on `(tenant_id, workflow_def_id, is_default)`
+- `ux_mem_profile_tenant_default` partial UNIQUE on `(tenant_id)` where `workflow_def_id IS NULL AND is_default = true`
+- `ux_mem_profile_workflow_default` partial UNIQUE on `(tenant_id, workflow_def_id)` where `workflow_def_id IS NOT NULL AND is_default = true`
+
+### `memory_records`
+
+Semantic and episodic memory. Embeddings are stored inline and indexed with pgvector.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `scope` | `VARCHAR(32)` | NOT NULL, indexed | `session`, `workflow`, `tenant`, `entity` |
+| `scope_key` | `VARCHAR(256)` | NOT NULL, indexed | Scope-specific key |
+| `kind` | `VARCHAR(32)` | NOT NULL, indexed | `episode` today |
+| `content` | `TEXT` | NOT NULL | Text stored and embedded |
+| `metadata_json` | `JSONB` | NOT NULL | |
+| `session_ref_id` | `UUID` | FK -> `conversation_sessions.id` CASCADE, nullable, indexed | |
+| `workflow_def_id` | `UUID` | nullable, indexed | |
+| `entity_type` | `VARCHAR(128)` | nullable, indexed | |
+| `entity_key` | `VARCHAR(256)` | nullable, indexed | |
+| `source_instance_id` | `UUID` | nullable, indexed | |
+| `source_node_id` | `VARCHAR(128)` | nullable | |
+| `dedupe_key` | `VARCHAR(128)` | nullable | Retry/concurrency dedupe |
+| `embedding_provider` | `VARCHAR(32)` | NOT NULL | |
+| `embedding_model` | `VARCHAR(128)` | NOT NULL | |
+| `vector_store` | `VARCHAR(32)` | NOT NULL | |
+| `embedding` | `VECTOR` | nullable | pgvector embedding |
+| `created_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:**
+
+- `ix_mem_record_scope_lookup` on `(tenant_id, scope, scope_key)`
+- `ix_mem_record_entity_lookup` on `(tenant_id, entity_type, entity_key)`
+- `ux_mem_record_tenant_dedupe` on `(tenant_id, dedupe_key)` UNIQUE
+- `ix_memory_records_embedding` HNSW index on `embedding vector_cosine_ops`
+
+### `entity_facts`
+
+Authoritative relational entity memory.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `entity_type` | `VARCHAR(128)` | NOT NULL, indexed | |
+| `entity_key` | `VARCHAR(256)` | NOT NULL, indexed | |
+| `fact_name` | `VARCHAR(128)` | NOT NULL, indexed | |
+| `fact_value` | `TEXT` | NOT NULL | |
+| `confidence` | `FLOAT` | NOT NULL | |
+| `valid_from` | `TIMESTAMPTZ` | NOT NULL | |
+| `valid_to` | `TIMESTAMPTZ` | nullable | Null = active fact |
+| `superseded_by` | `UUID` | nullable | Row id of the winning replacement fact |
+| `session_ref_id` | `UUID` | FK -> `conversation_sessions.id` SET NULL, nullable | |
+| `workflow_def_id` | `UUID` | nullable, indexed | |
+| `source_instance_id` | `UUID` | nullable, indexed | |
+| `source_node_id` | `VARCHAR(128)` | nullable | |
+| `metadata_json` | `JSONB` | NOT NULL | Includes resolution strategy metadata |
+| `created_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:**
+
+- `ix_entity_fact_active_lookup` on `(tenant_id, entity_type, entity_key, fact_name, valid_to)`
+- `ux_entity_fact_active_unique` partial UNIQUE on `(tenant_id, entity_type, entity_key, fact_name)` where `valid_to IS NULL`
 
 ---
 
@@ -287,6 +417,7 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0009 | `0009_add_knowledge_base_tables.py` | `CREATE EXTENSION vector`, `knowledge_bases`, `kb_documents`, `kb_chunks` with HNSW index + RLS |
 | 0010 | `0010_add_embedding_cache.py` | `embedding_cache` table with pgvector `VECTOR` column, HNSW cosine index, and RLS |
 | 0011 | `0011_add_subworkflow_parent_tracking.py` | Add `parent_instance_id` (FK), `parent_node_id` columns and `ix_wf_inst_parent` index to `workflow_instances` |
+| 0012 | `0012_advanced_memory_hard_cutover.py` | Hard-cutover to normalized conversation rows; add session summary metadata, `conversation_messages`, `memory_profiles`, `memory_records`, `entity_facts`, vector indexes, and backfill/drop legacy JSONB transcripts |
 
 ### Running migrations
 
@@ -295,4 +426,4 @@ cd backend
 alembic upgrade head
 ```
 
-Each migration uses a linear revision chain (`revises` points to the previous migration). All are **non-destructive** upgrades; downgrade functions exist but should be used with caution in production.
+Each migration uses a linear revision chain (`revises` points to the previous migration). `0012` is intentionally destructive with respect to the legacy `conversation_sessions.messages` column because it performs the advanced-memory hard cutover.
