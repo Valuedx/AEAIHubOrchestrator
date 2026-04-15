@@ -13,6 +13,8 @@ All node types are defined in `shared/node_registry.json`. The frontend reads th
 | `action` | Actions | Tool calls, HTTP requests, and side-effect operations | blue |
 | `logic` | Logic | Branching, merging, and flow control nodes | emerald |
 | `knowledge` | Knowledge | RAG knowledge base retrieval and management | teal |
+| `notification` | Notifications | Send messages to external channels (Slack, Teams, email, etc.) | rose |
+| `nlp` | NLP | Intent classification and entity extraction nodes | indigo |
 
 ---
 
@@ -299,6 +301,134 @@ Searches knowledge bases and returns relevant document chunks for RAG.
 The `context_text` field concatenates all chunk contents separated by `\n\n---\n\n`, ready to inject into an LLM Agent's system prompt via `{{ node_X.context_text }}`.
 
 See [RAG & Knowledge Base](rag-knowledge-base.md) for the full ingestion and retrieval pipeline details.
+
+---
+
+## Notification nodes
+
+### Notification (`notification`)
+
+Sends a formatted message to an external channel. Supports 8 channels with channel-specific payload construction.
+
+See [Notification Guide](notification-guide.md) for a full user guide with setup instructions per channel.
+
+**Common config fields (always visible):**
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `channel` | enum | `slack_webhook` | Target channel (see table below) |
+| `destination` | string | `""` | Webhook URL, bot token, or API key. Supports all three value sources |
+| `messageTemplate` | string | `""` | Jinja2 message body. Use `{{ trigger.field }}` or `{{ node_2.response }}` |
+
+**Supported channels:**
+
+| Channel | Transport | Destination | Channel-specific fields |
+|---------|-----------|-------------|------------------------|
+| `slack_webhook` | POST to Incoming Webhook URL | Webhook URL | `username`, `iconEmoji` |
+| `teams_webhook` | POST to Connector URL | Webhook URL | `title`, `themeColor` |
+| `discord_webhook` | POST to Discord Webhook URL | Webhook URL | `username`, `avatarUrl` |
+| `telegram` | POST to Telegram Bot API | Bot token (`{{ env.* }}`) | `chatId`, `parseMode` |
+| `whatsapp` | POST to Meta Cloud API | Access token (`{{ env.* }}`) | `phoneNumber`, `phoneNumberId`, `templateName` |
+| `pagerduty` | POST to Events API v2 | Routing key (`{{ env.* }}`) | `severity`, `eventAction`, `pdSource` |
+| `email` | SendGrid / Mailgun API or SMTP | API key or SMTP host | `to`, `subject`, `from`, `emailProvider`, `smtpPort`, `smtpUser`, `smtpPass` |
+| `generic_webhook` | POST/PUT/PATCH to any URL | URL | `httpMethod`, `httpHeaders` |
+
+**Channel-specific fields** are only shown in the sidebar when the matching channel is selected, using the `visibleWhen` schema property (see [Frontend Guide](frontend-guide.md)).
+
+**Three-source config resolution:**
+
+All string config fields support three ways to provide a value:
+
+1. **Static** — Type the value directly (e.g. `https://hooks.slack.com/services/T00/B00/xxx`)
+2. **Vault secret** — Use `{{ env.SECRET_NAME }}` to pull from the tenant secrets configured in the Secrets UI
+3. **Runtime expression** — Use `{{ trigger.field }}` or `{{ node_N.field }}` to resolve from the execution context
+
+Resolution order: `{{ env.* }}` is resolved first (by `dispatch_node`), then remaining `{{ trigger.* }}` / `{{ node_*.* }}` expressions are resolved by the notification handler. Static values with no `{{ }}` pass through unchanged.
+
+**Output:** `{ success: boolean, channel: string, status_code: number, message_preview: string, response_body: string }`
+
+Downstream nodes can check `node_X.success` to branch on delivery status, or inspect `node_X.status_code` for HTTP-level diagnostics.
+
+---
+
+## NLP nodes
+
+### Intent Classifier (`intent_classifier`)
+
+Classifies user intent using hybrid scoring (lexical + embedding + optional LLM fallback). A production-grade upgrade over LLM Router with configurable intents, examples, and confidence thresholds.
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `utteranceExpression` | string | `trigger.message` | Expression resolving to the user utterance text |
+| `intents` | array of objects | `[]` | Each object: `{ name, description, examples, priority }` |
+| `allowMultiIntent` | boolean | `false` | Return multiple intents when scores are close |
+| `mode` | enum | `hybrid` | `hybrid`, `llm_only`, `heuristic_only` |
+| `provider` | enum | `google` | LLM provider (visible when mode is `hybrid` or `llm_only`) |
+| `model` | enum | `gemini-2.5-flash` | LLM model (visible when mode is `hybrid` or `llm_only`) |
+| `embeddingProvider` | enum | `openai` | Embedding provider (visible when mode uses embeddings) |
+| `embeddingModel` | enum | `text-embedding-3-small` | Embedding model (visible when mode uses embeddings) |
+| `cacheEmbeddings` | boolean | `false` | Precompute and persist intent embeddings at save time. Recommended for large intent lists (15+). When false, embeddings are computed on-the-fly at runtime |
+| `confidenceThreshold` | number | `0.6` | Heuristic confidence threshold; below this, hybrid mode falls back to LLM |
+| `historyNodeId` | string | `""` | Node ID of Load Conversation State node for LLM prompt context |
+
+**Modes:**
+
+| Mode | Behaviour | Cost |
+|------|-----------|------|
+| `heuristic_only` | Lexical substring matching + embedding cosine similarity. Zero LLM calls | Embedding only |
+| `hybrid` (default) | Heuristic first; if confidence < threshold, falls back to LLM classification | Embedding + conditional LLM |
+| `llm_only` | Skips embeddings entirely; sends all intents to LLM with conversation history | LLM per request |
+
+**Scoring (heuristic/hybrid):**
+- Lexical: +2.0 if intent name is a substring of the utterance, +1.0 per matching example
+- Embedding: `max(0, cosine_similarity) × 4.0`
+- Multi-intent: picks all intents within 1.0 of the best score
+
+**Output:** `{ intents: string[], confidence: number, fallback: boolean, scores: object, mode_used: string }`
+
+When the LLM fallback fires in hybrid mode, `mode_used` is `"hybrid_llm_fallback"` and `heuristic_scores` contains the pre-fallback scoring.
+
+**Downstream usage example:**
+
+```
+Condition: node_X.intents[0] == "book_flight"
+Condition: node_X.fallback == true    → fallback branch
+```
+
+### Entity Extractor (`entity_extractor`)
+
+Extracts structured entities from text using rule-based patterns (regex, enum, number, date, free_text) with optional LLM fallback for missing required entities.
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `sourceExpression` | string | `trigger.message` | Expression resolving to the source text |
+| `entities` | array of objects | `[]` | Each object: `{ name, type, pattern, enum_values, description, required }` |
+| `scopeFromNode` | string | `""` | Node ID of an upstream Intent Classifier for intent-based entity scoping |
+| `intentEntityMapping` | object | `{}` | Map of intent name → entity name array. Example: `{"book_flight": ["destination", "date"]}` |
+| `llmFallback` | boolean | `false` | Use LLM to extract required entities that rule-based extraction missed |
+| `provider` | enum | `google` | LLM provider for fallback (visible when `llmFallback` is true) |
+| `model` | enum | `gemini-2.5-flash` | LLM model for fallback (visible when `llmFallback` is true) |
+
+**Entity types:**
+
+| Type | Matching strategy | Config required |
+|------|-------------------|-----------------|
+| `regex` | Python regex with `re.IGNORECASE`. Uses group(1) if capture groups exist | `pattern` |
+| `enum` | Word-boundary match against each value in the list | `enum_values` |
+| `number` | Matches first integer or decimal number in text | — |
+| `date` | Matches `YYYY-MM-DD` format | — |
+| `free_text` | Matches `entity_name: value` pattern | — |
+
+**Intent-entity scoping:** When `scopeFromNode` references an upstream Intent Classifier and `intentEntityMapping` is configured, only entities mapped to the matched intents are extracted. If no mapping exists for a matched intent, all entities pass through.
+
+**Output:** `{ entities: object, missing_required: string[], extraction_method: string }` plus each extracted entity as a top-level key (e.g., `node_X.destination`).
+
+**Downstream usage example:**
+
+```
+Expression: node_X.destination           → extracted value
+Condition: len(node_X.missing_required) > 0    → ask user for more info
+```
 
 ---
 

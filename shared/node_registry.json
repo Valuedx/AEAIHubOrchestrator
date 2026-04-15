@@ -25,6 +25,16 @@
       "id": "knowledge",
       "label": "Knowledge",
       "description": "RAG knowledge base retrieval and management"
+    },
+    {
+      "id": "notification",
+      "label": "Notifications",
+      "description": "Send messages to external channels (Slack, Teams, email, etc.)"
+    },
+    {
+      "id": "nlp",
+      "label": "NLP",
+      "description": "Intent classification, entity extraction, and text analysis"
     }
   ],
   "node_types": [
@@ -515,6 +525,313 @@
           "min": 0,
           "max": 1,
           "description": "Minimum similarity score (0-1). Chunks below this threshold are filtered out. 0 = no filtering"
+        }
+      }
+    },
+    {
+      "type": "notification",
+      "category": "notification",
+      "label": "Notification",
+      "description": "Send a formatted message to Slack, Teams, Discord, Telegram, WhatsApp, PagerDuty, email, or a generic webhook",
+      "icon": "bell",
+      "config_schema": {
+        "channel": {
+          "type": "string",
+          "default": "slack_webhook",
+          "enum": ["slack_webhook", "teams_webhook", "discord_webhook", "telegram", "whatsapp", "pagerduty", "email", "generic_webhook"],
+          "description": "Notification channel to send to"
+        },
+        "destination": {
+          "type": "string",
+          "default": "",
+          "description": "Webhook URL, bot token, or API endpoint. Supports: static value, {{ env.SECRET }} from vault, or {{ trigger.field }} / {{ node_N.field }} from runtime context."
+        },
+        "messageTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Jinja2 message template. Use {{ trigger.field }} or {{ node_2.response }} for dynamic content."
+        },
+        "username": {
+          "type": "string",
+          "default": "Orchestrator",
+          "description": "Display name for the bot (Slack/Discord)",
+          "visibleWhen": { "field": "channel", "values": ["slack_webhook", "discord_webhook"] }
+        },
+        "iconEmoji": {
+          "type": "string",
+          "default": ":robot_face:",
+          "description": "Emoji icon for the Slack message",
+          "visibleWhen": { "field": "channel", "values": ["slack_webhook"] }
+        },
+        "avatarUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Avatar image URL for the Discord bot",
+          "visibleWhen": { "field": "channel", "values": ["discord_webhook"] }
+        },
+        "title": {
+          "type": "string",
+          "default": "",
+          "description": "Card title (Teams)",
+          "visibleWhen": { "field": "channel", "values": ["teams_webhook"] }
+        },
+        "themeColor": {
+          "type": "string",
+          "default": "0076D7",
+          "description": "Hex color for the Teams card accent",
+          "visibleWhen": { "field": "channel", "values": ["teams_webhook"] }
+        },
+        "chatId": {
+          "type": "string",
+          "default": "",
+          "description": "Telegram chat/group ID. Static, {{ env.TELEGRAM_CHAT_ID }}, or {{ trigger.chat_id }}",
+          "visibleWhen": { "field": "channel", "values": ["telegram"] }
+        },
+        "parseMode": {
+          "type": "string",
+          "default": "HTML",
+          "enum": ["HTML", "Markdown", "MarkdownV2"],
+          "description": "Telegram message format",
+          "visibleWhen": { "field": "channel", "values": ["telegram"] }
+        },
+        "phoneNumber": {
+          "type": "string",
+          "default": "",
+          "description": "Recipient phone in E.164 format. Static, {{ env.* }}, or {{ trigger.phone }}",
+          "visibleWhen": { "field": "channel", "values": ["whatsapp"] }
+        },
+        "phoneNumberId": {
+          "type": "string",
+          "default": "",
+          "description": "WhatsApp Business phone number ID (from Meta dashboard)",
+          "visibleWhen": { "field": "channel", "values": ["whatsapp"] }
+        },
+        "templateName": {
+          "type": "string",
+          "default": "",
+          "description": "Approved WhatsApp message template name. Required for business-initiated messages; leave empty for session replies.",
+          "visibleWhen": { "field": "channel", "values": ["whatsapp"] }
+        },
+        "severity": {
+          "type": "string",
+          "default": "warning",
+          "enum": ["critical", "error", "warning", "info"],
+          "description": "PagerDuty alert severity",
+          "visibleWhen": { "field": "channel", "values": ["pagerduty"] }
+        },
+        "eventAction": {
+          "type": "string",
+          "default": "trigger",
+          "enum": ["trigger", "acknowledge", "resolve"],
+          "description": "PagerDuty event action",
+          "visibleWhen": { "field": "channel", "values": ["pagerduty"] }
+        },
+        "pdSource": {
+          "type": "string",
+          "default": "orchestrator",
+          "description": "PagerDuty source identifier",
+          "visibleWhen": { "field": "channel", "values": ["pagerduty"] }
+        },
+        "to": {
+          "type": "string",
+          "default": "",
+          "description": "Recipient email(s), comma-separated. Static, {{ env.* }}, or {{ trigger.email }}",
+          "visibleWhen": { "field": "channel", "values": ["email"] }
+        },
+        "subject": {
+          "type": "string",
+          "default": "",
+          "description": "Email subject (Jinja2 template). E.g. Alert: {{ node_3.severity }} - {{ trigger.service }}",
+          "visibleWhen": { "field": "channel", "values": ["email"] }
+        },
+        "from": {
+          "type": "string",
+          "default": "",
+          "description": "Sender email address",
+          "visibleWhen": { "field": "channel", "values": ["email"] }
+        },
+        "emailProvider": {
+          "type": "string",
+          "default": "sendgrid",
+          "enum": ["sendgrid", "mailgun", "smtp"],
+          "description": "Email delivery provider",
+          "visibleWhen": { "field": "channel", "values": ["email"] }
+        },
+        "smtpPort": {
+          "type": "integer",
+          "default": 587,
+          "description": "SMTP server port (only used when emailProvider is smtp). Common: 587 (STARTTLS), 465 (SSL)",
+          "visibleWhen": { "field": "channel", "values": ["email"] }
+        },
+        "smtpUser": {
+          "type": "string",
+          "default": "",
+          "description": "SMTP login username (only used when emailProvider is smtp). Supports {{ env.SMTP_USER }}",
+          "visibleWhen": { "field": "channel", "values": ["email"] }
+        },
+        "smtpPass": {
+          "type": "string",
+          "default": "",
+          "description": "SMTP login password (only used when emailProvider is smtp). Use {{ env.SMTP_PASS }} for vault storage",
+          "visibleWhen": { "field": "channel", "values": ["email"] }
+        },
+        "httpMethod": {
+          "type": "string",
+          "default": "POST",
+          "enum": ["POST", "PUT", "PATCH"],
+          "description": "HTTP method for generic webhook",
+          "visibleWhen": { "field": "channel", "values": ["generic_webhook"] }
+        },
+        "httpHeaders": {
+          "type": "object",
+          "default": {},
+          "description": "Custom HTTP headers for generic webhook",
+          "visibleWhen": { "field": "channel", "values": ["generic_webhook"] }
+        }
+      }
+    },
+    {
+      "type": "intent_classifier",
+      "category": "nlp",
+      "label": "Intent Classifier",
+      "description": "Classify user intent using hybrid scoring (lexical + embedding + optional LLM). Production-grade upgrade over LLM Router with configurable intents, examples, and confidence thresholds.",
+      "icon": "target",
+      "config_schema": {
+        "utteranceExpression": {
+          "type": "string",
+          "default": "trigger.message",
+          "description": "Expression that resolves to the user utterance text (e.g. trigger.message or node_2.response)"
+        },
+        "intents": {
+          "type": "array",
+          "default": [],
+          "description": "List of intents with name, description, examples, and priority",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "examples": { "type": "array", "items": { "type": "string" } },
+              "priority": { "type": "integer", "default": 100 }
+            }
+          }
+        },
+        "allowMultiIntent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow multiple intents to be returned when scores are close"
+        },
+        "mode": {
+          "type": "string",
+          "default": "hybrid",
+          "enum": ["hybrid", "llm_only", "heuristic_only"],
+          "description": "hybrid: heuristic first, LLM fallback when low confidence. llm_only: always use LLM. heuristic_only: lexical + embedding only, zero LLM cost."
+        },
+        "provider": {
+          "type": "string",
+          "default": "google",
+          "enum": ["google", "openai", "anthropic"],
+          "description": "LLM provider for classification (used in hybrid and llm_only modes)",
+          "visibleWhen": { "field": "mode", "values": ["hybrid", "llm_only"] }
+        },
+        "model": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "description": "LLM model for classification",
+          "visibleWhen": { "field": "mode", "values": ["hybrid", "llm_only"] }
+        },
+        "embeddingProvider": {
+          "type": "string",
+          "default": "openai",
+          "enum": ["openai", "google", "vertex"],
+          "description": "Embedding provider for intent/utterance vectors",
+          "visibleWhen": { "field": "mode", "values": ["hybrid", "heuristic_only"] }
+        },
+        "embeddingModel": {
+          "type": "string",
+          "default": "text-embedding-3-small",
+          "enum": ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-004", "gemini-embedding-001", "text-embedding-005", "text-multilingual-embedding-002"],
+          "description": "Embedding model for intent/utterance vectors",
+          "visibleWhen": { "field": "mode", "values": ["hybrid", "heuristic_only"] }
+        },
+        "cacheEmbeddings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Precompute and cache intent embeddings at save time. Recommended for large intent lists (15+) or high-throughput workflows. When false, embeddings are computed on-the-fly at runtime.",
+          "visibleWhen": { "field": "mode", "values": ["hybrid", "heuristic_only"] }
+        },
+        "confidenceThreshold": {
+          "type": "number",
+          "default": 0.6,
+          "min": 0,
+          "max": 1,
+          "description": "Minimum confidence for heuristic results. Below this threshold, hybrid mode falls back to LLM.",
+          "visibleWhen": { "field": "mode", "values": ["hybrid"] }
+        },
+        "historyNodeId": {
+          "type": "string",
+          "default": "",
+          "description": "Node ID of the Load Conversation State node to read history from (used in LLM classification prompt)"
+        }
+      }
+    },
+    {
+      "type": "entity_extractor",
+      "category": "nlp",
+      "label": "Entity Extractor",
+      "description": "Extract structured entities from text using rule-based patterns (regex, enum, number, date, free_text) with optional LLM fallback for missing required entities.",
+      "icon": "list-filter",
+      "config_schema": {
+        "sourceExpression": {
+          "type": "string",
+          "default": "trigger.message",
+          "description": "Expression that resolves to the source text for entity extraction"
+        },
+        "entities": {
+          "type": "array",
+          "default": [],
+          "description": "List of entities to extract, each with name, type, pattern, and options",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "string", "enum": ["regex", "enum", "number", "date", "free_text"] },
+              "pattern": { "type": "string" },
+              "enum_values": { "type": "array", "items": { "type": "string" } },
+              "description": { "type": "string" },
+              "required": { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "scopeFromNode": {
+          "type": "string",
+          "default": "",
+          "description": "Node ID of an upstream Intent Classifier whose matched intents restrict which entities are extracted"
+        },
+        "intentEntityMapping": {
+          "type": "object",
+          "default": {},
+          "description": "Map of intent name → array of entity names. Restricts extraction to entities relevant to the matched intent. Example: {\"book_flight\": [\"destination\", \"date\"]}"
+        },
+        "llmFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use an LLM to extract required entities that rule-based extraction missed"
+        },
+        "provider": {
+          "type": "string",
+          "default": "google",
+          "enum": ["google", "openai", "anthropic"],
+          "description": "LLM provider for fallback extraction",
+          "visibleWhen": { "field": "llmFallback", "values": [true] }
+        },
+        "model": {
+          "type": "string",
+          "default": "gemini-2.5-flash",
+          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "description": "LLM model for fallback extraction",
+          "visibleWhen": { "field": "llmFallback", "values": [true] }
         }
       }
     }

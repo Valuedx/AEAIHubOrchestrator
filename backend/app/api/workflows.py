@@ -89,11 +89,18 @@ def create_workflow(
     tenant_id: str = Depends(get_tenant_id),
     db: Session = Depends(get_db),
 ):
+    import logging
+    _log = logging.getLogger(__name__)
+
     from app.engine.config_validator import validate_graph_configs
     warnings = validate_graph_configs(body.graph_json)
     if warnings:
-        import logging
-        logging.getLogger(__name__).warning("Graph config warnings on create: %s", warnings)
+        _log.warning("Graph config warnings on create: %s", warnings)
+
+    from app.engine.embedding_cache_helper import precompute_node_embeddings
+    emb_warnings = precompute_node_embeddings(body.graph_json, tenant_id, db)
+    if emb_warnings:
+        _log.warning("Embedding precompute warnings on create: %s", emb_warnings)
 
     wf = WorkflowDefinition(
         tenant_id=tenant_id,
@@ -156,11 +163,19 @@ def update_workflow(
     if body.description is not None:
         wf.description = body.description
     if body.graph_json is not None:
+        import logging
+        _log = logging.getLogger(__name__)
+
         from app.engine.config_validator import validate_graph_configs
         warnings = validate_graph_configs(body.graph_json)
         if warnings:
-            import logging
-            logging.getLogger(__name__).warning("Graph config warnings on update: %s", warnings)
+            _log.warning("Graph config warnings on update: %s", warnings)
+
+        from app.engine.embedding_cache_helper import precompute_node_embeddings
+        emb_warnings = precompute_node_embeddings(body.graph_json, tenant_id, db)
+        if emb_warnings:
+            _log.warning("Embedding precompute warnings on update: %s", emb_warnings)
+
         # Save snapshot of current version before overwriting
         snap = WorkflowSnapshot(
             workflow_def_id=wf.id,

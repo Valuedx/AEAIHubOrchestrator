@@ -19,6 +19,9 @@ import {
   RefreshCw,
   Database,
   Code2,
+  Bell,
+  Target,
+  ListFilter,
   type LucideIcon,
 } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,6 +48,9 @@ const ICON_MAP: Record<string, LucideIcon> = {
   "refresh-cw": RefreshCw,
   database: Database,
   code: Code2,
+  bell: Bell,
+  target: Target,
+  "list-filter": ListFilter,
 };
 
 const CATEGORY_STYLES: Record<
@@ -78,6 +84,18 @@ const CATEGORY_STYLES: Record<
     bg: "bg-teal-50 dark:bg-teal-950/30",
     badge:
       "bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200",
+  },
+  notification: {
+    border: "border-rose-500/60",
+    bg: "bg-rose-50 dark:bg-rose-950/30",
+    badge:
+      "bg-rose-100 text-rose-800 dark:bg-rose-900 dark:text-rose-200",
+  },
+  nlp: {
+    border: "border-indigo-500/60",
+    bg: "bg-indigo-50 dark:bg-indigo-950/30",
+    badge:
+      "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
   },
 };
 
@@ -244,6 +262,8 @@ function getDefaultIcon(category: NodeCategory): string {
       return "git-branch";
     case "knowledge":
       return "database";
+    case "notification":
+      return "bell";
   }
 }
 

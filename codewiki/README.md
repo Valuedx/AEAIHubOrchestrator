@@ -9,7 +9,8 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [Architecture](architecture.md) | System overview, component map, request lifecycle, DAG engine |
 | [API Reference](api-reference.md) | Every REST endpoint — method, path, request/response schemas |
 | [Database Schema](database-schema.md) | All tables, columns, indexes, RLS policies, migration history |
-| [Node Types](node-types.md) | Registry of trigger, agent, action, logic, and knowledge nodes with config schemas |
+| [Node Types](node-types.md) | Registry of trigger, agent, action, logic, knowledge, notification, and NLP nodes with config schemas |
+| [Notification Guide](notification-guide.md) | User guide for the Notification node — channel setup, config value sources, examples, troubleshooting |
 | [RAG & Knowledge Base](rag-knowledge-base.md) | Vector stores, embedding providers, chunking strategies, ingestion and retrieval pipelines |
 | [Frontend Guide](frontend-guide.md) | React component tree, Zustand stores, canvas, toolbar, and sidebar |
 | [Deployment](deployment.md) | Docker Compose, environment variables, Celery, migrations |
@@ -27,7 +28,7 @@ AEAIHubOrchestrator/
 │   │   ├── models/     SQLAlchemy ORM models
 │   │   ├── security/   JWT, vault, rate limiter, tenant helpers
 │   │   └── workers/    Celery app, tasks, Beat scheduler
-│   ├── alembic/        Migration scripts (0000 – 0009)
+│   ├── alembic/        Migration scripts (0000 – 0010)
 │   └── main.py         App entrypoint, router wiring
 ├── frontend/           React + Vite + React Flow
 │   └── src/

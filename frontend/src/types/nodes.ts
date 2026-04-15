@@ -1,4 +1,4 @@
-export type NodeCategory = "trigger" | "agent" | "action" | "logic" | "knowledge";
+export type NodeCategory = "trigger" | "agent" | "action" | "logic" | "knowledge" | "notification" | "nlp";
 
 export interface AgenticNodeData {
   [key: string]: unknown;

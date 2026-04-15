@@ -1,3 +1,5 @@
+> - **V0.9.14 NLP Nodes (2026-04-15)**: **Intent Classifier** and **Entity Extractor** nodes under a new `nlp` category. Intent Classifier supports three modes: `heuristic_only` (lexical + embedding, zero LLM cost), `hybrid` (heuristic with LLM fallback below confidence threshold), and `llm_only`. Optional save-time embedding precomputation (`cacheEmbeddings`) for high-throughput workflows. Entity Extractor supports 5 rule-based extraction types (regex, enum, number, date, free_text) with optional LLM fallback for missing required entities. Intent-entity scoping restricts extraction based on upstream classification results. New `embedding_cache` table (Alembic `0010`). Custom UI editors `IntentListEditor` and `EntityListEditor` in `DynamicConfigForm.tsx`. See `codewiki/node-types.md` for full config reference.
+>
 > - **V0.9.13 Tier 1 UX (2026-04-10)**: **Template gallery** (toolbar **Templates**) — starter workflows, category filters, search, **Import JSON** / **Export current** (`{nodes, edges}`). **Sync run** — toolbar checkbox; `POST /execute` with `sync: true` holds the HTTP connection until a terminal status and returns final context (**200** + `SyncExecuteOut`); default async **202** unchanged. **Debug replay** — after **completed** / **failed** / **cancelled** / **paused**, **Debug** loads checkpoints, timeline scrubber, full `context_json` per step; canvas highlights the checkpoint node. See `SETUP_GUIDE.md` §7.1.2, `TECHNICAL_BLUEPRINT.md` V0.9.13 / §4.5 / §6.10.
 >
 > - **V0.9.11 Operator pause / cancel / resume (2026-03-22)**: While a run is **queued** or **running**, the execution panel offers **Pause** (cooperative pause after the current node), **Stop** (cooperative **cancel**), and (same timing) the SSE stream ends when the instance reaches **`paused`** or **`cancelled`**. **Resume** continues a **`paused`** run via `POST …/resume-paused` (optional `context_patch`). From **`paused`**, **Stop** abandons the run (immediate **`cancelled`**). Distinct from HITL **`suspended`** + **Review & Resume** (`POST …/callback`). DB: `cancel_requested`, `pause_requested` (migrations `0005`, `0006`). See `TECHNICAL_BLUEPRINT.md` §4.5, §5.2, §6.11.
@@ -42,8 +44,8 @@
 
 **Purpose:** This document explains how the orchestrator works end-to-end, from building a visual workflow to executing it asynchronously. Each step includes pointers to the relevant **code files** so you can trace behavior or extend it. For contributor-focused topics (custom nodes, `safe_eval`, pause/cancel internals), see `DEVELOPER_GUIDE.md`.
 
-**Version:** 0.9.13
-**Last updated:** 2026-04-10
+**Version:** 0.9.14
+**Last updated:** 2026-04-15
 
 ---
 
@@ -268,9 +270,11 @@ The backend creates a `WorkflowDefinition` row with `version: 1`.
 
 **On subsequent saves** (PATCH), before overwriting `graph_json`, the backend:
 
-1. Creates a `WorkflowSnapshot` row with the **current** `graph_json` and `version`.
-2. Replaces `graph_json` with the new content.
-3. Increments `version`.
+1. Validates node configs against `node_registry.json` schemas.
+2. Precomputes embeddings for any Intent Classifier nodes with `cacheEmbeddings=true` (stores vectors in `embedding_cache`; no-op if no such nodes exist).
+3. Creates a `WorkflowSnapshot` row with the **current** `graph_json` and `version`.
+4. Replaces `graph_json` with the new content.
+5. Increments `version`.
 
 This gives every save an immutable point-in-time backup. The version badge in the Toolbar (`v{n}`) reflects the current version number.
 
@@ -329,10 +333,11 @@ validateWorkflow(nodes, edges)
       ├── Check 3: Required fields per node type
       │              condition, url, toolName,
       │              arrayExpression, responseNodeId,
-      │              intents (≥1) → ERROR
+      │              intents (≥1), entities (≥1) → ERROR
       │
       └── Check 4: Node ID cross-references
-                     responseNodeId, historyNodeId
+                     responseNodeId, historyNodeId,
+                     scopeFromNode
                      must point to existing node IDs → ERROR
 
       │
@@ -1012,6 +1017,64 @@ ORCHESTRATOR_SECRET_KEY=change-me-in-production
 ### When to use this pattern
 
 Use the proxy pattern when the workflow UUID and payload are already known at call time, for example from a cron scheduler, inbound webhook, or another workflow.
+
+## Step 18 — NLP Nodes: Intent Classifier and Entity Extractor
+
+**Code:** `backend/app/engine/intent_classifier.py`, `backend/app/engine/entity_extractor.py`, `backend/app/engine/embedding_cache_helper.py`
+
+Two dedicated NLP nodes provide structured text understanding without requiring full LLM calls for every request.
+
+### Intent Classifier
+
+Classifies user intent using a hybrid scoring algorithm ported from IntentEdge:
+
+```
+User utterance
+      │
+      ├─ mode == llm_only ──────────────────▶ LLM classify (skip embeddings)
+      │
+      ├─ Lexical scoring (intent name/example substring matching)
+      │
+      ├─ Embedding scoring (cosine similarity of utterance vs intent vectors)
+      │     ├─ cacheEmbeddings=true  → read from DB embedding_cache
+      │     └─ cacheEmbeddings=false → compute on-the-fly
+      │
+      ├─ Combined score = lexical + (embed_score × 4.0)
+      │
+      ├─ confidence ≥ threshold → return heuristic result
+      │
+      └─ confidence < threshold (hybrid mode) → LLM fallback classify
+```
+
+**Save-time embedding precomputation:** When `cacheEmbeddings=true`, saving the workflow triggers `precompute_node_embeddings()` which embeds all configured intents and stores the vectors in the `embedding_cache` table. At runtime, these are read from the DB instead of recomputed. This is optional — for simple intent lists, on-the-fly embedding works fine.
+
+### Entity Extractor
+
+Extracts structured data from text using configurable rule-based patterns:
+
+```
+Source text (from expression)
+      │
+      ├─ Scope entities by upstream intent (if scopeFromNode configured)
+      │
+      ├─ Rule-based extraction (regex, enum, number, date, free_text)
+      │
+      ├─ Check for missing required entities
+      │
+      └─ llmFallback=true and missing required → LLM extract remaining
+```
+
+### Typical NLP workflow pattern
+
+```
+[Webhook Trigger] → [Intent Classifier] → [Entity Extractor] → [Condition]
+                                                                   ↙      ↘
+                                                           [Branch A]  [Branch B]
+```
+
+The Entity Extractor's `scopeFromNode` points at the Intent Classifier. The `intentEntityMapping` restricts which entities are relevant per intent. Downstream Condition nodes branch on `node_X.intents[0]` or `node_Y.missing_required`.
+
+---
 
 ## 19. End-to-End Example
 

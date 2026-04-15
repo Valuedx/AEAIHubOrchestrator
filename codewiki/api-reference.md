@@ -37,6 +37,8 @@ All endpoints are served by the FastAPI backend (default `http://localhost:8000`
 
 All fields optional: `name`, `description`, `graph_json`. When `graph_json` is updated, the previous version is snapshotted and `version` is incremented.
 
+**Save-time side effects:** Both POST and PATCH validate node configs against the registry schema (returning warnings in logs). If the graph contains Intent Classifier nodes with `cacheEmbeddings=true`, embeddings for their intent definitions are precomputed and stored in the `embedding_cache` table. This is transparent to the caller — the API response is unchanged.
+
 **WorkflowOut** (response):
 
 | Field | Type |

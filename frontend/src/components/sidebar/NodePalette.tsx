@@ -17,6 +17,9 @@ import {
   Search,
   X,
   Database,
+  Bell,
+  Target,
+  ListFilter,
   type LucideIcon,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -44,6 +47,9 @@ const ICON_MAP: Record<string, LucideIcon> = {
   save: Save,
   "refresh-cw": RefreshCw,
   database: Database,
+  bell: Bell,
+  target: Target,
+  "list-filter": ListFilter,
 };
 
 const CATEGORY_META: Record<NodeCategory, { label: string; color: string }> = {
@@ -52,9 +58,11 @@ const CATEGORY_META: Record<NodeCategory, { label: string; color: string }> = {
   action: { label: "Actions", color: "text-sky-600 dark:text-sky-400" },
   logic: { label: "Logic", color: "text-emerald-600 dark:text-emerald-400" },
   knowledge: { label: "Knowledge", color: "text-teal-600 dark:text-teal-400" },
+  notification: { label: "Notifications", color: "text-rose-600 dark:text-rose-400" },
+  nlp: { label: "NLP", color: "text-indigo-600 dark:text-indigo-400" },
 };
 
-const CATEGORIES: NodeCategory[] = ["trigger", "agent", "action", "logic", "knowledge"];
+const CATEGORIES: NodeCategory[] = ["trigger", "agent", "action", "logic", "knowledge", "notification", "nlp"];
 
 function DraggableItem({ item }: { item: PaletteItem }) {
   const Icon = ICON_MAP[item.icon] || Wrench;

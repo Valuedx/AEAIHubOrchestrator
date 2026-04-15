@@ -20,6 +20,7 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `knowledge_bases` | Knowledge base definitions | Yes |
 | `kb_documents` | Uploaded documents | Yes |
 | `kb_chunks` | Embedded text chunks (pgvector) | Yes |
+| `embedding_cache` | Precomputed intent embeddings (pgvector) | Yes |
 
 ---
 
@@ -241,6 +242,33 @@ Used by the **pgvector** backend. FAISS stores vectors in local files instead.
 
 ---
 
+## Embedding Cache
+
+### `embedding_cache`
+
+Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Classifier nodes with `cacheEmbeddings=true`).
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL | |
+| `text_hash` | `VARCHAR(64)` | NOT NULL | SHA-256 hex digest of normalized text |
+| `text` | `TEXT` | NOT NULL | Original text that was embedded |
+| `provider` | `VARCHAR(32)` | NOT NULL | Embedding provider (`openai`, `google`, `vertex`) |
+| `model` | `VARCHAR(128)` | NOT NULL | Embedding model name |
+| `embedding` | `VECTOR` | | pgvector column, added in migration |
+| `created_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:**
+- `ix_emb_cache_lookup` on `(tenant_id, provider, model, text_hash)` UNIQUE — fast cache lookup
+- `ix_emb_cache_embedding` HNSW index on `embedding vector_cosine_ops` — similarity search
+
+**RLS:** `tenant_isolation_embedding_cache` policy (same pattern as all other tables).
+
+**Design notes:** Keyed by content hash, not by workflow or node ID. The same text embedded with the same provider/model is cached once and reused across all workflows in the tenant. When intents change, new hashes are computed; old entries remain (harmless, content-addressed).
+
+---
+
 ## Migration history
 
 | # | File | What it does |
@@ -255,6 +283,7 @@ Used by the **pgvector** backend. FAISS stores vectors in local files instead.
 | 0007 | `0007_a2a_support.py` | `a2a_api_keys` table + `is_published` on `workflow_definitions` |
 | 0008 | `0008_instance_definition_version_at_start.py` | Add `definition_version_at_start` to `workflow_instances` |
 | 0009 | `0009_add_knowledge_base_tables.py` | `CREATE EXTENSION vector`, `knowledge_bases`, `kb_documents`, `kb_chunks` with HNSW index + RLS |
+| 0010 | `0010_add_embedding_cache.py` | `embedding_cache` table with pgvector `VECTOR` column, HNSW cosine index, and RLS |
 
 ### Running migrations
 

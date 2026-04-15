@@ -1,5 +1,7 @@
 # AE AI Hub — Agentic Orchestrator Developer Guide
 
+> - **V0.9.14 (2026-04-15):** **§26** — NLP nodes (Intent Classifier + Entity Extractor). `intent_classifier.py` — hybrid scoring (lexical + embedding cosine + LLM fallback); three modes (`hybrid`, `heuristic_only`, `llm_only`). `entity_extractor.py` — rule-based extraction (regex/enum/number/date/free_text) with LLM fallback for missing required entities; intent-entity scoping via `scopeFromNode`. `embedding_cache_helper.py` — DB-backed embedding cache with `get_or_embed()` (batch query + upsert) and `precompute_node_embeddings()` called at save time. New `EmbeddingCache` model + Alembic `0010_add_embedding_cache.py` (pgvector VECTOR column, HNSW index, RLS). Frontend: `IntentListEditor` / `EntityListEditor` custom components in `DynamicConfigForm.tsx`; `nlp` category (indigo) in palette and canvas. `visibleWhen` supports boolean values. See `codewiki/node-types.md` §NLP nodes.
+>
 > - **V0.9.13 (2026-04-10):** **Templates** — add or edit entries in `frontend/src/lib/templates/index.ts` (import graphs from `example*.ts` or inline `nodes`/`edges`). **Sync execute** — `app/api/workflows.py` `execute_workflow` async branch; `schemas.py` `SyncExecuteOut`, `ExecuteRequest.sync` / `sync_timeout`. **Debug replay** — `workflowStore` checkpoint actions; `DebugReplayBar.tsx`; `api.listCheckpoints` / `getCheckpointDetail`. See `TECHNICAL_BLUEPRINT.md` V0.9.13.
 >
 > - **V0.9.12 (2026-04-07):** **§25** — A2A (Agent-to-Agent) protocol. Per-tenant agent card (`GET /tenants/{id}/.well-known/agent.json`), JSON-RPC 2.0 dispatcher (`POST /tenants/{id}/a2a`) with `tasks/send`, `tasks/get`, `tasks/cancel`, `tasks/sendSubscribe`. Outbound **A2A Agent Call** node delegates tasks to remote A2A agents. Inbound key management (`POST/GET/DELETE /api/v1/a2a/keys`). Workflow publish toggle (`PATCH /api/v1/workflows/{id}/publish`). New `A2AApiKey` model, `is_published` on `WorkflowDefinition`. Alembic migration `0007_a2a_support.py`. `WorkflowInstance` status → A2A task state mapping (`suspended` → `input-required`).
@@ -8,8 +10,8 @@
 >
 > - **Earlier sections:** Custom nodes (§1), `safe_eval` (§2), ReAct (§3), ForEach / retry / HITL (§4), vault (§5), conversational memory (§6), through Loop node (§22).
 
-**Version:** 0.9.13
-**Last updated:** 2026-04-10
+**Version:** 0.9.14
+**Last updated:** 2026-04-15
 
 Welcome to the Developer Guide! 🚀 
 
@@ -1363,3 +1365,100 @@ The stream closes automatically when the task reaches a terminal state.
 ```ts
 "A2A Agent Call": ["task_id", "state", "response", "agent", "skill_id"],
 ```
+
+---
+
+## 🎯 26. NLP Nodes — Intent Classifier and Entity Extractor (V0.9.14)
+
+Two dedicated NLP nodes provide structured text understanding as native, configurable workflow steps — ported from the IntentEdge service.
+
+### 26.1 Intent Classifier
+
+**File:** `backend/app/engine/intent_classifier.py`
+
+The Intent Classifier combines three scoring strategies:
+
+| Mode | Strategy | When to use |
+|------|----------|-------------|
+| `heuristic_only` | Lexical substring + embedding cosine similarity | Zero LLM cost; good for well-defined intents with clear examples |
+| `hybrid` (default) | Heuristic first; LLM fallback if confidence < threshold | Best accuracy-to-cost ratio |
+| `llm_only` | Send all intents + conversation history to LLM | Maximum accuracy; highest cost |
+
+**Heuristic scoring:**
+1. Lexical: +2.0 if the intent name appears as a substring in the utterance, +1.0 per matching example
+2. Embedding: `max(0, cosine(utterance_vec, intent_vec)) × 4.0`
+3. Confidence: `min(0.95, 0.5 + best_score × 0.1)`
+
+**Embedding cache (`cacheEmbeddings`):**
+
+When `cacheEmbeddings=true`, saving the workflow triggers `precompute_node_embeddings()` in `embedding_cache_helper.py`. This:
+1. Iterates nodes with `label == "Intent Classifier"` and `cacheEmbeddings=true`
+2. Builds embedding text from intent `name + description + examples`
+3. Calls `get_or_embed()` which checks the `embedding_cache` table by SHA-256 content hash
+4. Embeds missing texts in batch and upserts them
+
+At runtime, the handler reads cached vectors from the DB instead of recomputing. When `cacheEmbeddings=false` (default), embeddings are computed on-the-fly using `embed_batch_transient()` — no DB interaction.
+
+**LLM classification:** Builds a structured prompt with available intents and conversation history, requests strict JSON (`{"intents": [...], "confidence": 0.0-1.0}`), validates returned intent names against the configured set, and falls back to `"fallback_intent"` if parsing fails.
+
+### 26.2 Entity Extractor
+
+**File:** `backend/app/engine/entity_extractor.py`
+
+Rule-based entity extraction supporting five types:
+
+| Type | Strategy | Needs |
+|------|----------|-------|
+| `regex` | `re.search(pattern, text, IGNORECASE)` — returns group(1) or group(0) | `pattern` in config |
+| `enum` | Word-boundary match (`\b{value}\b`) for each configured enum value | `enum_values` list |
+| `number` | First integer or decimal in text | — |
+| `date` | First `YYYY-MM-DD` match | — |
+| `free_text` | `entity_name: value` pattern | — |
+
+**Intent-entity scoping:** When `scopeFromNode` references an upstream Intent Classifier, the handler reads `intents` from its output. If `intentEntityMapping` maps any matched intent to specific entity names, only those entities are extracted. Unmapped intents pass all entities through.
+
+**LLM fallback:** When `llmFallback=true` and required entities are missing after rule-based extraction, the handler sends a structured prompt to the LLM requesting only the missing entity names. Responses are validated and merged into the extraction result.
+
+### 26.3 Frontend custom editors
+
+**File:** `frontend/src/components/sidebar/DynamicConfigForm.tsx`
+
+Two custom React components handle the complex array-of-objects configuration:
+
+- **`IntentListEditor`** — renders one card per intent with fields for name (required), description, examples (comma-separated input), and priority
+- **`EntityListEditor`** — renders one card per entity with name (required), type dropdown, conditional pattern/enum_values fields (shown only for `regex`/`enum` types), description, and required checkbox
+
+Both are wired into `DynamicConfigForm` before the generic array/JSON fallback, matching on `nodeType === "intent_classifier"` / `"entity_extractor"` and `key === "intents"` / `"entities"`.
+
+### 26.4 Validation
+
+**Server-side** (`config_validator.py`):
+- Intent Classifier: non-empty `intents` array, each intent must have a non-empty `name`
+- Entity Extractor: non-empty `entities` array, each entity must have a non-empty `name`; `regex` type requires `pattern`; `enum` type requires non-empty `enum_values`
+
+**Client-side** (`validateWorkflow.ts`):
+- Same rules as server-side — intents/entities array must have ≥1 entry, each with a `name`
+- `historyNodeId` and `scopeFromNode` are cross-validated against existing canvas node IDs
+
+### 26.5 Files added / changed
+
+| File | Change |
+|---|---|
+| `backend/app/models/embedding_cache.py` | New — `EmbeddingCache` SQLAlchemy model |
+| `backend/alembic/versions/0010_add_embedding_cache.py` | New — migration with pgvector VECTOR column, HNSW index, RLS |
+| `backend/app/models/__init__.py` | Added `EmbeddingCache` export |
+| `backend/app/engine/embedding_cache_helper.py` | New — `get_or_embed()`, `embed_batch_transient()`, `precompute_node_embeddings()` |
+| `backend/app/engine/intent_classifier.py` | New — `_handle_intent_classifier()`, `_llm_classify()`, scoring logic |
+| `backend/app/engine/entity_extractor.py` | New — `_handle_entity_extractor()`, `_llm_extract()`, rule-based extraction |
+| `backend/app/engine/node_handlers.py` | Dispatch lines for Intent Classifier and Entity Extractor |
+| `backend/app/engine/config_validator.py` | `_validate_intent_classifier()`, `_validate_entity_extractor()` |
+| `backend/app/api/workflows.py` | `precompute_node_embeddings()` call in create/update |
+| `shared/node_registry.json` | `nlp` category + `intent_classifier` and `entity_extractor` entries |
+| `frontend/src/types/nodes.ts` | `"nlp"` added to `NodeCategory` |
+| `frontend/src/components/sidebar/DynamicConfigForm.tsx` | `IntentListEditor`, `EntityListEditor`, boolean `visibleWhen` support |
+| `frontend/src/components/sidebar/NodePalette.tsx` | `Target`, `ListFilter` icons; `nlp` category in palette |
+| `frontend/src/components/nodes/AgenticNode.tsx` | `Target`, `ListFilter` icons; `nlp` category styles |
+| `frontend/src/lib/expressionVariables.ts` | Output fields for both nodes |
+| `frontend/src/lib/validateWorkflow.ts` | Validation rules for both nodes |
+
+**Run migration:** `alembic upgrade head`

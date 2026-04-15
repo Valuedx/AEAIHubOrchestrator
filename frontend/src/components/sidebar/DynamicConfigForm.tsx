@@ -43,6 +43,7 @@ type FieldSchema = {
   max?: number;
   items?: { type: string };
   description?: string;
+  visibleWhen?: { field: string; values: (string | boolean)[] };
 };
 
 export interface DynamicConfigFormProps {
@@ -75,13 +76,21 @@ const EXPRESSION_KEYS = new Set([
   "userMessageExpression",
   "messageExpression",
   "queryExpression",
+  "destination",
+  "chatId",
+  "phoneNumber",
+  "to",
+  "smtpUser",
+  "smtpPass",
+  "utteranceExpression",
+  "sourceExpression",
 ]);
 
 // Fields that accept a bare node ID (e.g. node_3)
-const NODE_ID_KEYS = new Set(["responseNodeId", "historyNodeId"]);
+const NODE_ID_KEYS = new Set(["responseNodeId", "historyNodeId", "scopeFromNode"]);
 
 // Fields that accept Jinja2 templates (e.g. {{ trigger.message }})
-const JINJA2_KEYS = new Set(["systemPrompt"]);
+const JINJA2_KEYS = new Set(["systemPrompt", "messageTemplate", "subject"]);
 
 // ---------------------------------------------------------------------------
 // FieldHint — grey help text rendered below a field input
@@ -414,6 +423,290 @@ function ToolSingleSelect({
 }
 
 // ---------------------------------------------------------------------------
+// IntentListEditor — array-of-objects editor for Intent Classifier intents
+// ---------------------------------------------------------------------------
+
+interface IntentItem {
+  name: string;
+  description: string;
+  examples: string[];
+  priority: number;
+}
+
+function IntentListEditor({
+  value,
+  onChange,
+  description,
+}: {
+  value: IntentItem[];
+  onChange: (v: IntentItem[]) => void;
+  description?: string;
+}) {
+  const items: IntentItem[] = Array.isArray(value) ? value : [];
+
+  const addItem = () => {
+    onChange([...items, { name: "", description: "", examples: [], priority: 100 }]);
+  };
+
+  const removeItem = (idx: number) => {
+    onChange(items.filter((_, i) => i !== idx));
+  };
+
+  const updateItem = (idx: number, patch: Partial<IntentItem>) => {
+    const updated = items.map((it, i) => (i === idx ? { ...it, ...patch } : it));
+    onChange(updated);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <Label>Intents</Label>
+        <button
+          type="button"
+          onClick={addItem}
+          className="text-xs text-primary hover:underline"
+        >
+          + Add intent
+        </button>
+      </div>
+      {items.length === 0 && (
+        <p className="text-[10px] text-muted-foreground italic">
+          No intents configured — click &quot;+ Add intent&quot; to start
+        </p>
+      )}
+      {items.map((intent, idx) => (
+        <div
+          key={idx}
+          className="border rounded-md p-3 space-y-2 bg-muted/30"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+              Intent {idx + 1}
+            </span>
+            <button
+              type="button"
+              onClick={() => removeItem(idx)}
+              className="text-[10px] text-destructive hover:underline"
+            >
+              Remove
+            </button>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`intent-name-${idx}`} className="text-[11px]">Name *</Label>
+            <Input
+              id={`intent-name-${idx}`}
+              value={intent.name}
+              onChange={(e) => updateItem(idx, { name: e.target.value })}
+              placeholder="e.g. book_flight"
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`intent-desc-${idx}`} className="text-[11px]">Description</Label>
+            <Input
+              id={`intent-desc-${idx}`}
+              value={intent.description}
+              onChange={(e) => updateItem(idx, { description: e.target.value })}
+              placeholder="User wants to book a flight"
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`intent-ex-${idx}`} className="text-[11px]">Examples (comma-separated)</Label>
+            <Input
+              id={`intent-ex-${idx}`}
+              value={(intent.examples || []).join(", ")}
+              onChange={(e) =>
+                updateItem(idx, {
+                  examples: e.target.value
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                })
+              }
+              placeholder="book a flight, fly to, I need tickets"
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`intent-pri-${idx}`} className="text-[11px]">Priority</Label>
+            <Input
+              id={`intent-pri-${idx}`}
+              type="number"
+              value={intent.priority ?? 100}
+              onChange={(e) => updateItem(idx, { priority: parseInt(e.target.value, 10) || 100 })}
+              className="h-8 text-xs w-24"
+            />
+          </div>
+        </div>
+      ))}
+      {description && <FieldHint text={description} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EntityListEditor — array-of-objects editor for Entity Extractor entities
+// ---------------------------------------------------------------------------
+
+interface EntityItem {
+  name: string;
+  type: string;
+  pattern: string;
+  enum_values: string[];
+  description: string;
+  required: boolean;
+}
+
+const ENTITY_TYPES = ["regex", "enum", "number", "date", "free_text"] as const;
+
+function EntityListEditor({
+  value,
+  onChange,
+  description,
+}: {
+  value: EntityItem[];
+  onChange: (v: EntityItem[]) => void;
+  description?: string;
+}) {
+  const items: EntityItem[] = Array.isArray(value) ? value : [];
+
+  const addItem = () => {
+    onChange([
+      ...items,
+      { name: "", type: "free_text", pattern: "", enum_values: [], description: "", required: false },
+    ]);
+  };
+
+  const removeItem = (idx: number) => {
+    onChange(items.filter((_, i) => i !== idx));
+  };
+
+  const updateItem = (idx: number, patch: Partial<EntityItem>) => {
+    const updated = items.map((it, i) => (i === idx ? { ...it, ...patch } : it));
+    onChange(updated);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <Label>Entities</Label>
+        <button
+          type="button"
+          onClick={addItem}
+          className="text-xs text-primary hover:underline"
+        >
+          + Add entity
+        </button>
+      </div>
+      {items.length === 0 && (
+        <p className="text-[10px] text-muted-foreground italic">
+          No entities configured — click &quot;+ Add entity&quot; to start
+        </p>
+      )}
+      {items.map((entity, idx) => (
+        <div
+          key={idx}
+          className="border rounded-md p-3 space-y-2 bg-muted/30"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+              Entity {idx + 1}
+            </span>
+            <button
+              type="button"
+              onClick={() => removeItem(idx)}
+              className="text-[10px] text-destructive hover:underline"
+            >
+              Remove
+            </button>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`ent-name-${idx}`} className="text-[11px]">Name *</Label>
+            <Input
+              id={`ent-name-${idx}`}
+              value={entity.name}
+              onChange={(e) => updateItem(idx, { name: e.target.value })}
+              placeholder="e.g. destination"
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`ent-type-${idx}`} className="text-[11px]">Type</Label>
+            <Select
+              value={entity.type || "free_text"}
+              onValueChange={(v) => updateItem(idx, { type: v })}
+            >
+              <SelectTrigger id={`ent-type-${idx}`} className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ENTITY_TYPES.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {entity.type === "regex" && (
+            <div className="space-y-1">
+              <Label htmlFor={`ent-pat-${idx}`} className="text-[11px]">Pattern (regex)</Label>
+              <Input
+                id={`ent-pat-${idx}`}
+                value={entity.pattern}
+                onChange={(e) => updateItem(idx, { pattern: e.target.value })}
+                placeholder="e.g. (\d{3}-\d{4})"
+                className="h-8 text-xs font-mono"
+              />
+            </div>
+          )}
+          {entity.type === "enum" && (
+            <div className="space-y-1">
+              <Label htmlFor={`ent-enum-${idx}`} className="text-[11px]">Values (comma-separated)</Label>
+              <Input
+                id={`ent-enum-${idx}`}
+                value={(entity.enum_values || []).join(", ")}
+                onChange={(e) =>
+                  updateItem(idx, {
+                    enum_values: e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  })
+                }
+                placeholder="economy, business, first"
+                className="h-8 text-xs"
+              />
+            </div>
+          )}
+          <div className="space-y-1">
+            <Label htmlFor={`ent-desc-${idx}`} className="text-[11px]">Description</Label>
+            <Input
+              id={`ent-desc-${idx}`}
+              value={entity.description}
+              onChange={(e) => updateItem(idx, { description: e.target.value })}
+              placeholder="The travel destination city"
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              id={`ent-req-${idx}`}
+              type="checkbox"
+              checked={entity.required ?? false}
+              onChange={(e) => updateItem(idx, { required: e.target.checked })}
+            />
+            <Label htmlFor={`ent-req-${idx}`} className="text-[11px]">Required</Label>
+          </div>
+        </div>
+      ))}
+      {description && <FieldHint text={description} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -438,6 +731,13 @@ export function DynamicConfigForm({
   return (
     <div className="space-y-4">
       {Object.entries(schema).map(([key, field]) => {
+        if (field.visibleWhen) {
+          const depValue = config[field.visibleWhen.field];
+          if (!field.visibleWhen.values.includes(depValue as string | boolean)) {
+            return null;
+          }
+        }
+
         const value = config[key];
 
         // ---- enum → Select ----
@@ -491,6 +791,32 @@ export function DynamicConfigForm({
                 onChange={(ids) => update(key, ids)}
               />
               {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- intents array on intent_classifier → IntentListEditor ----
+        if (field.type === "array" && key === "intents" && nodeType === "intent_classifier") {
+          return (
+            <div key={key}>
+              <IntentListEditor
+                value={Array.isArray(value) ? (value as IntentItem[]) : []}
+                onChange={(v) => update(key, v)}
+                description={field.description}
+              />
+            </div>
+          );
+        }
+
+        // ---- entities array on entity_extractor → EntityListEditor ----
+        if (field.type === "array" && key === "entities" && nodeType === "entity_extractor") {
+          return (
+            <div key={key}>
+              <EntityListEditor
+                value={Array.isArray(value) ? (value as EntityItem[]) : []}
+                onChange={(v) => update(key, v)}
+                description={field.description}
+              />
             </div>
           );
         }

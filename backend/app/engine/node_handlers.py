@@ -39,6 +39,7 @@ def dispatch_node(
         "agent": _handle_agent,
         "action": _handle_action,
         "logic": _handle_logic,
+        "notification": _handle_action,
     }
 
     # ForEach / Loop are logic nodes with special dispatch handled by dag_runner
@@ -61,10 +62,19 @@ def dispatch_node(
     if label == "Reflection":
         from app.engine.reflection_handler import _handle_reflection
         return _handle_reflection(node_data, context, tenant_id)
+    if label == "Intent Classifier":
+        from app.engine.intent_classifier import _handle_intent_classifier
+        return _handle_intent_classifier(node_data, context, tenant_id)
+    if label == "Entity Extractor":
+        from app.engine.entity_extractor import _handle_entity_extractor
+        return _handle_entity_extractor(node_data, context, tenant_id)
     if label == "Knowledge Retrieval":
         return _handle_knowledge_retrieval(node_data, context, tenant_id)
     if label == "Code":
         return _handle_code_execution(node_data, context, tenant_id)
+    if label == "Notification":
+        from app.engine.notification_handler import _handle_notification
+        return _handle_notification(node_data, context, tenant_id)
 
     handler = handlers.get(category, _handle_action)
     return handler(node_data, context, tenant_id)

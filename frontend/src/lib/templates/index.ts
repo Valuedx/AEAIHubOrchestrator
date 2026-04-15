@@ -8,7 +8,8 @@ export type TemplateCategory =
   | "customer-support"
   | "operations"
   | "research"
-  | "getting-started";
+  | "getting-started"
+  | "notification";
 
 export interface WorkflowTemplate {
   id: string;
@@ -471,6 +472,7 @@ export const TEMPLATE_CATEGORIES: { id: TemplateCategory; label: string }[] = [
   { id: "customer-support", label: "Customer support" },
   { id: "operations", label: "Operations" },
   { id: "research", label: "Research" },
+  { id: "notification", label: "Notifications" },
 ];
 
 export function getWorkflowTemplate(id: string): WorkflowTemplate | undefined {

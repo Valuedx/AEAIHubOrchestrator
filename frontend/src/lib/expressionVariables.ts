@@ -43,6 +43,9 @@ const NODE_OUTPUT_FIELDS: Record<string, string[]> = {
   "Condition":                [],
   "Merge":                    [],
   "ForEach":                  [],
+  "Notification":             ["success", "channel", "status_code", "message_preview"],
+  "Intent Classifier":        ["intents", "confidence", "fallback", "scores", "mode_used", "heuristic_scores"],
+  "Entity Extractor":         ["entities", "missing_required", "extraction_method"],
 };
 
 // Trigger nodes don't output to node_X — they populate the `trigger` key

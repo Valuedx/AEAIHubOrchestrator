@@ -26,7 +26,7 @@ AE AI Hub Orchestrator is a **no-code visual DAG workflow builder** for agentic 
 │  ┌─────────┐  ┌───────────┐  ┌────────────────────────┐│
 │  │   API   │  │ DAG Engine│  │     Node Handlers      ││
 │  │ Routers │──│ dag_runner│──│ trigger/agent/action/   ││
-│  │         │  │           │  │ logic/knowledge         ││
+│  │         │  │           │  │ logic/knowledge/nlp     ││
 │  └─────────┘  └───────────┘  └────────────────────────┘│
 │  ┌─────────┐  ┌───────────┐  ┌────────────────────────┐│
 │  │ Workers │  │ LLM / MCP │  │   RAG Engine           ││
@@ -70,6 +70,10 @@ AE AI Hub Orchestrator is a **no-code visual DAG workflow builder** for agentic 
 | **A2A API** | `api/a2a.py` | Agent-to-Agent protocol, keys, discovery |
 | **DAG engine** | `engine/dag_runner.py` | Topological execution, loop/forEach, parallelism |
 | **Node handlers** | `engine/node_handlers.py` | `dispatch_node` — routes to category/label-specific handler |
+| **Notification handler** | `engine/notification_handler.py` | Channel-aware notification dispatch (Slack, Teams, Discord, Telegram, WhatsApp, PagerDuty, email, generic webhook) |
+| **Intent Classifier** | `engine/intent_classifier.py` | Hybrid intent scoring (lexical + embedding + optional LLM fallback) |
+| **Entity Extractor** | `engine/entity_extractor.py` | Rule-based entity extraction (regex, enum, number, date, free_text) with LLM fallback |
+| **Embedding cache** | `engine/embedding_cache_helper.py` | DB-backed embedding cache with save-time precompute for intent vectors |
 | **LLM providers** | `engine/llm_providers.py` | OpenAI, Anthropic, Google GenAI abstraction |
 | **MCP client** | `engine/mcp_client.py` | Streamable HTTP MCP SDK client |
 | **RAG engine** | `engine/chunker.py`, `embedding_provider.py`, `ingestor.py`, `retriever.py` | Document ingestion and retrieval pipelines |

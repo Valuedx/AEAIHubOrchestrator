@@ -71,7 +71,7 @@ The frontend is a React 19 single-page application built with Vite, React Flow, 
 |------|-------------|
 | `NodePalette.tsx` | Collapsible left panel. Groups nodes by category with color coding. Supports search filtering. Each node item is draggable with `application/reactflow` data transfer |
 | `PropertyInspector.tsx` | Right panel. Shows selected node's ID, display name, engine label. Renders `DynamicConfigForm` based on the registry schema. Delete button |
-| `DynamicConfigForm.tsx` | Schema-driven form generator. Renders enum selects, JSON editors, tool multi-selects, KB selectors, expression inputs based on field type from `node_registry.json` |
+| `DynamicConfigForm.tsx` | Schema-driven form generator. Renders enum selects, JSON editors, tool multi-selects, KB selectors, intent list editor, entity list editor, expression inputs based on field type from `node_registry.json`. Supports `visibleWhen` for conditional field visibility (used by the Notification, Intent Classifier, and Entity Extractor nodes) |
 | `ExpressionInput.tsx` | Input field with autocomplete suggestions for expressions, node IDs, and Jinja2 template variables |
 | `KBMultiSelect.tsx` | Knowledge base multi-select for the `knowledge_retrieval` node. Fetches available KBs from the API |
 
@@ -188,12 +188,13 @@ Manages the saved workflow, execution state, SSE streaming, and debug replay.
 
 5. **Config form**: `DynamicConfigForm` receives the `nodeType` (from `getRegistryNodeType`) and config schema (from `getConfigSchema`). It generates form fields based on schema types:
    - `enum` → Select dropdown
-   - `string` → Text input (or `ExpressionInput` for expression fields)
+   - `string` → Text input (or `ExpressionInput` for expression fields, or Jinja2 editor for `JINJA2_KEYS`)
    - `number` / `integer` → Number input with min/max
    - `boolean` → Checkbox
    - `object` → JSON editor
    - `array` → Multi-select (tools, KBs)
-   - Special handling for `react_agent` tools, `mcp_tool` toolName, and `knowledge_retrieval` KBs
+   - Special handling for `react_agent` tools, `mcp_tool` toolName, `knowledge_retrieval` KBs, `intent_classifier` intents (IntentListEditor), and `entity_extractor` entities (EntityListEditor)
+   - **`visibleWhen`**: If a schema field has a `visibleWhen` property (e.g. `{ "field": "channel", "values": ["telegram"] }` or `{ "field": "llmFallback", "values": [true] }`), the field is only rendered when the dependency field's current value is in the allowed list. Values can be strings or booleans. Used by Notification, Intent Classifier, and Entity Extractor nodes, but is fully generic and reusable by any node type
 
 6. **Config updates**: Changes call `flowStore.updateNodeData`, which also calls `workflowStore.markDirty`.
 

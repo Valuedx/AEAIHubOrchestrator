@@ -94,7 +94,133 @@ def validate_graph_configs(graph_json: dict) -> list[str]:
                         f"'{expected_type}', got '{type(value).__name__}'"
                     )
 
+        if label == "Notification":
+            warnings.extend(_validate_notification(node_id, config))
+        if label == "Intent Classifier":
+            warnings.extend(_validate_intent_classifier(node_id, config))
+        if label == "Entity Extractor":
+            warnings.extend(_validate_entity_extractor(node_id, config))
+
     return warnings
+
+
+def _validate_notification(node_id: str, config: dict) -> list[str]:
+    """Notification-specific save-time validation."""
+    warns: list[str] = []
+    label = "Notification"
+
+    channel = config.get("channel", "")
+    valid_channels = [
+        "slack_webhook", "teams_webhook", "discord_webhook", "telegram",
+        "whatsapp", "pagerduty", "email", "generic_webhook",
+    ]
+    if channel and channel not in valid_channels:
+        warns.append(
+            f"Node {node_id} ({label}): 'channel' value '{channel}' "
+            f"not in {valid_channels}"
+        )
+
+    destination = config.get("destination", "")
+    if not destination:
+        warns.append(f"Node {node_id} ({label}): 'destination' is required")
+
+    msg_tpl = config.get("messageTemplate", "")
+    if not msg_tpl:
+        warns.append(f"Node {node_id} ({label}): 'messageTemplate' is required")
+
+    if msg_tpl:
+        from jinja2 import Environment, TemplateSyntaxError
+        try:
+            Environment().parse(msg_tpl)
+        except TemplateSyntaxError as exc:
+            warns.append(
+                f"Node {node_id} ({label}): 'messageTemplate' has invalid "
+                f"Jinja2 syntax: {exc}"
+            )
+
+    _CHANNEL_REQUIRED: dict[str, list[str]] = {
+        "telegram": ["chatId"],
+        "whatsapp": ["phoneNumber", "phoneNumberId"],
+        "email": ["to", "subject"],
+    }
+    required_fields = _CHANNEL_REQUIRED.get(channel, [])
+    for field in required_fields:
+        if not config.get(field):
+            warns.append(
+                f"Node {node_id} ({label}): '{field}' is required for "
+                f"channel '{channel}'"
+            )
+
+    webhook_channels = ["slack_webhook", "teams_webhook", "discord_webhook", "generic_webhook"]
+    if channel in webhook_channels and destination:
+        is_template = "{{" in destination
+        if not is_template and not destination.startswith("https://"):
+            warns.append(
+                f"Node {node_id} ({label}): 'destination' for {channel} "
+                f"should be an https:// URL or a {{{{ env.* }}}} expression"
+            )
+
+    return warns
+
+
+def _validate_intent_classifier(node_id: str, config: dict) -> list[str]:
+    """Intent Classifier save-time validation."""
+    warns: list[str] = []
+    label = "Intent Classifier"
+
+    intents = config.get("intents", [])
+    if not isinstance(intents, list) or len(intents) == 0:
+        warns.append(f"Node {node_id} ({label}): 'intents' must be a non-empty array")
+    else:
+        for i, intent in enumerate(intents):
+            if not isinstance(intent, dict):
+                warns.append(
+                    f"Node {node_id} ({label}): intent at index {i} must be an object"
+                )
+                continue
+            name = intent.get("name", "")
+            if not name or not isinstance(name, str) or not name.strip():
+                warns.append(
+                    f"Node {node_id} ({label}): intent at index {i} has no 'name'"
+                )
+
+    return warns
+
+
+def _validate_entity_extractor(node_id: str, config: dict) -> list[str]:
+    """Entity Extractor save-time validation."""
+    warns: list[str] = []
+    label = "Entity Extractor"
+
+    entities = config.get("entities", [])
+    if not isinstance(entities, list) or len(entities) == 0:
+        warns.append(f"Node {node_id} ({label}): 'entities' must be a non-empty array")
+    else:
+        for i, entity in enumerate(entities):
+            if not isinstance(entity, dict):
+                warns.append(
+                    f"Node {node_id} ({label}): entity at index {i} must be an object"
+                )
+                continue
+            name = entity.get("name", "")
+            if not name or not isinstance(name, str) or not name.strip():
+                warns.append(
+                    f"Node {node_id} ({label}): entity at index {i} has no 'name'"
+                )
+            etype = entity.get("type", "")
+            if etype == "regex" and not entity.get("pattern"):
+                warns.append(
+                    f"Node {node_id} ({label}): entity '{name}' has type 'regex' but no 'pattern'"
+                )
+            if etype == "enum":
+                vals = entity.get("enum_values", [])
+                if not isinstance(vals, list) or len(vals) == 0:
+                    warns.append(
+                        f"Node {node_id} ({label}): entity '{name}' has type 'enum' "
+                        f"but no 'enum_values'"
+                    )
+
+    return warns
 
 
 def _check_type(value: Any, expected: str) -> bool:

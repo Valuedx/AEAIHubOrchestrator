@@ -10,7 +10,7 @@ Gap analysis comparing AEAIHubOrchestrator against top DAG workflow builders for
 |----------|---|---------|---------------------|--------|
 | **P0** | 1 | RAG / Knowledge Base / Vector Store | Dify, Flowise, n8n | **Done** |
 | **P0** | 2 | Code Execution Node | Dify, n8n, LangGraph | **Done** |
-| **P0** | 3 | Integration Ecosystem (native connectors) | n8n (400+), Dify, Flowise | Planned |
+| **P0** | 3 | Integration Ecosystem (native connectors) | n8n (400+), Dify, Flowise | **Partial** |
 | **P0** | 4 | Credential Management UI | n8n, Dify | **Done** |
 | **P1** | 5 | In-Process Multi-Agent Patterns | CrewAI, LangGraph, AutoGen | Planned |
 | **P1** | 6 | Subgraphs / Nested Workflows | LangGraph, Dify | Planned |
@@ -51,11 +51,13 @@ See [RAG & Knowledge Base](rag-knowledge-base.md) for full documentation.
 
 See [Node Types — Code](node-types.md) for full documentation.
 
-#### 3. Integration Ecosystem / Pre-built Connectors — Planned
+#### 3. Integration Ecosystem / Pre-built Connectors — Partial
 
 > n8n has 400+ pre-built nodes (Slack, Gmail, Google Sheets, Airtable, databases, CRMs, etc.). Dify and Flowise have native integrations for common services.
 
-We have only HTTP Request + MCP tools as integration points. No native Slack, email, database query, file storage, or SaaS connector nodes. MCP provides extensibility, but users must stand up MCP servers for every integration. A core set of high-value native connectors would significantly reduce friction.
+**Progress:** The **Notification node** adds native connectors for 8 channels: Slack (webhook), Microsoft Teams (webhook), Discord (webhook), Telegram (Bot API), WhatsApp (Meta Cloud API), PagerDuty (Events v2), Email (SendGrid, Mailgun, SMTP), and generic webhooks. All channels support three config value sources (static, vault secrets, runtime expressions) and Jinja2 message templating. See [Notification Guide](notification-guide.md).
+
+**Remaining:** Database query nodes, file storage (S3, GCS), CRM connectors, Google Sheets, and other SaaS-specific nodes are not yet implemented. MCP tools remain the extensibility mechanism for uncommon integrations.
 
 #### 4. Credential / Secret Management UI — Done
 
@@ -187,6 +189,7 @@ Features where AEAIHubOrchestrator is competitive or ahead:
 | Strength | Details |
 |----------|---------|
 | **A2A Protocol** | First-class inter-agent delegation that most competitors lack natively |
+| **NLP Nodes** | Dedicated Intent Classifier (hybrid scoring) and Entity Extractor (rule-based + LLM fallback) with optional embedding caching |
 | **MCP Integration** | Extensible tool discovery via a standard protocol |
 | **HITL + Pause/Resume/Cancel** | Richer operator control than most visual builders |
 | **Checkpointing + Debug Replay** | On par with LangGraph's checkpointing |

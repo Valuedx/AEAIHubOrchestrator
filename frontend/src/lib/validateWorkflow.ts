@@ -34,6 +34,7 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   "Reflection":              ["reflectionPrompt"],
   "Loop":                    ["continueExpression"],
   "Bridge User Reply":       [], // at least one of messageExpression / responseNodeId — checked below
+  "Notification":            ["channel", "destination", "messageTemplate"],
 };
 
 // Fields that reference another node ID by value — must exist in the graph
@@ -41,6 +42,8 @@ const NODE_ID_REF_FIELDS: Record<string, string[]> = {
   "Save Conversation State": ["responseNodeId"],
   "Bridge User Reply":       ["responseNodeId"],
   "LLM Router":              ["historyNodeId"],
+  "Intent Classifier":       ["historyNodeId"],
+  "Entity Extractor":        ["scopeFromNode"],
 };
 
 export function validateWorkflow(
@@ -109,6 +112,56 @@ export function validateWorkflow(
             message: `"${title}" (${node.id}): field "${field}" is required but empty.`,
             severity: "error",
           });
+        }
+      }
+    }
+
+    // Intent Classifier: intents array must have ≥ 1 entry, each with a name
+    if (data.label === "Intent Classifier") {
+      const intents = (data.config as Record<string, unknown>).intents;
+      if (!Array.isArray(intents) || intents.length === 0) {
+        errors.push({
+          nodeId: node.id,
+          nodeLabel: title,
+          message: `"${title}" (${node.id}): "intents" must have at least one intent.`,
+          severity: "error",
+        });
+      } else {
+        for (let i = 0; i < intents.length; i++) {
+          const it = intents[i] as Record<string, unknown> | undefined;
+          if (!it || !it.name || String(it.name).trim() === "") {
+            errors.push({
+              nodeId: node.id,
+              nodeLabel: title,
+              message: `"${title}" (${node.id}): intent at index ${i} has no "name".`,
+              severity: "error",
+            });
+          }
+        }
+      }
+    }
+
+    // Entity Extractor: entities array must have ≥ 1 entry, each with a name
+    if (data.label === "Entity Extractor") {
+      const entities = (data.config as Record<string, unknown>).entities;
+      if (!Array.isArray(entities) || entities.length === 0) {
+        errors.push({
+          nodeId: node.id,
+          nodeLabel: title,
+          message: `"${title}" (${node.id}): "entities" must have at least one entity.`,
+          severity: "error",
+        });
+      } else {
+        for (let i = 0; i < entities.length; i++) {
+          const ent = entities[i] as Record<string, unknown> | undefined;
+          if (!ent || !ent.name || String(ent.name).trim() === "") {
+            errors.push({
+              nodeId: node.id,
+              nodeLabel: title,
+              message: `"${title}" (${node.id}): entity at index ${i} has no "name".`,
+              severity: "error",
+            });
+          }
         }
       }
     }
