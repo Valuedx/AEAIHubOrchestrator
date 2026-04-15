@@ -110,6 +110,7 @@ const STATUS_DOT: Record<string, string> = {
   completed: "bg-green-500",
   failed: "bg-red-500",
   suspended: "bg-yellow-500",
+  paused: "bg-cyan-500",
 };
 
 function AgenticNodeComponent({ id, data, selected }: NodeProps) {

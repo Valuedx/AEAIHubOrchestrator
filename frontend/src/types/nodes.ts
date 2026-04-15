@@ -9,7 +9,7 @@ export interface AgenticNodeData {
   nodeCategory: NodeCategory;
   description?: string;
   config: Record<string, unknown>;
-  status?: "idle" | "running" | "completed" | "failed" | "suspended";
+  status?: "idle" | "running" | "completed" | "failed" | "suspended" | "paused";
 }
 
 /** Title shown on the node card and in expression picker groups. */

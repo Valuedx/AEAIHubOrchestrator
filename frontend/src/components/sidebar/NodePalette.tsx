@@ -20,6 +20,11 @@ import {
   Bell,
   Target,
   ListFilter,
+  MessageSquare,
+  Layers,
+  Archive,
+  Network,
+  Code2,
   type LucideIcon,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -50,6 +55,11 @@ const ICON_MAP: Record<string, LucideIcon> = {
   bell: Bell,
   target: Target,
   "list-filter": ListFilter,
+  "message-square": MessageSquare,
+  workflow: Layers,
+  archive: Archive,
+  network: Network,
+  code: Code2,
 };
 
 const CATEGORY_META: Record<NodeCategory, { label: string; color: string }> = {
