@@ -460,6 +460,7 @@ def _handle_save_conversation_state(
     from app.database import SessionLocal
     from app.engine.memory_service import (
         append_conversation_turns,
+        build_conversation_idempotency_key,
         promote_entity_facts,
         promote_memory_records,
         refresh_rolling_summary,
@@ -471,7 +472,19 @@ def _handle_save_conversation_state(
         instance_id = str(context.get("_instance_id", "") or "")
         current_node_id = str(context.get("_current_node_id", "") or "")
         workflow_def_id = str(context.get("_workflow_def_id", "") or "")
-        idempotency_key = f"{session_id}:{instance_id}:{current_node_id}"
+        raw_loop_iteration = context.get("_loop_iteration")
+        try:
+            loop_iteration = int(raw_loop_iteration) if raw_loop_iteration is not None else None
+        except (TypeError, ValueError):
+            loop_iteration = None
+        idempotency_key = build_conversation_idempotency_key(
+            session_id=session_id,
+            instance_id=instance_id or None,
+            node_id=current_node_id or None,
+            loop_iteration=loop_iteration,
+            user_message=user_message,
+            assistant_response=assistant_response,
+        )
 
         session, _ = append_conversation_turns(
             db,

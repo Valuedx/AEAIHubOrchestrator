@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ DEFAULT_SEMANTIC_HITS = 4
 DEFAULT_SUMMARY_TRIGGER_MESSAGES = 12
 DEFAULT_SUMMARY_RECENT_TURNS = 6
 DEFAULT_SUMMARY_MAX_TOKENS = 400
+DEFAULT_HISTORY_ORDER = "summary_first"
 DEFAULT_EMBEDDING_PROVIDER = "openai"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_VECTOR_STORE = "pgvector"
@@ -68,6 +70,13 @@ def _parse_scopes(raw: Any) -> list[str]:
     return list(DEFAULT_SCOPES)
 
 
+def _parse_history_order(raw: Any) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"summary_first", "recent_first"}:
+        return value
+    return DEFAULT_HISTORY_ORDER
+
+
 def _latest_user_message(context: dict[str, Any]) -> str:
     trigger = context.get("trigger", {}) or {}
     for key in ("message", "user_message", "text", "prompt"):
@@ -99,6 +108,27 @@ def serialize_message(message: ConversationMessage) -> dict[str, Any]:
         "content": message.content,
         "timestamp": _iso(message.message_at),
     }
+
+
+def build_conversation_idempotency_key(
+    *,
+    session_id: str,
+    instance_id: str | None,
+    node_id: str | None,
+    loop_iteration: int | None,
+    user_message: str,
+    assistant_response: str,
+) -> str:
+    payload = {
+        "session_id": session_id,
+        "instance_id": instance_id or "",
+        "node_id": node_id or "",
+        "loop_iteration": loop_iteration,
+        "user_message": user_message.strip(),
+        "assistant_response": assistant_response.strip(),
+    }
+    encoded = repr(sorted(payload.items())).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def get_or_create_session(
@@ -324,6 +354,7 @@ class EffectiveMemoryPolicy:
     summary_trigger_messages: int = DEFAULT_SUMMARY_TRIGGER_MESSAGES
     summary_recent_turns: int = DEFAULT_SUMMARY_RECENT_TURNS
     summary_max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS
+    history_order: str = DEFAULT_HISTORY_ORDER
     semantic_score_threshold: float = 0.0
     embedding_provider: str = DEFAULT_EMBEDDING_PROVIDER
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
@@ -452,6 +483,14 @@ def resolve_memory_policy(
                 tenant_profile.summary_max_tokens if tenant_profile else DEFAULT_SUMMARY_MAX_TOKENS
             )
         ),
+        history_order=_parse_history_order(
+            node_config.get(
+                "historyOrder",
+                primary.history_order if primary else (
+                    tenant_profile.history_order if tenant_profile else DEFAULT_HISTORY_ORDER
+                ),
+            )
+        ),
         semantic_score_threshold=float(
             primary.semantic_score_threshold if primary else (
                 tenant_profile.semantic_score_threshold if tenant_profile else 0.0
@@ -530,6 +569,7 @@ def promote_entity_facts(
     context: dict[str, Any],
     policy: EffectiveMemoryPolicy,
 ) -> list[EntityFact]:
+    """Promote structured facts with last-write-wins semantics and one active fact per key."""
     created: list[EntityFact] = []
     now = _utcnow()
     workflow_uuid = uuid.UUID(workflow_def_id) if workflow_def_id else None
@@ -554,47 +594,64 @@ def promote_entity_facts(
                 continue
             fact_value_str = str(fact_value).strip()
             confidence = float(fact_cfg.get("confidence", 1.0) or 1.0)
+            for attempt in range(2):
+                try:
+                    with db.begin_nested():
+                        current = (
+                            db.query(EntityFact)
+                            .filter_by(
+                                tenant_id=tenant_id,
+                                entity_type=entity_type,
+                                entity_key=entity_key_str,
+                                fact_name=fact_name,
+                                valid_to=None,
+                            )
+                            .with_for_update()
+                            .order_by(EntityFact.created_at.desc())
+                            .first()
+                        )
+                        if current and str(current.fact_value) == fact_value_str:
+                            if confidence > float(current.confidence or 0.0):
+                                current.confidence = confidence
+                            break
 
-            current = (
-                db.query(EntityFact)
-                .filter_by(
-                    tenant_id=tenant_id,
-                    entity_type=entity_type,
-                    entity_key=entity_key_str,
-                    fact_name=fact_name,
-                    valid_to=None,
-                )
-                .order_by(EntityFact.created_at.desc())
-                .first()
-            )
-            if current and str(current.fact_value) == fact_value_str:
-                continue
+                        fact = EntityFact(
+                            tenant_id=tenant_id,
+                            entity_type=entity_type,
+                            entity_key=entity_key_str,
+                            fact_name=fact_name,
+                            fact_value=fact_value_str,
+                            confidence=confidence,
+                            valid_from=now,
+                            session_ref_id=session_ref_id,
+                            workflow_def_id=workflow_uuid,
+                            source_instance_id=instance_uuid,
+                            source_node_id=node_id,
+                            metadata_json={
+                                "mapping_name": mapping.get("name", ""),
+                                "value_expression": value_expr,
+                                "resolution_strategy": "last_write_wins",
+                            },
+                        )
+                        db.add(fact)
+                        db.flush()
 
-            fact = EntityFact(
-                tenant_id=tenant_id,
-                entity_type=entity_type,
-                entity_key=entity_key_str,
-                fact_name=fact_name,
-                fact_value=fact_value_str,
-                confidence=confidence,
-                valid_from=now,
-                session_ref_id=session_ref_id,
-                workflow_def_id=workflow_uuid,
-                source_instance_id=instance_uuid,
-                source_node_id=node_id,
-                metadata_json={
-                    "mapping_name": mapping.get("name", ""),
-                    "value_expression": value_expr,
-                },
-            )
-            db.add(fact)
-            db.flush()
+                        if current:
+                            current.valid_to = now
+                            current.superseded_by = fact.id
 
-            if current:
-                current.valid_to = now
-                current.superseded_by = fact.id
-
-            created.append(fact)
+                        created.append(fact)
+                        break
+                except IntegrityError:
+                    if attempt == 0:
+                        continue
+                    logger.warning(
+                        "Entity fact promotion raced for %s/%s/%s/%s; using winner from concurrent transaction",
+                        tenant_id,
+                        entity_type,
+                        entity_key_str,
+                        fact_name,
+                    )
 
     return created
 
@@ -887,15 +944,17 @@ def assemble_history_text(
         policy=policy,
     )
 
-    history_parts: list[str] = []
-    if summary_block:
-        history_parts.append(summary_block)
+    recent_block = ""
     if recent_messages:
-        history_parts.append(
-            "Recent turns:\n" + "\n".join(
-                f"{msg.role.upper()}: {msg.content}" for msg in recent_messages
-            )
+        recent_block = "Recent turns:\n" + "\n".join(
+            f"{msg.role.upper()}: {msg.content}" for msg in recent_messages
         )
+    history_parts: list[str] = (
+        [recent_block, summary_block]
+        if policy.history_order == "recent_first"
+        else [summary_block, recent_block]
+    )
+    history_parts = [part for part in history_parts if part]
 
     return "\n\n".join(history_parts) if history_parts else "(no prior messages)", {
         "enabled": bool(policy.enabled),
@@ -907,6 +966,7 @@ def assemble_history_text(
         "recent_turn_count": len(recent_messages),
         "recent_turn_ids": [str(msg.id) for msg in recent_messages],
         "recent_token_budget": policy.recent_token_budget,
+        "history_order": policy.history_order,
     }
 
 
@@ -972,11 +1032,18 @@ def assemble_agent_messages(
         system_parts.append(rendered_system_prompt.strip())
     if system_parts:
         messages.append({"role": "system", "content": "\n\n".join(system_parts)})
-    if summary_block:
-        messages.append({"role": "assistant", "content": summary_block})
-    for message in recent_messages:
-        if message.role in {"user", "assistant"}:
-            messages.append({"role": message.role, "content": message.content})
+    summary_message = [{"role": "assistant", "content": summary_block}] if summary_block else []
+    recent_turn_messages = [
+        {"role": message.role, "content": message.content}
+        for message in recent_messages
+        if message.role in {"user", "assistant"}
+    ]
+    ordered_history_messages = (
+        recent_turn_messages + summary_message
+        if policy.history_order == "recent_first"
+        else summary_message + recent_turn_messages
+    )
+    messages.extend(ordered_history_messages)
 
     final_sections: list[str] = []
     facts_block = _format_entity_facts(facts)
@@ -1014,5 +1081,6 @@ def assemble_agent_messages(
         "recent_token_budget": policy.recent_token_budget,
         "max_semantic_hits": policy.max_semantic_hits,
         "scopes": policy.scopes,
+        "history_order": policy.history_order,
     }
     return messages, memory_debug

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -88,6 +89,7 @@ class MemoryProfile(Base):
     summary_trigger_messages = Column(Integer, nullable=False, default=12)
     summary_recent_turns = Column(Integer, nullable=False, default=6)
     summary_max_tokens = Column(Integer, nullable=False, default=400)
+    history_order = Column(String(32), nullable=False, default="summary_first")
     semantic_score_threshold = Column(Float, nullable=False, default=0.0)
     embedding_provider = Column(String(32), nullable=False, default="openai")
     embedding_model = Column(String(128), nullable=False, default="text-embedding-3-small")
@@ -99,6 +101,19 @@ class MemoryProfile(Base):
     __table_args__ = (
         Index("ix_mem_profile_tenant_name", "tenant_id", "name"),
         Index("ix_mem_profile_tenant_wf_default", "tenant_id", "workflow_def_id", "is_default"),
+        Index(
+            "ux_mem_profile_tenant_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("workflow_def_id IS NULL AND is_default = true"),
+        ),
+        Index(
+            "ux_mem_profile_workflow_default",
+            "tenant_id",
+            "workflow_def_id",
+            unique=True,
+            postgresql_where=text("workflow_def_id IS NOT NULL AND is_default = true"),
+        ),
     )
 
 
@@ -172,5 +187,14 @@ class EntityFact(Base):
             "entity_key",
             "fact_name",
             "valid_to",
+        ),
+        Index(
+            "ux_entity_fact_active_unique",
+            "tenant_id",
+            "entity_type",
+            "entity_key",
+            "fact_name",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
         ),
     )

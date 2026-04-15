@@ -122,6 +122,7 @@ def upgrade() -> None:
         sa.Column("summary_trigger_messages", sa.Integer(), nullable=False, server_default="12"),
         sa.Column("summary_recent_turns", sa.Integer(), nullable=False, server_default="6"),
         sa.Column("summary_max_tokens", sa.Integer(), nullable=False, server_default="400"),
+        sa.Column("history_order", sa.String(32), nullable=False, server_default="summary_first"),
         sa.Column("semantic_score_threshold", sa.Float(), nullable=False, server_default="0"),
         sa.Column("embedding_provider", sa.String(32), nullable=False, server_default="openai"),
         sa.Column("embedding_model", sa.String(128), nullable=False, server_default="text-embedding-3-small"),
@@ -135,6 +136,20 @@ def upgrade() -> None:
         "ix_mem_profile_tenant_wf_default",
         "memory_profiles",
         ["tenant_id", "workflow_def_id", "is_default"],
+    )
+    op.create_index(
+        "ux_mem_profile_tenant_default",
+        "memory_profiles",
+        ["tenant_id"],
+        unique=True,
+        postgresql_where=sa.text("workflow_def_id IS NULL AND is_default = true"),
+    )
+    op.create_index(
+        "ux_mem_profile_workflow_default",
+        "memory_profiles",
+        ["tenant_id", "workflow_def_id"],
+        unique=True,
+        postgresql_where=sa.text("workflow_def_id IS NOT NULL AND is_default = true"),
     )
 
     op.create_table(
@@ -202,6 +217,13 @@ def upgrade() -> None:
         "ix_entity_fact_active_lookup",
         "entity_facts",
         ["tenant_id", "entity_type", "entity_key", "fact_name", "valid_to"],
+    )
+    op.create_index(
+        "ux_entity_fact_active_unique",
+        "entity_facts",
+        ["tenant_id", "entity_type", "entity_key", "fact_name"],
+        unique=True,
+        postgresql_where=sa.text("valid_to IS NULL"),
     )
 
     bind = op.get_bind()
@@ -314,6 +336,8 @@ def downgrade() -> None:
     op.drop_table("entity_facts")
     op.execute("DROP INDEX IF EXISTS ix_memory_records_embedding")
     op.drop_table("memory_records")
+    op.drop_index("ux_mem_profile_workflow_default", table_name="memory_profiles")
+    op.drop_index("ux_mem_profile_tenant_default", table_name="memory_profiles")
     op.drop_table("memory_profiles")
     op.drop_table("conversation_messages")
     op.drop_column("conversation_sessions", "summary_through_turn")

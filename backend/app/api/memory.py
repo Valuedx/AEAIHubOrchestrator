@@ -33,6 +33,7 @@ class MemoryProfileBase(BaseModel):
     summary_trigger_messages: int = Field(default=12, ge=1, le=200)
     summary_recent_turns: int = Field(default=6, ge=0, le=50)
     summary_max_tokens: int = Field(default=400, ge=64, le=4000)
+    history_order: str = Field(default="summary_first", pattern="^(summary_first|recent_first)$")
     semantic_score_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
@@ -57,6 +58,7 @@ class MemoryProfileUpdate(BaseModel):
     summary_trigger_messages: int | None = Field(default=None, ge=1, le=200)
     summary_recent_turns: int | None = Field(default=None, ge=0, le=50)
     summary_max_tokens: int | None = Field(default=None, ge=64, le=4000)
+    history_order: str | None = Field(default=None, pattern="^(summary_first|recent_first)$")
     semantic_score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     embedding_provider: str | None = None
     embedding_model: str | None = None
@@ -136,6 +138,7 @@ def _profile_to_out(profile: MemoryProfile) -> MemoryProfileOut:
         summary_trigger_messages=profile.summary_trigger_messages,
         summary_recent_turns=profile.summary_recent_turns,
         summary_max_tokens=profile.summary_max_tokens,
+        history_order=profile.history_order,
         semantic_score_threshold=profile.semantic_score_threshold,
         embedding_provider=profile.embedding_provider,
         embedding_model=profile.embedding_model,

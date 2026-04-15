@@ -164,6 +164,7 @@ export interface MemoryProfileOut {
   summary_trigger_messages: number;
   summary_recent_turns: number;
   summary_max_tokens: number;
+  history_order: "summary_first" | "recent_first";
   semantic_score_threshold: number;
   embedding_provider: string;
   embedding_model: string;

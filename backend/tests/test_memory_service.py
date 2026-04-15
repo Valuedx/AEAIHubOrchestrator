@@ -5,6 +5,7 @@ from app.engine.memory_service import (
     EffectiveMemoryPolicy,
     assemble_agent_messages,
     assemble_history_text,
+    build_conversation_idempotency_key,
     build_history_block,
 )
 
@@ -195,3 +196,84 @@ def test_assemble_agent_messages_uses_turns_without_duplication(monkeypatch):
     assert messages[2]["content"] == "Recent clarification"
     assert "Latest user message:\nCurrent question" in messages[-1]["content"]
     assert debug["recent_turn_count"] == 2
+
+
+def test_assemble_history_text_supports_recent_first_order(monkeypatch):
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id="tenant-a",
+        session_id="sess-1",
+        summary_text="Earlier summary block.",
+        summary_through_turn=2,
+        message_count=4,
+    )
+    rows = [
+        _message(1, "user", "Old question"),
+        _message(2, "assistant", "Old answer"),
+        _message(3, "user", "Recent clarification"),
+        _message(4, "assistant", "Recent follow-up"),
+    ]
+    fake_db = _FakeDB(rows)
+
+    monkeypatch.setattr(
+        "app.engine.memory_service.resolve_memory_policy",
+        lambda *args, **kwargs: EffectiveMemoryPolicy(
+            history_node_id="node_history",
+            recent_token_budget=1000,
+            history_order="recent_first",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_or_create_session",
+        lambda *args, **kwargs: session,
+    )
+
+    history_text, debug = assemble_history_text(
+        fake_db,
+        tenant_id="tenant-a",
+        workflow_def_id="",
+        context={"node_history": {"session_id": "sess-1", "messages": []}},
+        node_config={"historyNodeId": "node_history"},
+    )
+
+    assert history_text.index("Recent turns:") < history_text.index("Earlier conversation summary:")
+    assert debug["history_order"] == "recent_first"
+
+
+def test_conversation_idempotency_key_changes_with_loop_iteration_and_content():
+    base = build_conversation_idempotency_key(
+        session_id="sess-1",
+        instance_id="inst-1",
+        node_id="node-save",
+        loop_iteration=1,
+        user_message="hello",
+        assistant_response="world",
+    )
+    same = build_conversation_idempotency_key(
+        session_id="sess-1",
+        instance_id="inst-1",
+        node_id="node-save",
+        loop_iteration=1,
+        user_message="hello",
+        assistant_response="world",
+    )
+    different_loop = build_conversation_idempotency_key(
+        session_id="sess-1",
+        instance_id="inst-1",
+        node_id="node-save",
+        loop_iteration=2,
+        user_message="hello",
+        assistant_response="world",
+    )
+    different_content = build_conversation_idempotency_key(
+        session_id="sess-1",
+        instance_id="inst-1",
+        node_id="node-save",
+        loop_iteration=1,
+        user_message="hello again",
+        assistant_response="world",
+    )
+
+    assert base == same
+    assert base != different_loop
+    assert base != different_content
