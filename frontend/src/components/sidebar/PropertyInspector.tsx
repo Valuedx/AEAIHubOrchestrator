@@ -47,7 +47,7 @@ export function PropertyInspector() {
   const schema = getConfigSchema(data.label);
 
   return (
-    <div className="flex flex-col w-72 border-l bg-sidebar">
+    <div className="flex flex-col w-72 border-l bg-sidebar min-h-0">
       <div className="flex items-center justify-between px-4 py-3">
         <h2 className="text-sm font-semibold">Properties</h2>
         <button
@@ -58,7 +58,7 @@ export function PropertyInspector() {
         </button>
       </div>
       <Separator />
-      <ScrollArea className="flex-1 px-4 py-3">
+      <ScrollArea className="flex-1 min-h-0 px-4 py-3">
         <div className="space-y-4">
           {/* Node ID chip */}
           <div className="flex items-center gap-1.5 rounded-md bg-muted px-2.5 py-1.5">
