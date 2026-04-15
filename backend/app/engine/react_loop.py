@@ -16,7 +16,8 @@ import logging
 from typing import Any
 
 from app.config import settings
-from app.engine.prompt_template import render_prompt, build_user_message
+from app.database import SessionLocal
+from app.engine.memory_service import assemble_agent_messages
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +39,21 @@ def run_react_loop(
     temperature = float(config.get("temperature", 0.7))
     max_tokens = int(config.get("maxTokens", 4096))
 
+    from app.engine.prompt_template import render_prompt
+
     system_prompt = render_prompt(raw_prompt, context)
-    initial_message = build_user_message(context)
+    db = SessionLocal()
+    try:
+        initial_messages, memory_debug = assemble_agent_messages(
+            db,
+            tenant_id=tenant_id,
+            workflow_def_id=str(context.get("_workflow_def_id", "") or ""),
+            context=context,
+            node_config=config,
+            rendered_system_prompt=system_prompt,
+        )
+    finally:
+        db.close()
 
     tool_defs = _load_tool_definitions(tool_names if tool_names else None)
 
@@ -50,7 +64,7 @@ def run_react_loop(
     if not handler:
         raise ValueError(f"Unknown LLM provider for ReAct: {provider}")
 
-    messages = handler["init"](system_prompt, initial_message)
+    messages = handler["init"](initial_messages)
 
     for i in range(max_iterations):
         logger.info("ReAct [%s/%s] iteration %d/%d", provider, model, i + 1, max_iterations)
@@ -72,6 +86,7 @@ def run_react_loop(
                 "usage": total_usage,
                 "iterations": iterations,
                 "total_iterations": i + 1,
+                "memory_debug": memory_debug,
             }
 
         tool_results = []
@@ -106,6 +121,7 @@ def run_react_loop(
         "usage": total_usage,
         "iterations": iterations,
         "total_iterations": max_iterations,
+        "memory_debug": memory_debug,
     }
 
 
@@ -146,12 +162,8 @@ def _load_tool_definitions(tool_names: list[str] | None) -> list[dict[str, Any]]
 # Provider-specific message handling
 # ---------------------------------------------------------------------------
 
-def _openai_init(system_prompt: str, user_message: str) -> list[dict]:
-    msgs = []
-    if system_prompt:
-        msgs.append({"role": "system", "content": system_prompt})
-    msgs.append({"role": "user", "content": user_message})
-    return msgs
+def _openai_init(messages: list[dict]) -> list[dict]:
+    return list(messages)
 
 
 def _openai_call(
@@ -219,8 +231,16 @@ def _openai_append(messages: list[dict], response: dict, tool_results: list[dict
     return messages
 
 
-def _anthropic_init(system_prompt: str, user_message: str) -> dict:
-    return {"system": system_prompt, "messages": [{"role": "user", "content": user_message}]}
+def _anthropic_init(messages: list[dict]) -> dict:
+    system = "\n\n".join(
+        str(msg.get("content", "")) for msg in messages if msg.get("role") == "system"
+    )
+    convo = [
+        {"role": msg.get("role", "user"), "content": str(msg.get("content", ""))}
+        for msg in messages
+        if msg.get("role") in {"user", "assistant"}
+    ]
+    return {"system": system, "messages": convo}
 
 
 def _anthropic_call(
@@ -291,8 +311,30 @@ def _anthropic_append(state: dict, response: dict, tool_results: list[dict]) -> 
     return {"system": state["system"], "messages": messages}
 
 
-def _google_init(system_prompt: str, user_message: str) -> dict:
-    return {"system": system_prompt, "history": [], "user_message": user_message}
+def _google_init(messages: list[dict]) -> dict:
+    from google.genai import types
+
+    system = "\n\n".join(
+        str(msg.get("content", "")) for msg in messages if msg.get("role") == "system"
+    )
+    convo = [msg for msg in messages if msg.get("role") in {"user", "assistant"}]
+    if not convo:
+        return {"system": system, "history": [], "user_message": ""}
+
+    history_msgs = convo[:-1]
+    current = convo[-1]
+    history = [
+        types.Content(
+            role="model" if msg.get("role") == "assistant" else "user",
+            parts=[types.Part.from_text(text=str(msg.get("content", "")))],
+        )
+        for msg in history_msgs
+    ]
+    return {
+        "system": system,
+        "history": history,
+        "user_message": str(current.get("content", "")),
+    }
 
 
 def _google_call(

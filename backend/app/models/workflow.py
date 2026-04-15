@@ -13,7 +13,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from app.database import Base
 
@@ -83,8 +83,8 @@ class WorkflowInstance(Base):
     execution_logs = relationship("ExecutionLog", back_populates="instance")
     children = relationship(
         "WorkflowInstance",
-        backref="parent_instance_rel",
         foreign_keys=[parent_instance_id],
+        backref=backref("parent_instance_rel", remote_side=[id]),
         lazy="dynamic",
     )
 
@@ -168,9 +168,9 @@ class InstanceCheckpoint(Base):
 class ConversationSession(Base):
     """Persistent multi-turn conversation history for the Stateful Re-Trigger Pattern.
 
-    Each session stores the full message history across DAG instances, enabling
-    conversational fluidity without cyclic graphs.  A session_id ties together
-    all DAG runs that belong to the same chat thread.
+    A session_id ties together all DAG runs that belong to the same chat thread.
+    Message rows live in ``conversation_messages``; the session row stores
+    metadata and rolling summary state.
     """
 
     __tablename__ = "conversation_sessions"
@@ -178,10 +178,25 @@ class ConversationSession(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id = Column(String(256), nullable=False)
     tenant_id = Column(String(64), nullable=False, index=True)
-    # Array of {"role": "user"|"assistant", "content": str, "timestamp": str}
-    messages = Column(JSONB, nullable=False, default=list)
+    message_count = Column(Integer, nullable=False, default=0)
+    last_message_at = Column(DateTime(timezone=True), nullable=True)
+    summary_text = Column(Text, nullable=True)
+    summary_updated_at = Column(DateTime(timezone=True), nullable=True)
+    summary_through_turn = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    messages_rel = relationship(
+        "ConversationMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ConversationMessage.turn_index",
+    )
+    memory_records = relationship(
+        "MemoryRecord",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_conv_session_tenant_session", "tenant_id", "session_id", unique=True),

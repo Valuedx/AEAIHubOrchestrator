@@ -259,7 +259,7 @@ function KBCreateView({ onCreated }: { onCreated: () => void }) {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label>Embedding Provider</Label>
-            <Select value={embeddingProvider} onValueChange={setEmbeddingProvider}>
+            <Select value={embeddingProvider} onValueChange={(value) => setEmbeddingProvider(value ?? "")}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 {providers.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}
@@ -268,7 +268,7 @@ function KBCreateView({ onCreated }: { onCreated: () => void }) {
           </div>
           <div className="space-y-2">
             <Label>Embedding Model</Label>
-            <Select value={embeddingModel} onValueChange={setEmbeddingModel}>
+            <Select value={embeddingModel} onValueChange={(value) => setEmbeddingModel(value ?? "")}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 {modelsForProvider.map((o) => (
@@ -284,7 +284,7 @@ function KBCreateView({ onCreated }: { onCreated: () => void }) {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label>Vector Store</Label>
-            <Select value={vectorStore} onValueChange={setVectorStore}>
+            <Select value={vectorStore} onValueChange={(value) => setVectorStore(value ?? "")}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 {vsOpts.map((v) => (
@@ -298,7 +298,7 @@ function KBCreateView({ onCreated }: { onCreated: () => void }) {
           </div>
           <div className="space-y-2">
             <Label>Chunking Strategy</Label>
-            <Select value={chunkingStrategy} onValueChange={setChunkingStrategy}>
+            <Select value={chunkingStrategy} onValueChange={(value) => setChunkingStrategy(value ?? "")}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 {chunkOpts.map((c) => (

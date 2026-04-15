@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.security.tenant import get_tenant_id
+from app.models.memory import ConversationMessage
 from app.models.workflow import ConversationSession
 from app.api.schemas import ConversationSessionOut, ConversationSessionSummary
 
@@ -35,7 +36,7 @@ def list_sessions(
     return [
         ConversationSessionSummary(
             session_id=s.session_id,
-            message_count=len(s.messages or []),
+            message_count=s.message_count,
             created_at=s.created_at,
             updated_at=s.updated_at,
         )
@@ -58,12 +59,24 @@ def get_session(
     if not session:
         raise HTTPException(404, "Conversation session not found")
 
-    messages = session.messages or []
+    messages = (
+        db.query(ConversationMessage)
+        .filter_by(session_ref_id=session.id)
+        .order_by(ConversationMessage.turn_index)
+        .all()
+    )
     return ConversationSessionOut(
         session_id=session.session_id,
         tenant_id=session.tenant_id,
-        messages=messages,
-        message_count=len(messages),
+        messages=[
+            {
+                "role": msg.role,
+                "content": msg.content,
+                "timestamp": msg.message_at.isoformat() if msg.message_at else None,
+            }
+            for msg in messages
+        ],
+        message_count=session.message_count,
         created_at=session.created_at,
         updated_at=session.updated_at,
     )

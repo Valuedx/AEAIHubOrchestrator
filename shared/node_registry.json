@@ -107,6 +107,42 @@
           "type": "integer",
           "default": 4096,
           "description": "Maximum number of output tokens for this LLM call"
+        },
+        "historyNodeId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Load Conversation State node to use for raw turn history. Leave empty to auto-detect the first upstream history node."
+        },
+        "memoryEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable turn-aware advanced memory assembly for this agent. Disable to fall back to plain upstream context prompting."
+        },
+        "memoryProfileId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional memory profile override for this agent. Leave empty to use workflow or tenant defaults."
+        },
+        "memoryScopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Optional scope override for semantic retrieval. Empty means inherit from the selected profile or default policy."
+        },
+        "maxRecentTokens": {
+          "type": "integer",
+          "default": 1200,
+          "description": "Token budget for recent raw conversation turns packed into the prompt."
+        },
+        "maxSemanticHits": {
+          "type": "integer",
+          "default": 4,
+          "description": "Maximum number of semantic or episodic memory hits to inject."
+        },
+        "includeEntityMemory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include active entity facts resolved from the configured memory profile."
         }
       }
     },
@@ -139,11 +175,59 @@
           "default": 10,
           "description": "Maximum number of Reason→Act cycles before the agent stops (prevents runaway loops)"
         },
+        "temperature": {
+          "type": "number",
+          "default": 0.7,
+          "min": 0,
+          "max": 2,
+          "description": "Sampling temperature used on each reasoning step."
+        },
+        "maxTokens": {
+          "type": "integer",
+          "default": 4096,
+          "description": "Maximum number of output tokens for each reasoning step."
+        },
         "tools": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
           "description": "MCP tools available to this agent. Leave empty to auto-discover all tools at runtime"
+        },
+        "historyNodeId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Load Conversation State node to use for raw turn history. Leave empty to auto-detect the first upstream history node."
+        },
+        "memoryEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable turn-aware advanced memory assembly for this agent. Disable to fall back to plain upstream context prompting."
+        },
+        "memoryProfileId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional memory profile override for this agent. Leave empty to use workflow or tenant defaults."
+        },
+        "memoryScopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Optional scope override for semantic retrieval. Empty means inherit from the selected profile or default policy."
+        },
+        "maxRecentTokens": {
+          "type": "integer",
+          "default": 1200,
+          "description": "Token budget for recent raw conversation turns packed into the prompt."
+        },
+        "maxSemanticHits": {
+          "type": "integer",
+          "default": 4,
+          "description": "Maximum number of semantic or episodic memory hits to inject."
+        },
+        "includeEntityMemory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include active entity facts resolved from the configured memory profile."
         }
       }
     },

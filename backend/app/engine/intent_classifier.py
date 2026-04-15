@@ -217,12 +217,8 @@ def _llm_classify(
 ) -> dict[str, Any]:
     """Classify intent using an LLM call."""
     from app.engine.llm_providers import call_llm
-
-    messages: list[dict] = []
-    if history_node_id and history_node_id in context:
-        node_out = context[history_node_id]
-        if isinstance(node_out, dict):
-            messages = node_out.get("messages", [])
+    from app.database import SessionLocal
+    from app.engine.memory_service import assemble_history_text
 
     intent_list = "\n".join(
         f"- {it.get('name', '')}: {it.get('description', '')}"
@@ -235,11 +231,17 @@ def _llm_classify(
         else "Return exactly ONE intent."
     )
 
-    history_lines = [
-        f"{m.get('role', 'user').upper()}: {m.get('content', '')}"
-        for m in messages[-10:]
-    ]
-    history_block = "\n".join(history_lines) if history_lines else "(no prior messages)"
+    db = SessionLocal()
+    try:
+        history_block, memory_debug = assemble_history_text(
+            db,
+            tenant_id=tenant_id,
+            workflow_def_id=str(context.get("_workflow_def_id", "") or ""),
+            context=context,
+            node_config={"historyNodeId": str(history_node_id or "").strip()},
+        )
+    finally:
+        db.close()
 
     system_prompt = (
         "You are an intent classification engine.\n"
@@ -278,6 +280,7 @@ def _llm_classify(
         user_message=user_prompt,
         response=raw_response,
         usage=result.get("usage"),
+        metadata={"memory": memory_debug},
     )
 
     matched: list[str] = []
@@ -313,4 +316,5 @@ def _llm_classify(
         "fallback": is_fallback,
         "scores": {},
         "mode_used": "llm_only",
+        "memory_debug": memory_debug,
     }

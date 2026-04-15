@@ -32,7 +32,7 @@ import {
 import { useWorkflowStore } from "@/store/workflowStore";
 import { HITLResumeDialog } from "@/components/toolbar/HITLResumeDialog";
 import { DebugReplayBar } from "@/components/toolbar/DebugReplayBar";
-import { api, type ExecutionLogOut, type ChildInstanceSummary } from "@/lib/api";
+import { api, type ExecutionLogOut } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // CopyButton — clipboard copy with 2s checkmark confirmation
@@ -185,7 +185,6 @@ function ChildInstanceLogs({
     }).catch(() => setLoading(false));
   }, [expanded, childInstanceId, workflowDefId]);
 
-  const StatusIcon = STATUS_ICON[childStatus] ?? CircleDot;
   const statusColor = STATUS_COLOR[childStatus] ?? "text-muted-foreground";
 
   return (

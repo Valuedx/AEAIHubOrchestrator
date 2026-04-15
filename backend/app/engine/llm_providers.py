@@ -27,6 +27,7 @@ def call_llm(
     user_message: str,
     temperature: float = 0.7,
     max_tokens: int = 4096,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Route to the appropriate provider and return a standardized response."""
     providers = {
@@ -44,6 +45,7 @@ def call_llm(
         user_message=user_message,
         temperature=temperature,
         max_tokens=max_tokens,
+        messages=messages,
     )
 
 
@@ -56,6 +58,7 @@ def call_llm_streaming(
     max_tokens: int = 4096,
     instance_id: str = "",
     node_id: str = "",
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Stream a response from the provider, publishing tokens to Redis as they arrive.
 
@@ -68,7 +71,15 @@ def call_llm_streaming(
     """
     if not instance_id or not node_id:
         logger.debug("call_llm_streaming: missing instance_id/node_id, falling back to non-streaming")
-        return call_llm(provider, model, system_prompt, user_message, temperature, max_tokens)
+        return call_llm(
+            provider,
+            model,
+            system_prompt,
+            user_message,
+            temperature,
+            max_tokens,
+            messages=messages,
+        )
 
     from app.engine.streaming_llm import stream_google, stream_openai, stream_anthropic
 
@@ -89,7 +100,22 @@ def call_llm_streaming(
         max_tokens=max_tokens,
         instance_id=instance_id,
         node_id=node_id,
+        messages=messages,
     )
+
+
+def _coerce_messages(
+    system_prompt: str,
+    user_message: str,
+    messages: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if messages:
+        return messages
+    out: list[dict[str, Any]] = []
+    if system_prompt:
+        out.append({"role": "system", "content": system_prompt})
+    out.append({"role": "user", "content": user_message})
+    return out
 
 
 def _call_google(
@@ -98,6 +124,7 @@ def _call_google(
     user_message: str,
     temperature: float,
     max_tokens: int,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not settings.google_api_key:
         raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
@@ -106,11 +133,26 @@ def _call_google(
     from google.genai import types
 
     client = genai.Client(api_key=settings.google_api_key)
+    normalized = _coerce_messages(system_prompt, user_message, messages)
+    system_parts = [str(msg.get("content", "")) for msg in normalized if msg.get("role") == "system"]
+    contents: list[Any] = []
+    for msg in normalized:
+        role = msg.get("role")
+        if role == "system":
+            continue
+        mapped_role = "model" if role == "assistant" else "user"
+        contents.append(
+            types.Content(
+                role=mapped_role,
+                parts=[types.Part.from_text(text=str(msg.get("content", "")))],
+            )
+        )
+
     response = client.models.generate_content(
         model=model,
-        contents=user_message,
+        contents=contents,
         config=types.GenerateContentConfig(
-            system_instruction=system_prompt or None,
+            system_instruction="\n\n".join(part for part in system_parts if part) or None,
             temperature=temperature,
             max_output_tokens=max_tokens,
         ),
@@ -134,6 +176,7 @@ def _call_openai(
     user_message: str,
     temperature: float,
     max_tokens: int,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not settings.openai_api_key:
         raise ValueError("ORCHESTRATOR_OPENAI_API_KEY is not configured")
@@ -145,14 +188,11 @@ def _call_openai(
         base_url=settings.openai_base_url,
     )
 
-    messages: list[dict[str, str]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_message})
+    payload_messages = _coerce_messages(system_prompt, user_message, messages)
 
     response = client.chat.completions.create(
         model=model,
-        messages=messages,
+        messages=payload_messages,
         temperature=temperature,
         max_tokens=max_tokens,
     )
@@ -176,6 +216,7 @@ def _call_anthropic(
     user_message: str,
     temperature: float,
     max_tokens: int,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not settings.anthropic_api_key:
         raise ValueError("ORCHESTRATOR_ANTHROPIC_API_KEY is not configured")
@@ -184,11 +225,19 @@ def _call_anthropic(
 
     client = Anthropic(api_key=settings.anthropic_api_key)
 
+    normalized = _coerce_messages(system_prompt, user_message, messages)
+    system_parts = [str(msg.get("content", "")) for msg in normalized if msg.get("role") == "system"]
+    anthropic_messages = [
+        {"role": msg.get("role", "user"), "content": str(msg.get("content", ""))}
+        for msg in normalized
+        if msg.get("role") in {"user", "assistant"}
+    ]
+
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=system_prompt or "You are a helpful assistant.",
-        messages=[{"role": "user", "content": user_message}],
+        system="\n\n".join(part for part in system_parts if part) or "You are a helpful assistant.",
+        messages=anthropic_messages,
         temperature=temperature,
     )
 

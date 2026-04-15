@@ -31,15 +31,15 @@ export interface ExpressionVariable {
 // ---------------------------------------------------------------------------
 
 const NODE_OUTPUT_FIELDS: Record<string, string[]> = {
-  "LLM Agent":                ["response", "input_tokens", "output_tokens"],
-  "ReAct Agent":              ["response", "tool_calls", "iterations"],
-  "LLM Router":               ["intent"],
+  "LLM Agent":                ["response", "usage", "provider", "model", "memory_debug"],
+  "ReAct Agent":              ["response", "iterations", "total_iterations", "usage", "memory_debug"],
+  "LLM Router":               ["intent", "raw_response", "usage", "memory_debug"],
   "Reflection":               ["_raw_response"],   // user-defined outputKeys are also available but dynamic
   "MCP Tool":                 ["result"],
   "HTTP Request":             ["status_code", "body", "headers"],
   "Human Approval":           ["approved", "approver"],
-  "Load Conversation State":  ["history", "session_id"],
-  "Save Conversation State":  ["saved"],
+  "Load Conversation State":  ["session_id", "session_ref_id", "messages", "message_count", "summary_text", "summary_through_turn"],
+  "Save Conversation State":  ["saved", "session_id", "session_ref_id", "message_count", "summary_updated", "promoted_memory_records", "promoted_entity_facts"],
   "Condition":                [],
   "Merge":                    [],
   "ForEach":                  [],

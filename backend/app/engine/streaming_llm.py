@@ -90,6 +90,7 @@ def stream_google(
     max_tokens: int,
     instance_id: str,
     node_id: str,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Stream Google Gemini, publishing tokens to Redis.  Returns the same
     dict format as ``_call_google`` in llm_providers.py."""
@@ -101,15 +102,32 @@ def stream_google(
     from google.genai import types
 
     client = genai.Client(api_key=settings.google_api_key)
+    normalized = messages or (
+        ([{"role": "system", "content": system_prompt}] if system_prompt else [])
+        + [{"role": "user", "content": user_message}]
+    )
+    system_parts = [str(msg.get("content", "")) for msg in normalized if msg.get("role") == "system"]
+    contents: list[Any] = []
+    for msg in normalized:
+        role = msg.get("role")
+        if role == "system":
+            continue
+        mapped_role = "model" if role == "assistant" else "user"
+        contents.append(
+            types.Content(
+                role=mapped_role,
+                parts=[types.Part.from_text(text=str(msg.get("content", "")))],
+            )
+        )
 
     full_text = ""
     usage_meta = None
 
     for chunk in client.models.generate_content_stream(
         model=model,
-        contents=user_message,
+        contents=contents,
         config=types.GenerateContentConfig(
-            system_instruction=system_prompt or None,
+            system_instruction="\n\n".join(part for part in system_parts if part) or None,
             temperature=temperature,
             max_output_tokens=max_tokens,
         ),
@@ -142,6 +160,7 @@ def stream_openai(
     max_tokens: int,
     instance_id: str,
     node_id: str,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Stream OpenAI, publishing tokens to Redis."""
     from app.config import settings
@@ -152,10 +171,10 @@ def stream_openai(
 
     client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
 
-    messages: list[dict[str, str]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_message})
+    payload_messages = messages or (
+        ([{"role": "system", "content": system_prompt}] if system_prompt else [])
+        + [{"role": "user", "content": user_message}]
+    )
 
     full_text = ""
     input_tokens = 0
@@ -163,7 +182,7 @@ def stream_openai(
 
     with client.chat.completions.create(
         model=model,
-        messages=messages,
+        messages=payload_messages,
         temperature=temperature,
         max_tokens=max_tokens,
         stream=True,
@@ -196,6 +215,7 @@ def stream_anthropic(
     max_tokens: int,
     instance_id: str,
     node_id: str,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Stream Anthropic, publishing tokens to Redis."""
     from app.config import settings
@@ -205,6 +225,16 @@ def stream_anthropic(
     from anthropic import Anthropic
 
     client = Anthropic(api_key=settings.anthropic_api_key)
+    normalized = messages or (
+        ([{"role": "system", "content": system_prompt}] if system_prompt else [])
+        + [{"role": "user", "content": user_message}]
+    )
+    system_parts = [str(msg.get("content", "")) for msg in normalized if msg.get("role") == "system"]
+    anthropic_messages = [
+        {"role": msg.get("role", "user"), "content": str(msg.get("content", ""))}
+        for msg in normalized
+        if msg.get("role") in {"user", "assistant"}
+    ]
 
     full_text = ""
     input_tokens = 0
@@ -213,8 +243,8 @@ def stream_anthropic(
     with client.messages.stream(
         model=model,
         max_tokens=max_tokens,
-        system=system_prompt or "You are a helpful assistant.",
-        messages=[{"role": "user", "content": user_message}],
+        system="\n\n".join(part for part in system_parts if part) or "You are a helpful assistant.",
+        messages=anthropic_messages,
         temperature=temperature,
     ) as stream:
         for token in stream.text_stream:

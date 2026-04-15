@@ -25,10 +25,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import type { ToolOut } from "@/lib/api";
+import type { MemoryProfileOut, ToolOut } from "@/lib/api";
 import { ExpressionInput } from "@/components/sidebar/ExpressionInput";
 import { KBMultiSelect } from "@/components/sidebar/KBMultiSelect";
-import { getExpressionVariables } from "@/lib/expressionVariables";
+import { getExpressionVariables, type ExpressionVariable } from "@/lib/expressionVariables";
 import { useFlowStore } from "@/store/flowStore";
 import { useWorkflowStore } from "@/store/workflowStore";
 
@@ -423,6 +423,103 @@ function ToolSingleSelect({
   );
 }
 
+const MEMORY_SCOPE_OPTIONS = [
+  { value: "session", label: "Session" },
+  { value: "workflow", label: "Workflow" },
+  { value: "tenant", label: "Tenant" },
+  { value: "entity", label: "Entity" },
+];
+
+function MemoryProfileSelect({
+  selected,
+  onChange,
+}: {
+  selected: string;
+  onChange: (id: string) => void;
+}) {
+  const [profiles, setProfiles] = useState<MemoryProfileOut[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.listMemoryProfiles().then((items) => {
+      setProfiles(items);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <p className="text-xs text-muted-foreground">Loading memory profiles…</p>;
+  }
+
+  if (profiles.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        No memory profiles defined. Leave this empty to use implicit defaults and auto-detected conversation history.
+      </p>
+    );
+  }
+
+  return (
+    <Select
+      value={selected || "__inherit__"}
+      onValueChange={(value) => onChange(!value || value === "__inherit__" ? "" : value)}
+    >
+      <SelectTrigger>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__inherit__">Use default profile</SelectItem>
+        {profiles.map((profile) => (
+          <SelectItem key={profile.id} value={profile.id}>
+            {profile.name}{profile.workflow_def_id ? " (workflow)" : " (tenant)"}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function MemoryScopeMultiSelect({
+  selected,
+  onChange,
+  description,
+}: {
+  selected: string[];
+  onChange: (scopes: string[]) => void;
+  description?: string;
+}) {
+  const toggle = (scope: string) => {
+    if (selected.includes(scope)) {
+      onChange(selected.filter((item) => item !== scope));
+      return;
+    }
+    onChange([...selected, scope]);
+  };
+
+  return (
+    <div className="space-y-2">
+      {selected.length === 0 && (
+        <p className="text-[10px] text-muted-foreground italic">
+          None selected — inherit scopes from the chosen memory profile or default policy
+        </p>
+      )}
+      <div className="space-y-1">
+        {MEMORY_SCOPE_OPTIONS.map((option) => (
+          <label key={option.value} className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.includes(option.value)}
+              onChange={() => toggle(option.value)}
+            />
+            <span className="text-xs">{option.label}</span>
+          </label>
+        ))}
+      </div>
+      {description && <FieldHint text={description} />}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // IntentListEditor — array-of-objects editor for Intent Classifier intents
 // ---------------------------------------------------------------------------
@@ -636,7 +733,7 @@ function EntityListEditor({
             <Label htmlFor={`ent-type-${idx}`} className="text-[11px]">Type</Label>
             <Select
               value={entity.type || "free_text"}
-              onValueChange={(v) => updateItem(idx, { type: v })}
+              onValueChange={(v) => updateItem(idx, { type: v ?? "free_text" })}
             >
               <SelectTrigger id={`ent-type-${idx}`} className="h-8 text-xs">
                 <SelectValue />
@@ -765,7 +862,7 @@ function WorkflowSelect({
       )}
       <Select
         value={selected || "__none__"}
-        onValueChange={(v) => onChange(v === "__none__" ? "" : v)}
+        onValueChange={(v) => onChange(!v || v === "__none__" ? "" : v)}
       >
         <SelectTrigger className="text-xs">
           <SelectValue placeholder="Select a workflow..." />
@@ -795,7 +892,7 @@ function InputMappingEditor({
 }: {
   value: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
-  exprSuggestions: { label: string; value: string }[];
+  exprSuggestions: ExpressionVariable[];
   description?: string;
 }) {
   const entries = Object.entries(value || {});
@@ -1073,6 +1170,42 @@ export function DynamicConfigForm({
                 excludeId={currentWorkflowId}
               />
               {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- memoryProfileId on llm/react agents → MemoryProfileSelect ----
+        if (
+          field.type === "string" &&
+          key === "memoryProfileId" &&
+          (nodeType === "llm_agent" || nodeType === "react_agent")
+        ) {
+          return (
+            <div key={key} className="space-y-2">
+              <Label>{humanize(key)}</Label>
+              <MemoryProfileSelect
+                selected={String(value ?? "")}
+                onChange={(id) => update(key, id)}
+              />
+              {field.description && <FieldHint text={field.description} />}
+            </div>
+          );
+        }
+
+        // ---- memoryScopes on llm/react agents → MemoryScopeMultiSelect ----
+        if (
+          field.type === "array" &&
+          key === "memoryScopes" &&
+          (nodeType === "llm_agent" || nodeType === "react_agent")
+        ) {
+          return (
+            <div key={key} className="space-y-2">
+              <Label>{humanize(key)}</Label>
+              <MemoryScopeMultiSelect
+                selected={Array.isArray(value) ? (value as string[]) : []}
+                onChange={(scopes) => update(key, scopes)}
+                description={field.description}
+              />
             </div>
           );
         }

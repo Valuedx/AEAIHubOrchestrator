@@ -2,6 +2,7 @@ from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowSn
 from app.models.tenant import TenantToolOverride
 from app.models.knowledge import KnowledgeBase, KBDocument, KBChunk
 from app.models.embedding_cache import EmbeddingCache
+from app.models.memory import ConversationMessage, MemoryProfile, MemoryRecord, EntityFact
 
 __all__ = [
     "WorkflowDefinition",
@@ -13,4 +14,8 @@ __all__ = [
     "KBDocument",
     "KBChunk",
     "EmbeddingCache",
+    "ConversationMessage",
+    "MemoryProfile",
+    "MemoryRecord",
+    "EntityFact",
 ]

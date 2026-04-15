@@ -16,6 +16,7 @@ from app.api.sse import router as sse_router
 from app.api.conversations import router as conversations_router
 from app.api.a2a import router as a2a_router
 from app.api.knowledge import router as knowledge_router
+from app.api.memory import router as memory_router
 from app.api.secrets import router as secrets_router
 from app.security.rate_limiter import limiter
 
@@ -47,6 +48,7 @@ app.include_router(sse_router)
 app.include_router(conversations_router)
 app.include_router(a2a_router)
 app.include_router(knowledge_router, prefix="/api/v1/knowledge-bases", tags=["knowledge"])
+app.include_router(memory_router)
 app.include_router(secrets_router, prefix="/api/v1/secrets", tags=["secrets"])
 
 if settings.oidc_enabled:

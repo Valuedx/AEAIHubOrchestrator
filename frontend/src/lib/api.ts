@@ -127,6 +127,101 @@ export interface ToolOut {
   tags: string[];
 }
 
+export interface ConversationMessageOut {
+  role: string;
+  content: string;
+  timestamp: string | null;
+}
+
+export interface ConversationSessionSummaryOut {
+  session_id: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationSessionOut {
+  session_id: string;
+  tenant_id: string;
+  messages: ConversationMessageOut[];
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryProfileOut {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string | null;
+  workflow_def_id: string | null;
+  is_default: boolean;
+  instructions_text: string | null;
+  enabled_scopes: string[];
+  max_recent_tokens: number;
+  max_semantic_hits: number;
+  include_entity_memory: boolean;
+  summary_trigger_messages: number;
+  summary_recent_turns: number;
+  summary_max_tokens: number;
+  semantic_score_threshold: number;
+  embedding_provider: string;
+  embedding_model: string;
+  vector_store: string;
+  entity_mappings_json: Record<string, unknown>[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryRecordOut {
+  id: string;
+  tenant_id: string;
+  scope: string;
+  scope_key: string;
+  kind: string;
+  content: string;
+  metadata_json: Record<string, unknown>;
+  session_ref_id: string | null;
+  workflow_def_id: string | null;
+  entity_type: string | null;
+  entity_key: string | null;
+  source_instance_id: string | null;
+  source_node_id: string | null;
+  embedding_provider: string;
+  embedding_model: string;
+  vector_store: string;
+  created_at: string;
+}
+
+export interface EntityFactOut {
+  id: string;
+  tenant_id: string;
+  entity_type: string;
+  entity_key: string;
+  fact_name: string;
+  fact_value: string;
+  confidence: number;
+  valid_from: string;
+  valid_to: string | null;
+  superseded_by: string | null;
+  session_ref_id: string | null;
+  workflow_def_id: string | null;
+  source_instance_id: string | null;
+  source_node_id: string | null;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ResolvedMemoryLogOut {
+  node_id: string;
+  node_type: string;
+  completed_at: string | null;
+  memory_debug: Record<string, unknown>;
+  recent_turns: Array<Record<string, unknown>>;
+  entity_facts: EntityFactOut[];
+  memory_records: MemoryRecordOut[];
+}
+
 export interface SnapshotOut {
   id: string;
   workflow_def_id: string;
@@ -393,6 +488,85 @@ export const api = {
 
   listTools(): Promise<ToolOut[]> {
     return request("/api/v1/tools");
+  },
+
+  listConversationSessions(): Promise<ConversationSessionSummaryOut[]> {
+    return request("/api/v1/conversations");
+  },
+
+  getConversationSession(sessionId: string): Promise<ConversationSessionOut> {
+    return request(`/api/v1/conversations/${sessionId}`);
+  },
+
+  deleteConversationSession(sessionId: string): Promise<void> {
+    return request(`/api/v1/conversations/${sessionId}`, { method: "DELETE" });
+  },
+
+  listMemoryProfiles(): Promise<MemoryProfileOut[]> {
+    return request("/api/v1/memory-profiles");
+  },
+
+  createMemoryProfile(body: Omit<MemoryProfileOut, "id" | "tenant_id" | "created_at" | "updated_at">): Promise<MemoryProfileOut> {
+    return request("/api/v1/memory-profiles", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getMemoryProfile(id: string): Promise<MemoryProfileOut> {
+    return request(`/api/v1/memory-profiles/${id}`);
+  },
+
+  updateMemoryProfile(
+    id: string,
+    body: Partial<Omit<MemoryProfileOut, "id" | "tenant_id" | "created_at" | "updated_at">>,
+  ): Promise<MemoryProfileOut> {
+    return request(`/api/v1/memory-profiles/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteMemoryProfile(id: string): Promise<void> {
+    return request(`/api/v1/memory-profiles/${id}`, { method: "DELETE" });
+  },
+
+  listMemoryRecords(params: {
+    scope?: string;
+    scope_key?: string;
+    kind?: string;
+    entity_type?: string;
+    entity_key?: string;
+    workflow_def_id?: string;
+    source_instance_id?: string;
+    limit?: number;
+  } = {}): Promise<MemoryRecordOut[]> {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== "") {
+        search.set(key, String(value));
+      }
+    }
+    return request(`/api/v1/memory/records${search.toString() ? `?${search.toString()}` : ""}`);
+  },
+
+  listEntityFacts(params: {
+    entity_type?: string;
+    entity_key?: string;
+    include_inactive?: boolean;
+    limit?: number;
+  } = {}): Promise<EntityFactOut[]> {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== "") {
+        search.set(key, String(value));
+      }
+    }
+    return request(`/api/v1/memory/entity-facts${search.toString() ? `?${search.toString()}` : ""}`);
+  },
+
+  resolveInstanceMemory(instanceId: string): Promise<ResolvedMemoryLogOut[]> {
+    return request(`/api/v1/memory/instances/${instanceId}/resolved`);
   },
 
   listVersions(workflowId: string): Promise<SnapshotOut[]> {

@@ -11,7 +11,6 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -107,8 +106,10 @@ def _handle_agent(
         from app.engine.react_loop import run_react_loop
         return run_react_loop(node_data, context, tenant_id)
 
-    from app.engine.llm_providers import call_llm, call_llm_streaming
-    from app.engine.prompt_template import render_prompt, build_user_message
+    from app.database import SessionLocal
+    from app.engine.llm_providers import call_llm_streaming
+    from app.engine.memory_service import assemble_agent_messages
+    from app.engine.prompt_template import render_prompt
 
     provider = config.get("provider", "google")
     model = config.get("model", "gemini-2.5-flash")
@@ -117,14 +118,25 @@ def _handle_agent(
     max_tokens = int(config.get("maxTokens", 4096))
 
     system_prompt = render_prompt(raw_prompt, context)
-    user_message = build_user_message(context)
+    db = SessionLocal()
+    try:
+        prompt_messages, memory_debug = assemble_agent_messages(
+            db,
+            tenant_id=tenant_id,
+            workflow_def_id=str(context.get("_workflow_def_id", "") or ""),
+            context=context,
+            node_config=config,
+            rendered_system_prompt=system_prompt,
+        )
+    finally:
+        db.close()
 
     instance_id: str = context.get("_instance_id", "")
     node_id: str = context.get("_current_node_id", "")
 
     logger.info(
-        "Agent node [%s/%s]: prompt_len=%d, user_msg_len=%d, streaming=%s",
-        provider, model, len(system_prompt), len(user_message),
+        "Agent node [%s/%s]: messages=%d, streaming=%s",
+        provider, model, len(prompt_messages),
         bool(instance_id and node_id),
     )
 
@@ -132,12 +144,14 @@ def _handle_agent(
         provider=provider,
         model=model,
         system_prompt=system_prompt,
-        user_message=user_message,
+        user_message="",
         temperature=temperature,
         max_tokens=max_tokens,
         instance_id=instance_id,
         node_id=node_id,
+        messages=prompt_messages,
     )
+    result["memory_debug"] = memory_debug
 
     logger.info(
         "Agent node [%s/%s]: tokens in=%d out=%d",
@@ -153,9 +167,10 @@ def _handle_agent(
         provider=provider,
         model=model,
         system_prompt=system_prompt,
-        user_message=user_message,
+        user_message=prompt_messages[-1]["content"] if prompt_messages else "",
         response=result.get("response", ""),
         usage=result.get("usage"),
+        metadata={"memory": memory_debug},
     )
 
     return result
@@ -394,44 +409,18 @@ def _handle_load_conversation_state(
         )
 
     from app.database import SessionLocal
-    from app.models.workflow import ConversationSession
-    from sqlalchemy.exc import IntegrityError
+    from app.engine.memory_service import load_conversation_state
 
     db = SessionLocal()
     try:
-        session = (
-            db.query(ConversationSession)
-            .filter_by(session_id=session_id, tenant_id=tenant_id)
-            .first()
-        )
-        if not session:
-            try:
-                session = ConversationSession(
-                    session_id=session_id,
-                    tenant_id=tenant_id,
-                    messages=[],
-                )
-                db.add(session)
-                db.commit()
-                db.refresh(session)
-            except IntegrityError:
-                # Another concurrent DAG instance created the session first
-                db.rollback()
-                session = (
-                    db.query(ConversationSession)
-                    .filter_by(session_id=session_id, tenant_id=tenant_id)
-                    .first()
-                )
-
-        messages = session.messages or [] if session else []
+        payload = load_conversation_state(db, tenant_id=tenant_id, session_id=session_id)
+        db.commit()
         logger.info(
-            "Load Conversation State: session=%s messages=%d", session_id, len(messages)
+            "Load Conversation State: session=%s messages=%d",
+            session_id,
+            payload["message_count"],
         )
-        return {
-            "session_id": session_id,
-            "messages": messages,
-            "message_count": len(messages),
-        }
+        return payload
     finally:
         db.close()
 
@@ -468,61 +457,84 @@ def _handle_save_conversation_state(
         else:
             assistant_response = str(node_out)
 
-    now = datetime.now(timezone.utc).isoformat()
-    new_messages: list[dict] = []
-    if user_message:
-        new_messages.append({"role": "user", "content": user_message, "timestamp": now})
-    if assistant_response:
-        new_messages.append(
-            {"role": "assistant", "content": assistant_response, "timestamp": now}
-        )
-
     from app.database import SessionLocal
-    from app.models.workflow import ConversationSession
-    from sqlalchemy.exc import IntegrityError
-    from sqlalchemy.orm.attributes import flag_modified
+    from app.engine.memory_service import (
+        append_conversation_turns,
+        promote_entity_facts,
+        promote_memory_records,
+        refresh_rolling_summary,
+        resolve_memory_policy,
+    )
 
     db = SessionLocal()
     try:
-        # Use with_for_update() to lock the row for the duration of the append,
-        # preventing a lost-update race when multiple DAG instances share a session.
-        session = (
-            db.query(ConversationSession)
-            .filter_by(session_id=session_id, tenant_id=tenant_id)
-            .with_for_update()
-            .first()
-        )
-        if not session:
-            try:
-                session = ConversationSession(
-                    session_id=session_id,
-                    tenant_id=tenant_id,
-                    messages=new_messages,
-                )
-                db.add(session)
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                session = (
-                    db.query(ConversationSession)
-                    .filter_by(session_id=session_id, tenant_id=tenant_id)
-                    .with_for_update()
-                    .first()
-                )
-                if session:
-                    session.messages = (session.messages or []) + new_messages
-                    flag_modified(session, "messages")
-                    db.commit()
-        else:
-            session.messages = (session.messages or []) + new_messages
-            flag_modified(session, "messages")
-            db.commit()
+        instance_id = str(context.get("_instance_id", "") or "")
+        current_node_id = str(context.get("_current_node_id", "") or "")
+        workflow_def_id = str(context.get("_workflow_def_id", "") or "")
+        idempotency_key = f"{session_id}:{instance_id}:{current_node_id}"
 
-        total = len(session.messages) if session else len(new_messages)
+        session, _ = append_conversation_turns(
+            db,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            user_message=user_message,
+            assistant_response=assistant_response,
+            workflow_def_id=workflow_def_id or None,
+            instance_id=instance_id or None,
+            node_id=current_node_id or None,
+            idempotency_key=idempotency_key,
+        )
+        policy = resolve_memory_policy(
+            db,
+            tenant_id=tenant_id,
+            workflow_def_id=workflow_def_id or None,
+            node_config={},
+            context=context,
+        )
+        summary_updated = refresh_rolling_summary(
+            db,
+            session=session,
+            summary_trigger_messages=policy.summary_trigger_messages,
+            summary_recent_turns=policy.summary_recent_turns,
+            summary_max_tokens=policy.summary_max_tokens,
+        )
+        fact_rows = promote_entity_facts(
+            db,
+            tenant_id=tenant_id,
+            workflow_def_id=workflow_def_id or None,
+            session_ref_id=session.id,
+            instance_id=instance_id or None,
+            node_id=current_node_id or None,
+            context=context,
+            policy=policy,
+        )
+        memory_rows = promote_memory_records(
+            db,
+            tenant_id=tenant_id,
+            session=session,
+            workflow_def_id=workflow_def_id or None,
+            instance_id=instance_id or None,
+            node_id=current_node_id or None,
+            context=context,
+            policy=policy,
+            user_message=user_message,
+            assistant_response=assistant_response,
+        )
+        db.commit()
+
+        total = session.message_count
         logger.info(
             "Save Conversation State: session=%s total_messages=%d", session_id, total
         )
-        return {"session_id": session_id, "message_count": total, "saved": True}
+        return {
+            "session_id": session_id,
+            "session_ref_id": str(session.id),
+            "message_count": total,
+            "saved": True,
+            "summary_updated": summary_updated,
+            "promoted_memory_records": len(memory_rows),
+            "promoted_entity_facts": len(fact_rows),
+        }
     finally:
         db.close()
 
@@ -541,15 +553,7 @@ def _handle_llm_router(
     provider = config.get("provider", "google")
     model = config.get("model", "gemini-2.5-flash")
     intents: list[str] = config.get("intents", [])
-    history_node_id = config.get("historyNodeId", "")
     user_msg_expr = config.get("userMessageExpression", "trigger.message")
-
-    # Pull conversation history from the Load Conversation State node output
-    messages: list[dict] = []
-    if history_node_id and history_node_id in context:
-        node_out = context[history_node_id]
-        if isinstance(node_out, dict):
-            messages = node_out.get("messages", [])
 
     raw_user = _resolve_expr(user_msg_expr, context)
     user_message = str(raw_user) if raw_user is not None else str(
@@ -567,12 +571,23 @@ def _handle_llm_router(
         "Do not include any other text, explanation, or markdown formatting."
     )
 
-    # Include the last 10 messages as context (avoid unbounded token growth)
-    history_lines = [
-        f"{m.get('role', 'user').upper()}: {m.get('content', '')}"
-        for m in messages[-10:]
-    ]
-    history_block = "\n".join(history_lines) if history_lines else "(no prior messages)"
+    from app.database import SessionLocal
+    from app.engine.memory_service import assemble_history_text
+
+    db = SessionLocal()
+    try:
+        history_block, memory_debug = assemble_history_text(
+            db,
+            tenant_id=tenant_id,
+            workflow_def_id=str(context.get("_workflow_def_id", "") or ""),
+            context=context,
+            node_config={
+                "historyNodeId": str(config.get("historyNodeId", "") or "").strip(),
+            },
+        )
+    finally:
+        db.close()
+
     user_prompt = (
         f"Conversation history:\n{history_block}\n\n"
         f"Latest user message: {user_message}\n\n"
@@ -623,6 +638,7 @@ def _handle_llm_router(
         user_message=user_prompt,
         response=raw_response,
         usage=result.get("usage"),
+        metadata={"memory": memory_debug},
     )
 
     logger.info("LLM Router classified intent='%s' (model=%s/%s)", intent, provider, model)
@@ -630,6 +646,7 @@ def _handle_llm_router(
         "intent": intent,
         "raw_response": raw_response,
         "usage": result.get("usage"),
+        "memory_debug": memory_debug,
     }
 
 

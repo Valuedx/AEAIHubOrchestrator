@@ -20,6 +20,39 @@ from typing import Any
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, Undefined
 
 logger = logging.getLogger(__name__)
+_DEFAULT_CONTEXT_TOKEN_BUDGET = 1200
+
+
+def count_prompt_tokens(text: str) -> int:
+    """Approximate token count using tiktoken when available."""
+    if not text:
+        return 0
+    try:
+        import tiktoken
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
+
+
+def truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """Trim text to roughly *max_tokens* tokens."""
+    if not text or max_tokens <= 0:
+        return ""
+    try:
+        import tiktoken
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        toks = enc.encode(text)
+        if len(toks) <= max_tokens:
+            return text
+        return enc.decode(toks[:max_tokens]).rstrip() + "\n... (truncated)"
+    except Exception:
+        approx_chars = max_tokens * 4
+        if len(text) <= approx_chars:
+            return text
+        return text[:approx_chars].rstrip() + "\n... (truncated)"
 
 
 class _PermissiveUndefined(Undefined):
@@ -88,34 +121,50 @@ def render_prompt(template_str: str, context: dict[str, Any]) -> str:
         return template_str
 
 
-def build_user_message(context: dict[str, Any]) -> str:
-    """Assemble upstream node outputs into a structured user message
-    that the LLM can reason over."""
+def build_structured_context_block(
+    context: dict[str, Any],
+    *,
+    exclude_node_ids: set[str] | None = None,
+    max_tokens: int = _DEFAULT_CONTEXT_TOKEN_BUDGET,
+) -> str:
+    """Assemble non-conversation context into a token-budgeted block."""
     parts: list[str] = []
+    remaining = max_tokens
+    excluded = exclude_node_ids or set()
 
     trigger = context.get("trigger")
-    if trigger:
-        parts.append(f"**Trigger input:**\n```json\n{json.dumps(trigger, indent=2, default=str)}\n```")
+    if trigger and remaining > 0:
+        block = f"**Trigger input:**\n```json\n{json.dumps(trigger, indent=2, default=str)}\n```"
+        parts.append(truncate_to_tokens(block, remaining))
+        remaining = max(0, remaining - count_prompt_tokens(parts[-1]))
 
     loop_item = context.get("_loop_item")
-    if loop_item is not None:
-        parts.append(
+    if loop_item is not None and remaining > 0:
+        block = (
             "**Current loop item:**\n```json\n"
             f"{json.dumps(loop_item, indent=2, default=str)}\n```"
         )
+        parts.append(truncate_to_tokens(block, remaining))
+        remaining = max(0, remaining - count_prompt_tokens(parts[-1]))
 
     for key, value in context.items():
-        if not key.startswith("node_"):
+        if not key.startswith("node_") or key in excluded or remaining <= 0:
             continue
         summary = json.dumps(value, indent=2, default=str)
-        if len(summary) > 2000:
-            summary = summary[:2000] + "\n... (truncated)"
-        parts.append(f"**Output of {key}:**\n```json\n{summary}\n```")
+        block = f"**Output of {key}:**\n```json\n{summary}\n```"
+        trimmed = truncate_to_tokens(block, remaining)
+        parts.append(trimmed)
+        remaining = max(0, remaining - count_prompt_tokens(trimmed))
 
     if not parts:
         return "No upstream data available. Please respond based on your system instructions."
 
     return "\n\n".join(parts)
+
+
+def build_user_message(context: dict[str, Any]) -> str:
+    """Backward-compatible wrapper for general non-memory agent prompting."""
+    return build_structured_context_block(context)
 
 
 def resolve_config_env_vars(config: dict, tenant_id: str) -> dict:
