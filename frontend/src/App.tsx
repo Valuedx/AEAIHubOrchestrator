@@ -30,7 +30,7 @@ export default function App() {
               collapsed={paletteCollapsed}
               onToggle={() => setPaletteCollapsed((p) => !p)}
             />
-            <div className="flex-1 relative">
+            <div className="flex flex-col flex-1 h-full relative">
               <FlowCanvas />
               <ExecutionPanel />
             </div>

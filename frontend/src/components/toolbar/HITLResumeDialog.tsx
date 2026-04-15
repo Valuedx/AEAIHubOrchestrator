@@ -86,7 +86,7 @@ export function HITLResumeDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl w-full">
+      <DialogContent className="max-w-2xl w-full max-h-[85vh] flex flex-col">
         <DialogHeader>
           <div className="flex items-center gap-2">
             <DialogTitle>Human Approval Required</DialogTitle>
@@ -104,7 +104,7 @@ export function HITLResumeDialog({
           )}
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-4 flex-1 overflow-y-auto min-h-0">
           {/* Approval message from the node config */}
           {context.approval_message ? (
             <div className="flex items-start gap-2 bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 rounded-md px-3 py-2">
