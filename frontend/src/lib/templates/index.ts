@@ -9,7 +9,8 @@ export type TemplateCategory =
   | "operations"
   | "research"
   | "getting-started"
-  | "notification";
+  | "notification"
+  | "nlp";
 
 export interface WorkflowTemplate {
   id: string;
@@ -22,7 +23,7 @@ export interface WorkflowTemplate {
   graph: { nodes: Node[]; edges: Edge[] };
 }
 
-/** Document intake → summary → human gate → bridge reply → persist. */
+/** Document intake → load history → summary → human gate → bridge reply → persist. */
 const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
@@ -40,7 +41,19 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
     {
       id: "node_2",
       type: "agenticNode",
-      position: { x: 260, y: 200 },
+      position: { x: 240, y: 200 },
+      data: {
+        label: "Load Conversation State",
+        displayName: "Load review thread",
+        nodeCategory: "action",
+        config: { icon: "history", sessionIdExpression: "trigger.session_id" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 500, y: 200 },
       data: {
         label: "LLM Agent",
         displayName: "Summarize & risk flags",
@@ -54,14 +67,16 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
             "and suggest whether a human should approve before external send. Use trigger.document_text or trigger.body when present.",
           temperature: 0.25,
           maxTokens: 2048,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
         },
         status: "idle",
       } satisfies AgenticNodeData,
     },
     {
-      id: "node_3",
+      id: "node_4",
       type: "agenticNode",
-      position: { x: 520, y: 200 },
+      position: { x: 760, y: 200 },
       data: {
         label: "Human Approval",
         displayName: "Legal / manager sign-off",
@@ -76,25 +91,25 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
       } satisfies AgenticNodeData,
     },
     {
-      id: "node_4",
+      id: "node_5",
       type: "agenticNode",
-      position: { x: 780, y: 200 },
+      position: { x: 1020, y: 200 },
       data: {
         label: "Bridge User Reply",
         displayName: "Approved response text",
         nodeCategory: "action",
         config: {
           icon: "message-square",
-          responseNodeId: "node_2",
+          responseNodeId: "node_3",
           messageExpression: "",
         },
         status: "idle",
       } satisfies AgenticNodeData,
     },
     {
-      id: "node_5",
+      id: "node_6",
       type: "agenticNode",
-      position: { x: 1040, y: 200 },
+      position: { x: 1280, y: 200 },
       data: {
         label: "Save Conversation State",
         displayName: "Persist review thread",
@@ -102,7 +117,7 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
         config: {
           icon: "save",
           sessionIdExpression: "trigger.session_id",
-          responseNodeId: "node_2",
+          responseNodeId: "node_3",
           userMessageExpression: "trigger.message",
         },
         status: "idle",
@@ -114,6 +129,7 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
     { id: "e2", source: "node_2", target: "node_3" },
     { id: "e3", source: "node_3", target: "node_4" },
     { id: "e4", source: "node_4", target: "node_5" },
+    { id: "e5", source: "node_5", target: "node_6" },
   ],
 };
 
@@ -149,6 +165,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
             "Cite assumptions; prefer structured bullets.",
           temperature: 0.4,
           maxTokens: 2048,
+          memoryEnabled: false,
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -170,6 +187,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
             "List gaps, overclaims, and what to verify. Be concise.",
           temperature: 0.3,
           maxTokens: 1024,
+          memoryEnabled: false,
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -203,6 +221,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
             "Resolve disagreements; note remaining uncertainties.",
           temperature: 0.35,
           maxTokens: 2048,
+          memoryEnabled: false,
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -277,6 +296,8 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
             "Welcome a brand-new customer. Explain core product value, next steps, and one CTA. Use trigger.message and trigger.name if present. Short and friendly.",
           temperature: 0.6,
           maxTokens: 512,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -297,6 +318,8 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
             "Welcome back a returning customer. Reference continuity, offer help based on trigger.message. Keep it brief.",
           temperature: 0.5,
           maxTokens: 512,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -401,6 +424,607 @@ const GETTING_STARTED_MINIMAL: { nodes: Node[]; edges: Edge[] } = {
   edges: [{ id: "e12", source: "node_1", target: "node_2" }],
 };
 
+/** RAG knowledge base Q&A: retrieve chunks then answer with grounded context. */
+const RAG_KNOWLEDGE_QA: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 200 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Question intake",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/kb/ask" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 240, y: 200 },
+      data: {
+        label: "Load Conversation State",
+        displayName: "Load session history",
+        nodeCategory: "action",
+        config: { icon: "history", sessionIdExpression: "trigger.session_id" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 500, y: 200 },
+      data: {
+        label: "Knowledge Retrieval",
+        displayName: "Search knowledge base",
+        nodeCategory: "knowledge",
+        config: {
+          icon: "database",
+          knowledgeBaseIds: [],
+          queryExpression: "trigger.message",
+          topK: 5,
+          scoreThreshold: 0.3,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 760, y: 200 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Grounded answer",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          systemPrompt:
+            "You are a knowledgeable assistant. Answer the user's question using ONLY the retrieved context below.\n\n" +
+            "Retrieved context:\n{{ node_3.context_text }}\n\n" +
+            "If the context does not contain enough information, say so clearly rather than guessing. " +
+            "Cite the source chunks when available.",
+          temperature: 0.2,
+          maxTokens: 2048,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 1020, y: 200 },
+      data: {
+        label: "Bridge User Reply",
+        displayName: "Return grounded answer",
+        nodeCategory: "action",
+        config: { icon: "message-square", responseNodeId: "node_4", messageExpression: "" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 1280, y: 200 },
+      data: {
+        label: "Save Conversation State",
+        displayName: "Persist Q&A turn",
+        nodeCategory: "action",
+        config: {
+          icon: "save",
+          sessionIdExpression: "trigger.session_id",
+          responseNodeId: "node_4",
+          userMessageExpression: "trigger.message",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e12", source: "node_1", target: "node_2" },
+    { id: "e23", source: "node_2", target: "node_3" },
+    { id: "e34", source: "node_3", target: "node_4" },
+    { id: "e45", source: "node_4", target: "node_5" },
+    { id: "e56", source: "node_5", target: "node_6" },
+  ],
+};
+
+/** Schedule Trigger → LLM summary → Slack notification. */
+const SCHEDULED_NOTIFICATION: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 200 },
+      data: {
+        label: "Schedule Trigger",
+        displayName: "Daily at 9 AM UTC",
+        nodeCategory: "trigger",
+        config: { icon: "clock", cron: "0 9 * * 1-5" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 280, y: 200 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Compose daily report",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          systemPrompt:
+            "You write a concise daily operations digest for the engineering team. " +
+            "Summarize: top open incidents, upcoming scheduled jobs, and any anomalies from context. " +
+            "Format with bullet points, keep it under 300 words. Today is {{ trigger.timestamp | default('today') }}.",
+          temperature: 0.3,
+          maxTokens: 1024,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 560, y: 200 },
+      data: {
+        label: "Notification",
+        displayName: "Post to Slack",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_WEBHOOK_URL }}",
+          messageTemplate: "{{ node_2.response }}",
+          username: "Daily Digest Bot",
+          iconEmoji: ":newspaper:",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e12", source: "node_1", target: "node_2" },
+    { id: "e23", source: "node_2", target: "node_3" },
+  ],
+};
+
+/** NLP: hybrid intent classifier → entity extractor → branch to specialist agent. */
+const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 240 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Chat message intake",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/chat/message" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 240, y: 240 },
+      data: {
+        label: "Load Conversation State",
+        displayName: "Load session history",
+        nodeCategory: "action",
+        config: { icon: "history", sessionIdExpression: "trigger.session_id" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 490, y: 240 },
+      data: {
+        label: "Intent Classifier",
+        displayName: "Classify user intent",
+        nodeCategory: "nlp",
+        config: {
+          icon: "target",
+          utteranceExpression: "trigger.message",
+          intents: [
+            {
+              name: "book_appointment",
+              description: "User wants to schedule or book an appointment",
+              examples: ["book a meeting", "schedule a call", "I need an appointment"],
+              priority: 100,
+            },
+            {
+              name: "check_status",
+              description: "User asks about the status of an order, ticket, or request",
+              examples: ["where is my order", "what is the status", "any updates on my ticket"],
+              priority: 100,
+            },
+            {
+              name: "cancel_request",
+              description: "User wants to cancel a booking, order, or subscription",
+              examples: ["cancel my order", "I want to unsubscribe", "please cancel"],
+              priority: 100,
+            },
+            {
+              name: "general_inquiry",
+              description: "General questions or small talk",
+              examples: ["hello", "what can you do", "help"],
+              priority: 50,
+            },
+          ],
+          mode: "hybrid",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          confidenceThreshold: 0.6,
+          historyNodeId: "node_2",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 760, y: 240 },
+      data: {
+        label: "Entity Extractor",
+        displayName: "Extract key entities",
+        nodeCategory: "nlp",
+        config: {
+          icon: "list-filter",
+          sourceExpression: "trigger.message",
+          entities: [
+            {
+              name: "date",
+              type: "date",
+              description: "The date mentioned by the user",
+              required: false,
+            },
+            {
+              name: "reference_id",
+              type: "regex",
+              pattern: "[A-Z]{2,4}-?\\d{4,8}",
+              description: "Order, ticket, or booking ID",
+              required: false,
+            },
+          ],
+          scopeFromNode: "node_3",
+          intentEntityMapping: {
+            book_appointment: ["date"],
+            check_status: ["reference_id"],
+            cancel_request: ["reference_id"],
+          },
+          llmFallback: true,
+          provider: "google",
+          model: "gemini-2.5-flash",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 1020, y: 240 },
+      data: {
+        label: "Condition",
+        displayName: "If booking intent",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-branch",
+          condition: 'node_3.intent == "book_appointment"',
+          trueLabel: "Book",
+          falseLabel: "Other",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 1280, y: 80 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Booking assistant",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          systemPrompt:
+            "You are a booking assistant. The user wants to schedule an appointment. " +
+            "Extracted entities: {{ node_4.entities | tojson }}. " +
+            "Confirm the date, ask for missing info, and confirm the booking. Be friendly and concise.",
+          temperature: 0.4,
+          maxTokens: 512,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_7",
+      type: "agenticNode",
+      position: { x: 1280, y: 380 },
+      data: {
+        label: "LLM Agent",
+        displayName: "General intent handler",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          systemPrompt:
+            "You are a helpful assistant. The classified intent is '{{ node_3.intent }}' " +
+            "with entities: {{ node_4.entities | tojson }}. " +
+            "Handle the user's request appropriately — check status, process a cancellation, or answer a general inquiry.",
+          temperature: 0.5,
+          maxTokens: 1024,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_8",
+      type: "agenticNode",
+      position: { x: 1560, y: 80 },
+      data: {
+        label: "Save Conversation State",
+        displayName: "Save booking turn",
+        nodeCategory: "action",
+        config: {
+          icon: "save",
+          sessionIdExpression: "trigger.session_id",
+          responseNodeId: "node_6",
+          userMessageExpression: "trigger.message",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_9",
+      type: "agenticNode",
+      position: { x: 1560, y: 380 },
+      data: {
+        label: "Save Conversation State",
+        displayName: "Save general turn",
+        nodeCategory: "action",
+        config: {
+          icon: "save",
+          sessionIdExpression: "trigger.session_id",
+          responseNodeId: "node_7",
+          userMessageExpression: "trigger.message",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e12", source: "node_1", target: "node_2" },
+    { id: "e23", source: "node_2", target: "node_3" },
+    { id: "e34", source: "node_3", target: "node_4" },
+    { id: "e45", source: "node_4", target: "node_5" },
+    {
+      id: "e56",
+      source: "node_5",
+      target: "node_6",
+      sourceHandle: "true",
+      label: "Book",
+      style: { stroke: "#22c55e", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e57",
+      source: "node_5",
+      target: "node_7",
+      sourceHandle: "false",
+      label: "Other",
+      style: { stroke: "#ef4444", strokeWidth: 2 },
+      animated: true,
+    },
+    { id: "e68", source: "node_6", target: "node_8" },
+    { id: "e79", source: "node_7", target: "node_9" },
+  ],
+};
+
+/** Conversational support chatbot with episode archiving on issue resolution. */
+const EPISODE_ARCHIVE_SUPPORT: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 260 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Support message intake",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/support/chat" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 240, y: 260 },
+      data: {
+        label: "Load Conversation State",
+        displayName: "Load support thread",
+        nodeCategory: "action",
+        config: { icon: "history", sessionIdExpression: "trigger.session_id" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 490, y: 260 },
+      data: {
+        label: "LLM Router",
+        displayName: "Detect resolution signal",
+        nodeCategory: "agent",
+        config: {
+          icon: "route",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          intents: ["issue_open", "issue_resolved"],
+          historyNodeId: "node_2",
+          userMessageExpression: "trigger.message",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 740, y: 260 },
+      data: {
+        label: "Condition",
+        displayName: "Issue resolved?",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-branch",
+          condition: 'node_3.intent == "issue_resolved"',
+          trueLabel: "Resolved",
+          falseLabel: "Ongoing",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 1000, y: 80 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Closing confirmation",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          systemPrompt:
+            "The user has indicated their issue is resolved. " +
+            "Write a warm closing message: confirm the resolution, offer to re-open if needed, and thank them. " +
+            "Keep it to 2–3 sentences.",
+          temperature: 0.5,
+          maxTokens: 256,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 1000, y: 400 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Support assistant",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          provider: "google",
+          model: "gemini-2.5-flash",
+          systemPrompt:
+            "You are a friendly support agent. Help the user troubleshoot their issue. " +
+            "Use prior conversation history and trigger.message for context. " +
+            "Ask for one piece of clarification at a time if needed. Be concise and solution-focused.",
+          temperature: 0.4,
+          maxTokens: 1024,
+          historyNodeId: "node_2",
+          memoryEnabled: true,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_7",
+      type: "agenticNode",
+      position: { x: 1260, y: 80 },
+      data: {
+        label: "Archive Active Episode",
+        displayName: "Archive resolved issue",
+        nodeCategory: "action",
+        config: {
+          icon: "archive",
+          sessionIdExpression: "trigger.session_id",
+          summaryExpression: "",
+          titleExpression: "",
+          reason: "resolved",
+          memoryProfileId: "",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_8",
+      type: "agenticNode",
+      position: { x: 1260, y: 400 },
+      data: {
+        label: "Bridge User Reply",
+        displayName: "Return support reply",
+        nodeCategory: "action",
+        config: { icon: "message-square", responseNodeId: "node_6", messageExpression: "" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_9",
+      type: "agenticNode",
+      position: { x: 1520, y: 400 },
+      data: {
+        label: "Save Conversation State",
+        displayName: "Persist support turn",
+        nodeCategory: "action",
+        config: {
+          icon: "save",
+          sessionIdExpression: "trigger.session_id",
+          responseNodeId: "node_6",
+          userMessageExpression: "trigger.message",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e12", source: "node_1", target: "node_2" },
+    { id: "e23", source: "node_2", target: "node_3" },
+    { id: "e34", source: "node_3", target: "node_4" },
+    {
+      id: "e45",
+      source: "node_4",
+      target: "node_5",
+      sourceHandle: "true",
+      label: "Resolved",
+      style: { stroke: "#22c55e", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e46",
+      source: "node_4",
+      target: "node_6",
+      sourceHandle: "false",
+      label: "Ongoing",
+      style: { stroke: "#ef4444", strokeWidth: 2 },
+      animated: true,
+    },
+    { id: "e57", source: "node_5", target: "node_7" },
+    { id: "e68", source: "node_6", target: "node_8" },
+    { id: "e89", source: "node_8", target: "node_9" },
+  ],
+};
+
 function asTemplate(
   t: Omit<WorkflowTemplate, "nodeCount">,
 ): WorkflowTemplate {
@@ -465,6 +1089,42 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     tags: ["router", "ReAct", "AIOps", "HITL"],
     graph: EXAMPLE_OPERATIONS_ROUTING_WORKFLOW,
   }),
+  asTemplate({
+    id: "rag-knowledge-qa",
+    name: "RAG knowledge base Q&A",
+    description:
+      "Search a knowledge base for relevant chunks, then answer the user's question with grounded context and multi-turn memory.",
+    category: "research",
+    tags: ["RAG", "knowledge", "retrieval", "grounded"],
+    graph: RAG_KNOWLEDGE_QA,
+  }),
+  asTemplate({
+    id: "scheduled-notification",
+    name: "Scheduled report + Slack alert",
+    description:
+      "Cron-triggered LLM summary sent to a Slack channel via Notification node. Swap the destination for Teams, Discord, or email.",
+    category: "notification",
+    tags: ["schedule", "cron", "slack", "notification", "report"],
+    graph: SCHEDULED_NOTIFICATION,
+  }),
+  asTemplate({
+    id: "nlp-intent-entity",
+    name: "NLP intent + entity routing",
+    description:
+      "Hybrid Intent Classifier + Entity Extractor determine user intent and slot values, then branch to a specialist agent per intent.",
+    category: "nlp",
+    tags: ["intent", "NLP", "entity", "classifier", "slots"],
+    graph: NLP_INTENT_ENTITY,
+  }),
+  asTemplate({
+    id: "episode-archive-support",
+    name: "Support chatbot with episode archiving",
+    description:
+      "Multi-turn support assistant that detects issue resolution and archives the active episode into episodic memory on close.",
+    category: "customer-support",
+    tags: ["archive", "episode", "memory", "chatbot", "HITL"],
+    graph: EPISODE_ARCHIVE_SUPPORT,
+  }),
 ];
 
 export const TEMPLATE_CATEGORIES: { id: TemplateCategory; label: string }[] = [
@@ -473,6 +1133,7 @@ export const TEMPLATE_CATEGORIES: { id: TemplateCategory; label: string }[] = [
   { id: "operations", label: "Operations" },
   { id: "research", label: "Research" },
   { id: "notification", label: "Notifications" },
+  { id: "nlp", label: "NLP" },
 ];
 
 export function getWorkflowTemplate(id: string): WorkflowTemplate | undefined {
