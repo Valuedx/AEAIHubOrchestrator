@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.database import SessionLocal, get_db
+from app.database import SessionLocal, get_db, set_tenant_context
 from app.security.tenant import get_tenant_id
 from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowSnapshot, ExecutionLog, InstanceCheckpoint
 from app.api.schemas import (
@@ -251,6 +251,7 @@ async def execute_workflow(
         def _sync_run() -> WorkflowInstance:
             session = SessionLocal()
             try:
+                set_tenant_context(session, tenant_id)
                 execute_graph(session, instance_id_str, body.deterministic_mode)
                 inst = (
                     session.query(WorkflowInstance)

@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
+from app.database import SessionLocal, set_tenant_context
 from app.security.tenant import get_tenant_id
 from app.models.workflow import WorkflowInstance, ExecutionLog
 
@@ -90,6 +90,7 @@ async def stream_instance(
     - ``done``   — fired once when the instance reaches a terminal status
     """
     db = SessionLocal()
+    set_tenant_context(db, tenant_id)
     instance = (
         db.query(WorkflowInstance)
         .filter_by(id=instance_id, workflow_def_id=workflow_id, tenant_id=tenant_id)
@@ -127,6 +128,7 @@ async def stream_instance(
                 # ── DB poll for log and status events ───────────────────────
                 db = SessionLocal()
                 try:
+                    set_tenant_context(db, tenant_id)
                     inst = db.query(WorkflowInstance).filter_by(id=instance_id).first()
                     if not inst:
                         break

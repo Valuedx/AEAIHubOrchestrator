@@ -52,7 +52,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal, get_db
+from app.database import SessionLocal, get_db, set_tenant_context
 from app.models.workflow import (
     A2AApiKey,
     WorkflowDefinition,
@@ -428,6 +428,7 @@ async def _tasks_send_subscribe(
 
             poll_db = SessionLocal()
             try:
+                set_tenant_context(poll_db, tenant_id)
                 inst = poll_db.query(WorkflowInstance).filter_by(id=instance_uuid).first()
                 if not inst:
                     break
