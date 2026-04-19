@@ -318,7 +318,7 @@ Start Beat with its own `ORCHESTRATOR_DATABASE_URL` pointing at that role; keep 
 
 Two Sprint 1 tickets ship as follow-up work because they need live infrastructure (a running Beat + Postgres, and Docker in CI respectively) to validate meaningfully:
 
-- **S1-12 — Postgres-fixture integration tests.** Adds a `testcontainers-python`-driven pytest fixture that spins up Postgres + runs migrations, then runs the deferred integration tests: HITL `context_patch` shallow-merge, sub-workflow parent-instance cascade, cross-tenant RLS breach, and end-to-end Beat collision against the S1-02 `scheduled_triggers` dedupe. Needs Docker available to CI runners.
+- **S1-12 — Postgres-fixture integration tests.** Scaffold landed: `tests/integration/` with a `testcontainers`-driven pgvector container + non-superuser role provisioning + Alembic upgrade. Live tests cover the cross-tenant RLS breach on `memory_records` / `conversation_messages` and the end-to-end `scheduled_triggers` dedupe (matching the S1-02 unit tests at the DB level). Three stubs remain in `test_pending_followups.py` for the HITL `context_patch`, sub-workflow parent-instance cascade, and the Beat end-to-end race — each requires an LLM stub and more elaborate setup. Runs in the `backend-integration` CI job; auto-skips locally when Docker is unavailable.
 
 - **Operator action carried over from this PR**: run the non-superuser DDL in §5.2a and the Beat BYPASSRLS DDL in §5.2a before pointing a new `ORCHESTRATOR_DATABASE_URL` at them. RLS enforcement only activates once this is done; until then migrations 0001 + 0014 remain silently bypassed (policies exist but the role is a superuser).
 
