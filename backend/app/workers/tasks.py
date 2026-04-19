@@ -15,17 +15,22 @@ import threading
 from typing import Any
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import SessionLocal, set_tenant_context
 
 logger = logging.getLogger(__name__)
 
 
-def _run_in_thread(fn, *args: Any, **kwargs: Any) -> None:
-    """Run *fn* in a daemon thread with its own DB session."""
+def _run_in_thread(fn, tenant_id: str, *args: Any, **kwargs: Any) -> None:
+    """Run *fn* in a daemon thread with its own tenant-scoped DB session.
+
+    ``tenant_id`` is applied to the session via ``set_tenant_context`` so
+    any query inside *fn* respects RLS under a non-superuser role.
+    """
 
     def _wrapper():
         db = SessionLocal()
         try:
+            set_tenant_context(db, tenant_id)
             fn(db, *args, **kwargs)
         except Exception:
             logger.exception("Background task %s failed", fn.__name__)
@@ -39,6 +44,11 @@ def _run_in_thread(fn, *args: Any, **kwargs: Any) -> None:
 # ---------------------------------------------------------------------------
 # Public task helpers — the API layer calls these; they transparently choose
 # Celery or in-process depending on settings.use_celery.
+#
+# All task implementations below now take ``tenant_id`` as their first
+# positional argument so the background session can set the RLS GUC
+# before doing any work. This is a breaking signature change for any
+# out-of-process Celery worker — update worker deployments in lockstep.
 # ---------------------------------------------------------------------------
 
 class _TaskProxy:
@@ -58,35 +68,36 @@ class _TaskProxy:
 
 # -- actual implementations (accept positional args matching Celery signatures)
 
-def _execute_workflow(instance_id: str, deterministic_mode: bool = False):
+def _execute_workflow(tenant_id: str, instance_id: str, deterministic_mode: bool = False):
     from app.engine.dag_runner import execute_graph
-    _run_in_thread(execute_graph, instance_id, deterministic_mode=deterministic_mode)
+    _run_in_thread(execute_graph, tenant_id, instance_id, deterministic_mode=deterministic_mode)
 
 
-def _resume_workflow(instance_id: str, approval_payload: dict | None = None, context_patch: dict | None = None):
+def _resume_workflow(tenant_id: str, instance_id: str, approval_payload: dict | None = None, context_patch: dict | None = None):
     from app.engine.dag_runner import resume_graph
-    _run_in_thread(resume_graph, instance_id, approval_payload or {}, context_patch=context_patch)
+    _run_in_thread(resume_graph, tenant_id, instance_id, approval_payload or {}, context_patch=context_patch)
 
 
-def _retry_workflow(instance_id: str, from_node_id: str | None = None):
+def _retry_workflow(tenant_id: str, instance_id: str, from_node_id: str | None = None):
     from app.engine.dag_runner import retry_graph
-    _run_in_thread(retry_graph, instance_id, from_node_id)
+    _run_in_thread(retry_graph, tenant_id, instance_id, from_node_id)
 
 
-def _resume_paused_workflow(instance_id: str, context_patch: dict | None = None):
+def _resume_paused_workflow(tenant_id: str, instance_id: str, context_patch: dict | None = None):
     from app.engine.dag_runner import resume_paused_graph
-    _run_in_thread(resume_paused_graph, instance_id, context_patch=context_patch)
+    _run_in_thread(resume_paused_graph, tenant_id, instance_id, context_patch=context_patch)
 
 
 # -- document ingestion --
 
-def _ingest_document(document_id: str, file_bytes_b64: str):
+def _ingest_document(tenant_id: str, document_id: str, file_bytes_b64: str):
     import base64
     from app.engine.ingestor import ingest_document
     from app.models.knowledge import KBDocument, KnowledgeBase
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         doc = db.query(KBDocument).filter_by(id=document_id).first()
         if not doc:
             logger.error("ingest_document: document %s not found", document_id)

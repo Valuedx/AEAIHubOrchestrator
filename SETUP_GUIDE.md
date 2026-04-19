@@ -299,7 +299,19 @@ Then set `ORCHESTRATOR_DATABASE_URL=postgresql://ae_orchestrator_app:...@host/ae
 
 Run `alembic upgrade head` as the Postgres superuser (it needs DDL privileges to ALTER TABLE). Run the application as the non-superuser role above.
 
-The runtime sets `app.tenant_id` per-request via `get_tenant_db` (see `app/database.py`). Any code path that still uses raw `SessionLocal()` on a tenant-scoped table must call `set_tenant_context(db, tenant_id)` before querying — retrofitting the remaining call sites is tracked under ticket **S1-13**.
+The runtime sets `app.tenant_id` per-request via `get_tenant_db` (see `app/database.py`). Every `SessionLocal()` site in request, task, and engine code paths now calls `set_tenant_context(db, tenant_id)` immediately after opening the session.
+
+**Celery Beat** (the scheduler in `app/workers/scheduler.py`) is the one exception — its tasks (`check_scheduled_workflows`, `prune_old_snapshots`, `archive_stale_conversation_episodes`) are inherently cross-tenant and cannot set a single `app.tenant_id`. Run Beat under a dedicated role that bypasses RLS:
+
+```sql
+CREATE ROLE ae_orchestrator_beat WITH LOGIN PASSWORD 'change-me' BYPASSRLS;
+GRANT CONNECT ON DATABASE ae_orchestrator TO ae_orchestrator_beat;
+GRANT USAGE ON SCHEMA public TO ae_orchestrator_beat;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ae_orchestrator_beat;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ae_orchestrator_beat;
+```
+
+Start Beat with its own `ORCHESTRATOR_DATABASE_URL` pointing at that role; keep uvicorn and Celery worker processes on the regular non-superuser app role.
 
 ### 5.3 Schema Overview
 

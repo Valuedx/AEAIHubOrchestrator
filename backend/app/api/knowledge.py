@@ -320,7 +320,7 @@ async def upload_document(
     from app.workers.tasks import ingest_document_task
 
     file_b64 = base64.b64encode(file_bytes).decode("ascii")
-    ingest_document_task.delay(str(doc.id), file_b64)
+    ingest_document_task.delay(tenant_id, str(doc.id), file_b64)
 
     return _doc_to_out(doc)
 

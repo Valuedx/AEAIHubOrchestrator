@@ -323,7 +323,7 @@ def _tasks_send(params: dict, tenant_id: str, db: Session) -> dict:
     db.refresh(instance)
 
     from app.workers.tasks import execute_workflow_task
-    execute_workflow_task.delay(str(instance.id))
+    execute_workflow_task.delay(tenant_id, str(instance.id))
 
     logger.info(
         "A2A tasks/send: tenant=%s skill=%s instance=%s session=%s",

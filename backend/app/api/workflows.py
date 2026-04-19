@@ -300,7 +300,7 @@ async def execute_workflow(
         )
 
     from app.workers.tasks import execute_workflow_task
-    execute_workflow_task.delay(str(instance.id), body.deterministic_mode)
+    execute_workflow_task.delay(tenant_id, str(instance.id), body.deterministic_mode)
 
     return JSONResponse(
         status_code=202,
@@ -325,7 +325,7 @@ def callback_workflow(
         raise HTTPException(404, f"Suspended instance {instance_id} not found for this workflow")
 
     from app.workers.tasks import resume_workflow_task
-    resume_workflow_task.delay(str(instance.id), body.approval_payload, body.context_patch)
+    resume_workflow_task.delay(tenant_id, str(instance.id), body.approval_payload, body.context_patch)
 
     instance.status = "running"
     db.commit()
@@ -360,7 +360,7 @@ def retry_workflow(
         raise HTTPException(404, "No failed instance found for this workflow")
 
     from app.workers.tasks import retry_workflow_task
-    retry_workflow_task.delay(str(instance.id), body.from_node_id)
+    retry_workflow_task.delay(tenant_id, str(instance.id), body.from_node_id)
 
     instance.status = "running"
     db.commit()
@@ -425,7 +425,7 @@ def resume_paused_workflow(
 
     from app.workers.tasks import resume_paused_workflow_task
 
-    resume_paused_workflow_task.delay(str(instance.id), body.context_patch)
+    resume_paused_workflow_task.delay(tenant_id, str(instance.id), body.context_patch)
 
     instance.status = "running"
     db.commit()

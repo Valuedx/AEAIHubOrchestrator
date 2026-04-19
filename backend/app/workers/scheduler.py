@@ -2,10 +2,18 @@
 
 Periodically scans workflow definitions for Schedule Trigger nodes and
 creates workflow instances for those whose cron expressions are due.
-Also prunes old workflow snapshots (V0.9).
+Also prunes old workflow snapshots (V0.9) and archives stale conversation
+episodes.
 
 Run alongside the Celery worker:
     celery -A app.workers.celery_app beat --loglevel=info
+
+RLS / tenant-scoping note: every task in this module is fundamentally
+cross-tenant — it enumerates workflows, snapshots, or episodes across
+every tenant in a single pass — so ``set_tenant_context`` is deliberately
+not called on these sessions. Under a non-superuser application role,
+Beat MUST be run as a role that bypasses RLS (either a superuser or one
+created with ``ALTER ROLE ... BYPASSRLS``). See SETUP_GUIDE.md §5.2a.
 """
 
 from __future__ import annotations
@@ -77,7 +85,7 @@ def check_scheduled_workflows():
                 db.refresh(instance)
 
                 from app.workers.tasks import execute_workflow_task
-                execute_workflow_task.delay(str(instance.id))
+                execute_workflow_task.delay(wf.tenant_id, str(instance.id))
                 triggered += 1
                 logger.info("Scheduled trigger fired for workflow %s (cron: %s)", wf.id, cron_expr)
 
