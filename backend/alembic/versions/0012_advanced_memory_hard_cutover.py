@@ -192,9 +192,14 @@ def upgrade() -> None:
         ["tenant_id", "dedupe_key"],
         unique=True,
     )
+    # Wrapped in EXCEPTION — see 0009 for rationale (S1-14 follow-up).
     op.execute(
-        "CREATE INDEX ix_memory_records_embedding ON memory_records "
-        "USING hnsw (embedding vector_cosine_ops)"
+        "DO $$ BEGIN "
+        "EXECUTE 'CREATE INDEX ix_memory_records_embedding ON memory_records "
+        "USING hnsw (embedding vector_cosine_ops)'; "
+        "EXCEPTION WHEN OTHERS THEN "
+        "RAISE NOTICE 'HNSW index on memory_records.embedding skipped: %%', SQLERRM; "
+        "END $$"
     )
 
     op.create_table(

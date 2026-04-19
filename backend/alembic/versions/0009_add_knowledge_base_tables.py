@@ -75,10 +75,20 @@ def upgrade() -> None:
     # Add the vector embedding column (variable dimension, so we use a generic vector type)
     op.execute("ALTER TABLE kb_chunks ADD COLUMN embedding vector")
 
-    # HNSW index for fast cosine similarity
+    # HNSW index for fast cosine similarity. pgvector rejects HNSW on
+    # dimension-less vector columns with "column does not have
+    # dimensions"; the app still supports variable-dimension embeddings
+    # so we can't declare a fixed dim here without picking a winner.
+    # Wrap the CREATE INDEX in an EXCEPTION block so fresh deployments
+    # on strict pgvector builds succeed — the index is a pure perf
+    # optimisation. S1-14 tracks declaring a dimension and rebuilding.
     op.execute(
-        "CREATE INDEX ix_kb_chunks_embedding ON kb_chunks "
-        "USING hnsw (embedding vector_cosine_ops)"
+        "DO $$ BEGIN "
+        "EXECUTE 'CREATE INDEX ix_kb_chunks_embedding ON kb_chunks "
+        "USING hnsw (embedding vector_cosine_ops)'; "
+        "EXCEPTION WHEN OTHERS THEN "
+        "RAISE NOTICE 'HNSW index on kb_chunks.embedding skipped: %%', SQLERRM; "
+        "END $$"
     )
 
     # RLS for all tenant-scoped KB tables (follows 0001 pattern)

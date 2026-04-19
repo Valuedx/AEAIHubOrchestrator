@@ -74,8 +74,13 @@ def pg_container():
     # 0.8+ and breaks alembic upgrade in CI. Pin until the schema is
     # fixed — tracked as S1-14 ("Declare pgvector dimensions and fix
     # HNSW indexes").
+    # Uses the floating pg16 tag — matches docker-compose.yml. The bad
+    # HNSW CREATE INDEX statements in migrations 0009 / 0010 / 0012 are
+    # now wrapped in EXCEPTION blocks so alembic upgrade head succeeds
+    # even on strict pgvector builds that reject dimension-less HNSW.
+    # S1-14 is the forward fix (declare fixed dimensions + rebuild).
     with PostgresContainer(
-        image="pgvector/pgvector:0.7.4-pg16",
+        image="pgvector/pgvector:pg16",
         username="postgres",
         password="postgres",
         dbname="ae_orchestrator",
