@@ -265,15 +265,41 @@ alembic upgrade head
 
 This applies all revisions under `alembic/versions/`, including (among others):
 
-- **0001** — PostgreSQL Row-Level Security policies for tenant isolation
+- **0001** — PostgreSQL Row-Level Security policies for tenant isolation (workflow, tenant-secrets, tenant-tool-override tables)
 - **0002** — `workflow_snapshots` table for version history
 - **0003** — `conversation_sessions` (stateful DAG pattern)
 - **0004** — `instance_checkpoints`
 - **0005** — `workflow_instances.cancel_requested`
 - **0006** — `workflow_instances.pause_requested`
 - **0012** — advanced memory hard cutover: `conversation_messages`, `memory_profiles`, `memory_records`, `entity_facts`, and normalized conversation storage
+- **0014** — RLS policies on the memory, conversation, A2A-key, and workflow-snapshot tables (closes the gap left by 0001)
 
 Use `alembic current` to verify the DB revision after upgrading.
+
+### 5.2a PostgreSQL Row-Level Security — production hardening
+
+**RLS is enforced only when the application connects as a non-superuser role.** Superusers bypass every RLS policy silently, so a misconfigured `DATABASE_URL` will leave cross-tenant reads wide open without any error.
+
+For a production deployment:
+
+```sql
+-- One-time setup: create a dedicated application role.
+CREATE ROLE ae_orchestrator_app WITH LOGIN PASSWORD 'change-me';
+GRANT CONNECT ON DATABASE ae_orchestrator TO ae_orchestrator_app;
+GRANT USAGE ON SCHEMA public TO ae_orchestrator_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ae_orchestrator_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ae_orchestrator_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ae_orchestrator_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO ae_orchestrator_app;
+```
+
+Then set `ORCHESTRATOR_DATABASE_URL=postgresql://ae_orchestrator_app:...@host/ae_orchestrator`.
+
+Run `alembic upgrade head` as the Postgres superuser (it needs DDL privileges to ALTER TABLE). Run the application as the non-superuser role above.
+
+The runtime sets `app.tenant_id` per-request via `get_tenant_db` (see `app/database.py`). Any code path that still uses raw `SessionLocal()` on a tenant-scoped table must call `set_tenant_context(db, tenant_id)` before querying — retrofitting the remaining call sites is tracked under ticket **S1-13**.
 
 ### 5.3 Schema Overview
 
