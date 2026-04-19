@@ -273,6 +273,7 @@ This applies all revisions under `alembic/versions/`, including (among others):
 - **0006** — `workflow_instances.pause_requested`
 - **0012** — advanced memory hard cutover: `conversation_messages`, `memory_profiles`, `memory_records`, `entity_facts`, and normalized conversation storage
 - **0014** — RLS policies on the memory, conversation, A2A-key, and workflow-snapshot tables (closes the gap left by 0001)
+- **0015** — `scheduled_triggers` table for atomic Beat schedule-fire dedupe (replaces the 55-second wall-clock guard)
 
 Use `alembic current` to verify the DB revision after upgrading.
 
@@ -317,9 +318,7 @@ Start Beat with its own `ORCHESTRATOR_DATABASE_URL` pointing at that role; keep 
 
 Two Sprint 1 tickets ship as follow-up work because they need live infrastructure (a running Beat + Postgres, and Docker in CI respectively) to validate meaningfully:
 
-- **S1-02 — Scheduler tick-boundary dedupe.** `app/workers/scheduler.py::check_scheduled_workflows` currently guards against double-firing with a `(now - last_run.created_at) < 55` check. With a 60 s Beat tick and clock skew, a scheduled run can still be missed or duplicated. The fix is a new `scheduled_triggers(workflow_id, scheduled_for_minute)` table with a unique constraint, so Beat's insert either wins or raises `IntegrityError`. Requires a running Beat to soak-test; no code landed yet.
-
-- **S1-12 — Postgres-fixture integration tests.** Adds a `testcontainers-python`-driven pytest fixture that spins up Postgres + runs migrations, then runs the deferred integration tests: HITL `context_patch` shallow-merge, sub-workflow parent-instance cascade, and the cross-tenant RLS breach test. Needs Docker available to CI runners.
+- **S1-12 — Postgres-fixture integration tests.** Adds a `testcontainers-python`-driven pytest fixture that spins up Postgres + runs migrations, then runs the deferred integration tests: HITL `context_patch` shallow-merge, sub-workflow parent-instance cascade, cross-tenant RLS breach, and end-to-end Beat collision against the S1-02 `scheduled_triggers` dedupe. Needs Docker available to CI runners.
 
 - **Operator action carried over from this PR**: run the non-superuser DDL in §5.2a and the Beat BYPASSRLS DDL in §5.2a before pointing a new `ORCHESTRATOR_DATABASE_URL` at them. RLS enforcement only activates once this is done; until then migrations 0001 + 0014 remain silently bypassed (policies exist but the role is a superuser).
 

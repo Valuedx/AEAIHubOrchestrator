@@ -20,16 +20,35 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from celery.schedules import crontab
 from croniter import croniter
+from sqlalchemy.exc import IntegrityError
 
 from app.workers.celery_app import celery_app
 from app.database import SessionLocal
 from app.engine.memory_service import archive_active_episode, resolve_episode_policy
 from app.models.memory import ConversationEpisode
-from app.models.workflow import ConversationSession, WorkflowDefinition, WorkflowInstance, WorkflowSnapshot
+from app.models.workflow import (
+    ConversationSession,
+    ScheduledTrigger,
+    WorkflowDefinition,
+    WorkflowInstance,
+    WorkflowSnapshot,
+)
+
+
+def minute_bucket(now: datetime) -> datetime:
+    """Truncate a timestamp to minute precision.
+
+    Beat's scheduler can drift by a few hundred milliseconds each tick,
+    so two back-to-back fires that should collide on the same minute
+    boundary need their ``scheduled_for`` values to match exactly. A
+    minute-aligned timestamp makes the UNIQUE(workflow_def_id,
+    scheduled_for) dedupe deterministic.
+    """
+    return now.replace(second=0, microsecond=0)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +61,10 @@ celery_app.conf.beat_schedule = {
         "task": "orchestrator.prune_old_snapshots",
         "schedule": crontab(hour=3, minute=0),  # daily at 3:00 AM
     },
+    "prune-old-scheduled-triggers": {
+        "task": "orchestrator.prune_old_scheduled_triggers",
+        "schedule": crontab(hour=3, minute=30),  # daily at 3:30 AM
+    },
     "archive-stale-conversation-episodes": {
         "task": "orchestrator.archive_stale_conversation_episodes",
         "schedule": 900.0,
@@ -51,48 +74,102 @@ celery_app.conf.beat_schedule = {
 
 @celery_app.task(name="orchestrator.check_scheduled_workflows")
 def check_scheduled_workflows():
-    """Scan all workflows for schedule trigger nodes that are due."""
+    """Scan all workflows for schedule trigger nodes that are due.
+
+    Dedupe is DB-enforced: for each due workflow we try to INSERT a
+    ``scheduled_triggers`` row keyed by (workflow_def_id, minute-aligned
+    scheduled_for). The UNIQUE constraint guarantees at most one fire
+    per workflow per minute — whichever Beat tick wins the insert runs
+    the workflow, everything else (clock skew, duplicate Beat, retry)
+    raises IntegrityError and skips.
+    """
     db = SessionLocal()
     try:
         workflows = db.query(WorkflowDefinition).all()
         now = datetime.now(timezone.utc)
+        scheduled_for = minute_bucket(now)
         triggered = 0
 
         for wf in workflows:
             cron_expr = _extract_schedule_cron(wf.graph_json)
             if not cron_expr:
                 continue
+            if not _is_due(cron_expr, now):
+                continue
 
-            if _is_due(cron_expr, now):
-                last_run = (
-                    db.query(WorkflowInstance)
-                    .filter_by(workflow_def_id=wf.id)
-                    .order_by(WorkflowInstance.created_at.desc())
-                    .first()
+            # Atomic claim — unique constraint is the exactly-once latch.
+            claim = ScheduledTrigger(
+                workflow_def_id=wf.id,
+                scheduled_for=scheduled_for,
+            )
+            db.add(claim)
+            try:
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                logger.debug(
+                    "Schedule for workflow %s at %s already claimed — skipping",
+                    wf.id, scheduled_for.isoformat(),
                 )
-                if last_run and (now - last_run.created_at).total_seconds() < 55:
-                    continue
+                continue
 
-                instance = WorkflowInstance(
-                    tenant_id=wf.tenant_id,
-                    workflow_def_id=wf.id,
-                    trigger_payload={"source": "schedule", "cron": cron_expr, "fired_at": now.isoformat()},
-                    status="queued",
-                    definition_version_at_start=wf.version,
-                )
-                db.add(instance)
-                db.commit()
-                db.refresh(instance)
+            instance = WorkflowInstance(
+                tenant_id=wf.tenant_id,
+                workflow_def_id=wf.id,
+                trigger_payload={
+                    "source": "schedule",
+                    "cron": cron_expr,
+                    "fired_at": now.isoformat(),
+                    "scheduled_for": scheduled_for.isoformat(),
+                },
+                status="queued",
+                definition_version_at_start=wf.version,
+            )
+            db.add(instance)
+            db.flush()
 
-                from app.workers.tasks import execute_workflow_task
-                execute_workflow_task.delay(wf.tenant_id, str(instance.id))
-                triggered += 1
-                logger.info("Scheduled trigger fired for workflow %s (cron: %s)", wf.id, cron_expr)
+            claim.instance_id = instance.id
+            db.commit()
+            db.refresh(instance)
+
+            from app.workers.tasks import execute_workflow_task
+            execute_workflow_task.delay(wf.tenant_id, str(instance.id))
+            triggered += 1
+            logger.info(
+                "Scheduled trigger fired for workflow %s (cron: %s, scheduled_for: %s)",
+                wf.id, cron_expr, scheduled_for.isoformat(),
+            )
 
         if triggered:
             logger.info("Schedule check complete: %d workflows triggered", triggered)
     except Exception:
         logger.exception("Error in scheduled workflow check")
+        db.rollback()
+    finally:
+        db.close()
+
+
+@celery_app.task(name="orchestrator.prune_old_scheduled_triggers")
+def prune_old_scheduled_triggers():
+    """Delete scheduled_triggers rows older than 24h.
+
+    The dedupe check only looks at the current minute, so older rows
+    have no functional value — we keep 24h for audit / debugging
+    ("did this workflow actually fire at 03:00?") then drop.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    db = SessionLocal()
+    try:
+        deleted = (
+            db.query(ScheduledTrigger)
+            .filter(ScheduledTrigger.created_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if deleted:
+            logger.info("Pruned %d scheduled_triggers rows older than 24h", deleted)
+    except Exception:
+        logger.exception("Error pruning old scheduled_triggers")
         db.rollback()
     finally:
         db.close()

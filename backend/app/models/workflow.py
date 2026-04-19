@@ -236,3 +236,44 @@ class A2AApiKey(Base):
         Index("ix_a2a_key_hash", "key_hash", unique=True),
         UniqueConstraint("tenant_id", "label", name="uq_a2a_key_tenant_label"),
     )
+
+
+class ScheduledTrigger(Base):
+    """Atomic claim row for Celery Beat's per-minute schedule fires.
+
+    The ``UNIQUE(workflow_def_id, scheduled_for)`` constraint is the
+    dedupe: when two Beat processes race at the same minute boundary,
+    exactly one INSERT succeeds; the other raises IntegrityError and
+    skips the fire. Replaces the fragile 55-second wall-clock check.
+
+    ``scheduled_for`` is always truncated to minute precision (seconds
+    and microseconds set to zero) so Beat ticks that differ by a few
+    hundred milliseconds still collide.
+
+    Rows older than a day are pruned by a Beat task; they are only
+    needed to prevent duplicate fires within the current window.
+    """
+
+    __tablename__ = "scheduled_triggers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_def_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scheduled_for = Column(DateTime(timezone=True), nullable=False)
+    instance_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_instances.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_def_id", "scheduled_for",
+            name="uq_scheduled_trigger_wf_minute",
+        ),
+        Index("ix_scheduled_trigger_created_at", "created_at"),
+    )
