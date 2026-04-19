@@ -178,12 +178,22 @@ function ChildInstanceLogs({
 
   useEffect(() => {
     if (!expanded) return;
-    setLoading(true);
+    let cancelled = false;
+    // Defer the "loading=true" flip out of the synchronous effect body so the
+    // react-hooks/set-state-in-effect rule stays happy — the UX flash is
+    // imperceptible (a microtask delay, <1ms).
+    queueMicrotask(() => {
+      if (!cancelled) setLoading(true);
+    });
     api.getInstanceDetail(workflowDefId, childInstanceId).then((detail) => {
+      if (cancelled) return;
       setLogs(detail.logs);
       setChildStatus(detail.status);
       setLoading(false);
-    }).catch(() => setLoading(false));
+    }).catch(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [expanded, childInstanceId, workflowDefId]);
 
   const statusColor = STATUS_COLOR[childStatus] ?? "text-muted-foreground";

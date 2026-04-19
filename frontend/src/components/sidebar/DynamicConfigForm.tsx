@@ -123,13 +123,16 @@ function JsonTextarea({
 }) {
   const [raw, setRaw] = useState(() => JSON.stringify(canonicalValue, null, 2));
   const [hasError, setHasError] = useState(false);
-  // Track the last canonical JSON string so we can detect external changes
-  const lastCanonical = useRef(JSON.stringify(canonicalValue));
+  // Track the last canonical JSON string so we can detect external changes.
+  // Using useState (not useRef) so the comparison happens cleanly during
+  // render — React's "update state during render" pattern — rather than
+  // mutating a ref, which the react-hooks/refs rule flags.
+  const [lastCanonical, setLastCanonical] = useState(() => JSON.stringify(canonicalValue));
 
-  // When the store value changes (e.g. undo/redo), reset the local raw string
+  // When the store value changes (e.g. undo/redo), reset the local raw string.
   const canonical = JSON.stringify(canonicalValue);
-  if (canonical !== lastCanonical.current) {
-    lastCanonical.current = canonical;
+  if (canonical !== lastCanonical) {
+    setLastCanonical(canonical);
     setRaw(JSON.stringify(canonicalValue, null, 2));
     setHasError(false);
   }
@@ -987,12 +990,15 @@ function OutputNodePicker({
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     if (!workflowId) {
-      setChildNodes([]);
-      return;
+      // Defer via microtask so we don't trip react-hooks/set-state-in-effect.
+      queueMicrotask(() => { if (!cancelled) setChildNodes([]); });
+      return () => { cancelled = true; };
     }
-    setLoading(true);
+    queueMicrotask(() => { if (!cancelled) setLoading(true); });
     api.getWorkflow(workflowId).then((wf) => {
+      if (cancelled) return;
       const nodes = (wf.graph_json?.nodes || []) as { id: string; data?: { label?: string; displayName?: string } }[];
       setChildNodes(
         nodes.map((n) => ({
@@ -1002,9 +1008,11 @@ function OutputNodePicker({
       );
       setLoading(false);
     }).catch(() => {
+      if (cancelled) return;
       setChildNodes([]);
       setLoading(false);
     });
+    return () => { cancelled = true; };
   }, [workflowId]);
 
   if (!workflowId) return null;

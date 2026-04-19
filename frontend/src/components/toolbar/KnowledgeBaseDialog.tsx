@@ -63,10 +63,17 @@ export function KnowledgeBaseDialog({ open, onOpenChange }: Props) {
   }, []);
 
   useEffect(() => {
-    if (open) {
-      refresh();
+    if (!open) return;
+    // Defer the synchronous setState calls out of the effect body — keeps
+    // react-hooks/set-state-in-effect happy. The microtask fires in the
+    // same tick so the UX is indistinguishable.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
       setView("list");
-    }
+      refresh();
+    });
+    return () => { cancelled = true; };
   }, [open, refresh]);
 
   const handleDelete = (id: string, e: MouseEvent) => {

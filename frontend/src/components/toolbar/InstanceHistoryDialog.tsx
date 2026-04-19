@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ComponentType } from "react";
 import { Activity, ExternalLink, Loader2, CircleDot, CircleCheck, CircleX, Pause, PauseCircle, Ban } from "lucide-react";
 import {
   Dialog,
@@ -17,7 +17,9 @@ interface Props {
   onOpenChange: (open: boolean) => void;
 }
 
-const STATUS_ICONS: Record<string, { icon: any; color: string }> = {
+type StatusIcon = ComponentType<{ className?: string; size?: number | string }>;
+
+const STATUS_ICONS: Record<string, { icon: StatusIcon; color: string }> = {
   queued: { icon: CircleDot, color: "text-muted-foreground" },
   running: { icon: Loader2, color: "text-blue-500 animate-spin" },
   completed: { icon: CircleCheck, color: "text-green-500" },

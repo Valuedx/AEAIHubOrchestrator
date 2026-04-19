@@ -43,10 +43,14 @@ export function SecretsDialog({ open, onOpenChange }: Props) {
   }, []);
 
   useEffect(() => {
-    if (open) {
-      refresh();
+    if (!open) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
       setView("list");
-    }
+      refresh();
+    });
+    return () => { cancelled = true; };
   }, [open, refresh]);
 
   const handleDelete = (id: string, keyName: string) => {

@@ -15,13 +15,24 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
 
       - name: Install backend dependencies
         run: pip install -r requirements.txt
         working-directory: backend
 
-      - name: Run backend portability tests
-        run: python -m pytest backend/tests/test_paths.py backend/tests/test_safe_eval.py
+      - name: Run backend unit tests (no-DB)
+        # Full suite minus the three modules that require a live Postgres
+        # (tracked under S1-09 — once they are converted to fixtures or moved
+        # to a docker-compose integration job, drop the --ignore flags).
+        run: >-
+          python -m pytest
+          --ignore=tests/test_memory_api.py
+          --ignore=tests/test_memory_service.py
+          --ignore=tests/test_node_handlers_memory.py
+          -v
+        working-directory: backend
 
   frontend:
     runs-on: ubuntu-latest
@@ -40,6 +51,14 @@ jobs:
         run: npm ci
         working-directory: frontend
 
-      - name: Build frontend
+      - name: Lint frontend
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Run frontend tests
+        run: npm test
+        working-directory: frontend
+
+      - name: Typecheck + build frontend
         run: npm run build
         working-directory: frontend
