@@ -8,6 +8,7 @@ import { Toolbar } from "@/components/toolbar/Toolbar";
 import { ExecutionPanel } from "@/components/toolbar/ExecutionPanel";
 import { WorkflowBanner } from "@/components/banner/WorkflowBanner";
 import { LoginPage } from "@/components/auth/LoginPage";
+import { getAuthToken } from "@/lib/api";
 
 // OIDC auth gate: only active when VITE_AUTH_MODE=oidc
 const AUTH_MODE = import.meta.env.VITE_AUTH_MODE;
@@ -15,7 +16,7 @@ const AUTH_MODE = import.meta.env.VITE_AUTH_MODE;
 export default function App() {
   const [paletteCollapsed, setPaletteCollapsed] = useState(false);
 
-  if (AUTH_MODE === "oidc" && !localStorage.getItem("ae_access_token")) {
+  if (AUTH_MODE === "oidc" && !getAuthToken()) {
     return <LoginPage />;
   }
 

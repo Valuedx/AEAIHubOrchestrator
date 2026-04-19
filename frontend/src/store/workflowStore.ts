@@ -14,6 +14,7 @@ import {
 import { useFlowStore } from "@/store/flowStore";
 import { getWorkflowTemplate } from "@/lib/templates";
 import type { AgenticNodeData } from "@/types/nodes";
+import { nextBackoffMs, POLL_MAX_ATTEMPTS } from "@/lib/retry";
 
 interface WorkflowState {
   currentWorkflow: WorkflowOut | null;
@@ -588,6 +589,16 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
           },
         }));
       },
+      (err) => {
+        // Network drop or parse failure — surface to UI instead of silent
+        // "execution complete". onDone will still fire right after, so
+        // isExecuting clears as usual.
+        const msg =
+          err.kind === "network"
+            ? `Lost connection to the execution stream — results may be incomplete.`
+            : `Malformed stream event (${err.message}).`;
+        set({ error: msg });
+      },
     );
 
     set({ _sseCleanup: cleanup });
@@ -677,9 +688,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   pollInstance: async (workflowId, instanceId) => {
+    let attempt = 1;
+    let consecutiveErrors = 0;
+
     const poll = async () => {
       try {
         const detail = await api.getInstanceDetail(workflowId, instanceId);
+        consecutiveErrors = 0;
         set({ activeInstance: detail });
 
         if (
@@ -690,9 +705,20 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
           set({ isExecuting: false });
           return;
         }
-        setTimeout(poll, 1500);
-      } catch {
-        set({ isExecuting: false });
+        attempt += 1;
+        setTimeout(poll, nextBackoffMs(attempt));
+      } catch (e) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= POLL_MAX_ATTEMPTS) {
+          set({
+            isExecuting: false,
+            error: `Lost contact with backend while polling instance ${instanceId}: ${String(e)}`,
+          });
+          return;
+        }
+        // Back off faster on failure than on success, to recover quickly once
+        // the backend comes back.
+        setTimeout(poll, nextBackoffMs(consecutiveErrors));
       }
     };
     poll();

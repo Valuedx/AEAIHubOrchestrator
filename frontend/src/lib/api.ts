@@ -1,5 +1,27 @@
+import { openSSE } from "@/lib/sse";
+
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8001";
 const TENANT_ID = import.meta.env.VITE_TENANT_ID || "default";
+
+// Auth token storage key. We use sessionStorage (not localStorage) so the
+// token does not survive a browser restart and is scoped to the tab — this
+// meaningfully reduces XSS blast radius.
+export const AUTH_TOKEN_KEY = "ae_access_token";
+
+export function getAuthToken(): string | null {
+  return sessionStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+export function setAuthToken(token: string): void {
+  sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+  // Best-effort cleanup in case the previous version stashed a token here.
+  try { localStorage.removeItem(AUTH_TOKEN_KEY); } catch { /* ignore */ }
+}
+
+export function clearAuthToken(): void {
+  sessionStorage.removeItem(AUTH_TOKEN_KEY);
+  try { localStorage.removeItem(AUTH_TOKEN_KEY); } catch { /* ignore */ }
+}
 
 /** Thrown on non-2xx responses; includes parsed JSON body when possible (e.g. sync 504 with instance_id). */
 export class ApiError extends Error {
@@ -17,7 +39,7 @@ export class ApiError extends Error {
 }
 
 function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem("ae_access_token");
+  const token = getAuthToken();
   if (token) return { "Authorization": `Bearer ${token}` };
   return { "X-Tenant-Id": TENANT_ID };
 }
@@ -651,29 +673,58 @@ export const api = {
     onStatus: (status: { instance_status: string; current_node_id?: string | null }) => void,
     onDone: () => void,
     onToken?: (token: { node_id: string; token: string; done: boolean }) => void,
+    onError?: (err: { kind: "network" | "parse" | "http"; message: string }) => void,
   ): () => void {
-    const url = `${API_BASE}/api/v1/workflows/${workflowId}/instances/${instanceId}/stream?x_tenant_id=${TENANT_ID}`;
-    const es = new EventSource(url);
+    // Auth/tenant goes in headers — not the URL — so it does not leak to
+    // proxy or CDN access logs. `openSSE` uses fetch + ReadableStream under
+    // the hood, unlike EventSource which cannot send custom headers.
+    const url = `${API_BASE}/api/v1/workflows/${workflowId}/instances/${instanceId}/stream`;
+    let receivedDone = false;
 
-    es.addEventListener("log", (e) => {
-      onLog(JSON.parse(e.data));
-    });
-    es.addEventListener("status", (e) => {
-      onStatus(JSON.parse(e.data));
-    });
-    es.addEventListener("token", (e) => {
-      if (onToken) onToken(JSON.parse(e.data));
-    });
-    es.addEventListener("done", () => {
-      onDone();
-      es.close();
-    });
-    es.onerror = () => {
-      es.close();
-      onDone();
+    const safeParse = <T>(raw: string, eventName: string): T | null => {
+      try {
+        return JSON.parse(raw) as T;
+      } catch (e) {
+        onError?.({ kind: "parse", message: `${eventName}: ${String(e)}` });
+        return null;
+      }
     };
 
-    return () => es.close();
+    return openSSE(url, getAuthHeaders(), {
+      onEvent: (event, data) => {
+        switch (event) {
+          case "log": {
+            const parsed = safeParse<Partial<ExecutionLogOut>>(data, "log");
+            if (parsed) onLog(parsed);
+            break;
+          }
+          case "status": {
+            const parsed = safeParse<{ instance_status: string; current_node_id?: string | null }>(
+              data,
+              "status",
+            );
+            if (parsed) onStatus(parsed);
+            break;
+          }
+          case "token": {
+            if (!onToken) break;
+            const parsed = safeParse<{ node_id: string; token: string; done: boolean }>(data, "token");
+            if (parsed) onToken(parsed);
+            break;
+          }
+          case "done": {
+            receivedDone = true;
+            break;
+          }
+        }
+      },
+      onError: (err) => {
+        if (!receivedDone) onError?.(err);
+      },
+      onDone: () => {
+        onDone();
+      },
+    });
   },
 
   // ---------------------------------------------------------------------------
