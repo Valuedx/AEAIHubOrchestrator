@@ -75,7 +75,7 @@ def pg_container():
     # fixed — tracked as S1-14 ("Declare pgvector dimensions and fix
     # HNSW indexes").
     with PostgresContainer(
-        image="pgvector/pgvector:pg16-v0.7.4",
+        image="pgvector/pgvector:0.7.4-pg16",
         username="postgres",
         password="postgres",
         dbname="ae_orchestrator",
