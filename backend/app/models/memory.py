@@ -216,7 +216,10 @@ class MemoryRecord(Base):
     embedding_provider = Column(String(32), nullable=False, default="openai")
     embedding_model = Column(String(128), nullable=False, default="text-embedding-3-small")
     vector_store = Column(String(32), nullable=False, default="pgvector")
-    embedding = Column(Vector(), nullable=True)
+    # Fixed at 1536 to match settings.embedding_default_model
+    # ("text-embedding-3-small"). Alembic migration 0016 enforces this
+    # at the DB level and (re)builds the HNSW index.
+    embedding = Column(Vector(1536), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     session = relationship("ConversationSession", back_populates="memory_records")

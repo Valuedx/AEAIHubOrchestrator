@@ -274,6 +274,7 @@ This applies all revisions under `alembic/versions/`, including (among others):
 - **0012** — advanced memory hard cutover: `conversation_messages`, `memory_profiles`, `memory_records`, `entity_facts`, and normalized conversation storage
 - **0014** — RLS policies on the memory, conversation, A2A-key, and workflow-snapshot tables (closes the gap left by 0001)
 - **0015** — `scheduled_triggers` table for atomic Beat schedule-fire dedupe (replaces the 55-second wall-clock guard)
+- **0016** — pin pgvector embedding columns to `vector(1536)` and rebuild HNSW indexes — matches `text-embedding-3-small`; operators on a different embedding model must adjust before running
 
 Use `alembic current` to verify the DB revision after upgrading.
 
