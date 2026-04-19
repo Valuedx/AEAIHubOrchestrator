@@ -58,10 +58,11 @@ def decrypt_secret(ciphertext: str) -> str:
 
 def get_tenant_secret(tenant_id: str, key_name: str) -> str | None:
     """Look up a single secret by tenant and key name, returning decrypted plaintext."""
-    from app.database import SessionLocal
+    from app.database import SessionLocal, set_tenant_context
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         row = (
             db.query(TenantSecret)
             .filter_by(tenant_id=tenant_id, key_name=key_name)

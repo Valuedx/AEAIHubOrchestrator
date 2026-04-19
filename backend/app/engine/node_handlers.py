@@ -142,7 +142,7 @@ def _handle_agent(
         from app.engine.react_loop import run_react_loop
         return run_react_loop(node_data, context, tenant_id)
 
-    from app.database import SessionLocal
+    from app.database import SessionLocal, set_tenant_context
     from app.engine.llm_providers import call_llm_streaming
     from app.engine.memory_service import assemble_agent_messages
     from app.engine.prompt_template import render_prompt
@@ -156,6 +156,7 @@ def _handle_agent(
     system_prompt = render_prompt(raw_prompt, context)
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         prompt_messages, memory_debug = assemble_agent_messages(
             db,
             tenant_id=tenant_id,
@@ -448,11 +449,12 @@ def _handle_load_conversation_state(
             "generated ephemeral id=%s", session_id,
         )
 
-    from app.database import SessionLocal
+    from app.database import SessionLocal, set_tenant_context
     from app.engine.memory_service import load_conversation_state
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         payload = load_conversation_state(db, tenant_id=tenant_id, session_id=session_id)
         db.commit()
         logger.info(
@@ -510,7 +512,7 @@ def _handle_save_conversation_state(
             return False
         return True
 
-    from app.database import SessionLocal
+    from app.database import SessionLocal, set_tenant_context
     from app.engine.memory_service import (
         get_active_episode,
         get_or_create_active_episode,
@@ -525,6 +527,7 @@ def _handle_save_conversation_state(
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         instance_id = str(context.get("_instance_id", "") or "")
         current_node_id = str(context.get("_current_node_id", "") or "")
         workflow_def_id = str(context.get("_workflow_def_id", "") or "")
@@ -663,11 +666,12 @@ def _handle_archive_conversation_episode(
         title_value = _resolve_expr(title_expr, context)
         title = str(title_value).strip() if title_value is not None else ""
 
-    from app.database import SessionLocal
+    from app.database import SessionLocal, set_tenant_context
     from app.engine.memory_service import archive_active_episode, get_or_create_session
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         workflow_def_id = str(context.get("_workflow_def_id", "") or "") or None
         instance_id = str(context.get("_instance_id", "") or "") or None
         current_node_id = str(context.get("_current_node_id", "") or "") or None
@@ -741,11 +745,12 @@ def _handle_llm_router(
         "Do not include any other text, explanation, or markdown formatting."
     )
 
-    from app.database import SessionLocal
+    from app.database import SessionLocal, set_tenant_context
     from app.engine.memory_service import assemble_history_text
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         history_block, memory_debug = assemble_history_text(
             db,
             tenant_id=tenant_id,
@@ -989,11 +994,12 @@ def _handle_knowledge_retrieval(
         logger.warning("Knowledge Retrieval: invalid knowledgeBaseIds: %s", exc)
         return {"chunks": [], "context_text": "", "query": query, "chunk_count": 0, "error": str(exc)}
 
-    from app.database import SessionLocal
+    from app.database import SessionLocal, set_tenant_context
     from app.engine.retriever import retrieve_chunks
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         chunks = retrieve_chunks(
             db=db,
             kb_ids=kb_ids,
@@ -1051,8 +1057,9 @@ def _handle_sub_workflow(
 
     need_own_session = db is None
     if need_own_session:
-        from app.database import SessionLocal
+        from app.database import SessionLocal, set_tenant_context
         db = SessionLocal()
+        set_tenant_context(db, tenant_id)
 
     try:
         return _execute_sub_workflow(

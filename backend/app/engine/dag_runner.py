@@ -779,8 +779,10 @@ def _execute_parallel(
 
         # V0.9 (Component 7): Use explicit trace object from context
         from app.observability import span_node
+        from app.database import set_tenant_context
         thread_db = SessionLocal()
         try:
+            set_tenant_context(thread_db, instance.tenant_id)
             with span_node(
                 trace,
                 node_id=node_id,

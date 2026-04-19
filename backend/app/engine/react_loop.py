@@ -42,8 +42,10 @@ def run_react_loop(
     from app.engine.prompt_template import render_prompt
 
     system_prompt = render_prompt(raw_prompt, context)
+    from app.database import set_tenant_context
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         initial_messages, memory_debug = assemble_agent_messages(
             db,
             tenant_id=tenant_id,

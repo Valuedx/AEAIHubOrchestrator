@@ -157,11 +157,12 @@ def _handle_intent_classifier(
 
     if cache_embeddings:
         from app.engine.embedding_cache_helper import get_or_embed, _intent_text
-        from app.database import SessionLocal
+        from app.database import SessionLocal, set_tenant_context
 
         texts = [_intent_text(it) for it in intents_cfg]
         db = SessionLocal()
         try:
+            set_tenant_context(db, tenant_id)
             intent_vecs = get_or_embed(tenant_id, texts, emb_provider, emb_model, db)
         finally:
             db.close()
@@ -231,8 +232,10 @@ def _llm_classify(
         else "Return exactly ONE intent."
     )
 
+    from app.database import set_tenant_context
     db = SessionLocal()
     try:
+        set_tenant_context(db, tenant_id)
         history_block, memory_debug = assemble_history_text(
             db,
             tenant_id=tenant_id,

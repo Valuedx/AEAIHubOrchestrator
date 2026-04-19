@@ -20,6 +20,11 @@ class _FakeDB:
     def close(self):
         self.closed = True
 
+    def execute(self, *_args, **_kwargs):
+        # set_tenant_context is invoked on every SessionLocal() in node
+        # handlers. Tests don't need the GUC; accept and ignore.
+        return None
+
 
 def test_bridge_user_reply_preserves_upstream_memory_debug():
     memory_debug = {"enabled": True, "profile_id": str(uuid.uuid4())}
