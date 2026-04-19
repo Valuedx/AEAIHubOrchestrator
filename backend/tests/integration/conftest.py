@@ -67,8 +67,15 @@ def pg_container():
     except ImportError:
         pytest.skip("testcontainers[postgres] is not installed")
 
+    # Pinned to pg16-v0.7.4: pgvector 0.8+ tightened the HNSW index
+    # check to require a fixed-dimension vector column, but migrations
+    # 0009 / 0010 / 0012 create dimension-less vector columns and then
+    # build HNSW indexes on them. The floating ``pg16`` tag now pulls
+    # 0.8+ and breaks alembic upgrade in CI. Pin until the schema is
+    # fixed — tracked as S1-14 ("Declare pgvector dimensions and fix
+    # HNSW indexes").
     with PostgresContainer(
-        image="pgvector/pgvector:pg16",
+        image="pgvector/pgvector:pg16-v0.7.4",
         username="postgres",
         password="postgres",
         dbname="ae_orchestrator",
