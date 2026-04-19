@@ -313,6 +313,16 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ae_orchestrator_beat;
 
 Start Beat with its own `ORCHESTRATOR_DATABASE_URL` pointing at that role; keep uvicorn and Celery worker processes on the regular non-superuser app role.
 
+### 5.2b Deferred Sprint 1 hardening — tracked, not yet implemented
+
+Two Sprint 1 tickets ship as follow-up work because they need live infrastructure (a running Beat + Postgres, and Docker in CI respectively) to validate meaningfully:
+
+- **S1-02 — Scheduler tick-boundary dedupe.** `app/workers/scheduler.py::check_scheduled_workflows` currently guards against double-firing with a `(now - last_run.created_at) < 55` check. With a 60 s Beat tick and clock skew, a scheduled run can still be missed or duplicated. The fix is a new `scheduled_triggers(workflow_id, scheduled_for_minute)` table with a unique constraint, so Beat's insert either wins or raises `IntegrityError`. Requires a running Beat to soak-test; no code landed yet.
+
+- **S1-12 — Postgres-fixture integration tests.** Adds a `testcontainers-python`-driven pytest fixture that spins up Postgres + runs migrations, then runs the deferred integration tests: HITL `context_patch` shallow-merge, sub-workflow parent-instance cascade, and the cross-tenant RLS breach test. Needs Docker available to CI runners.
+
+- **Operator action carried over from this PR**: run the non-superuser DDL in §5.2a and the Beat BYPASSRLS DDL in §5.2a before pointing a new `ORCHESTRATOR_DATABASE_URL` at them. RLS enforcement only activates once this is done; until then migrations 0001 + 0014 remain silently bypassed (policies exist but the role is a superuser).
+
 ### 5.3 Schema Overview
 
 ```
