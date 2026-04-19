@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.workflow import WorkflowInstance, ExecutionLog, InstanceCheckpoint
 from app.engine.node_handlers import dispatch_node
+from app.engine.scrubber import scrub_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -160,19 +161,22 @@ def _detect_cycles(nodes_map: dict, forward: dict, in_degree: dict) -> None:
 
     deg = dict(in_degree)
     queue = deque(nid for nid, d in deg.items() if d == 0)
-    visited = 0
+    visited: set[str] = set()
 
     while queue:
         nid = queue.popleft()
-        visited += 1
+        visited.add(nid)
         for edge in forward.get(nid, []):
             deg[edge.target] -= 1
             if deg[edge.target] == 0:
                 queue.append(edge.target)
 
-    if visited != len(nodes_map):
-        cycle_nodes = [nid for nid in nodes_map if nid not in set()]
-        raise ValueError(f"Graph contains a cycle (visited {visited}/{len(nodes_map)} nodes)")
+    if len(visited) != len(nodes_map):
+        cycle_nodes = sorted(set(nodes_map) - visited)
+        raise ValueError(
+            f"Graph contains a cycle (visited {len(visited)}/{len(nodes_map)} nodes); "
+            f"unreachable via topological order: {cycle_nodes}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +692,7 @@ def _execute_single_node(
             _promote_orchestrator_user_reply(context, output)
 
             log_entry.status = "completed"
-            log_entry.output_json = output
+            log_entry.output_json = scrub_secrets(output)
             log_entry.completed_at = _utcnow()
             db.commit()
             checkpoint_id = _save_checkpoint(db, instance.id, node_id, context)
@@ -806,7 +810,12 @@ def _execute_parallel(
             checkpoint_id = _save_checkpoint(db, instance.id, node_id, context)
             # Embed checkpoint_id in the log output so it is queryable via the
             # execution log API even though the Langfuse span has already closed.
-            log_entry.output_json = {**(output or {}), "_checkpoint_id": checkpoint_id} if checkpoint_id else output
+            scrubbed = scrub_secrets(output)
+            log_entry.output_json = (
+                {**(scrubbed or {}), "_checkpoint_id": checkpoint_id}
+                if checkpoint_id
+                else scrubbed
+            )
         elif status == "suspended":
             log_entry.status = "suspended"
             instance.status = "suspended"
@@ -1093,7 +1102,12 @@ def _promote_orchestrator_user_reply(
 
 
 def _build_node_input(node_data: dict, context: dict[str, Any]) -> dict:
-    """Build the input payload for a node from the accumulated context."""
+    """Build the (scrubbed) input payload for log storage / Langfuse spans.
+
+    This does NOT feed the node handler — the handler receives the raw
+    ``context`` directly. The result is intended strictly for logging, so
+    we redact any values whose key looks like a secret before returning.
+    """
     node_input = {
         "config": node_data.get("config", {}),
         "upstream_outputs": {
@@ -1112,7 +1126,7 @@ def _build_node_input(node_data: dict, context: dict[str, Any]) -> dict:
         node_input["loop_index"] = context["_loop_index"]
         node_input["loop_iteration"] = context["_loop_iteration"]
 
-    return node_input
+    return scrub_secrets(node_input)
 
 
 def _save_checkpoint(
