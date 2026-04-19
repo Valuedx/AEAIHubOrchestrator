@@ -197,8 +197,7 @@ def upgrade() -> None:
         "DO $$ BEGIN "
         "EXECUTE 'CREATE INDEX ix_memory_records_embedding ON memory_records "
         "USING hnsw (embedding vector_cosine_ops)'; "
-        "EXCEPTION WHEN OTHERS THEN "
-        "RAISE NOTICE 'HNSW index on memory_records.embedding skipped: %%', SQLERRM; "
+        "EXCEPTION WHEN OTHERS THEN NULL; "
         "END $$"
     )
 

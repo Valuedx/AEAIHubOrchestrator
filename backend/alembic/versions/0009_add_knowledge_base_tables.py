@@ -86,8 +86,7 @@ def upgrade() -> None:
         "DO $$ BEGIN "
         "EXECUTE 'CREATE INDEX ix_kb_chunks_embedding ON kb_chunks "
         "USING hnsw (embedding vector_cosine_ops)'; "
-        "EXCEPTION WHEN OTHERS THEN "
-        "RAISE NOTICE 'HNSW index on kb_chunks.embedding skipped: %%', SQLERRM; "
+        "EXCEPTION WHEN OTHERS THEN NULL; "
         "END $$"
     )
 
