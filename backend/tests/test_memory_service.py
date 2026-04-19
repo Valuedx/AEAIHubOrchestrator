@@ -141,6 +141,7 @@ def test_assemble_history_text_formats_summary_and_recent_turns(monkeypatch):
         summary_text="Summarized earlier discussion.",
         summary_through_turn=2,
         message_count=4,
+        active_episode_id=None,
     )
     rows = [
         _message(1, "user", "Old question"),
@@ -160,6 +161,10 @@ def test_assemble_history_text_formats_summary_and_recent_turns(monkeypatch):
     monkeypatch.setattr(
         "app.engine.memory_service.get_or_create_session",
         lambda *args, **kwargs: session,
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_active_episode",
+        lambda *args, **kwargs: None,
     )
 
     history_text, debug = assemble_history_text(
@@ -184,6 +189,7 @@ def test_assemble_agent_messages_uses_turns_without_duplication(monkeypatch):
         summary_text="Prior summary",
         summary_through_turn=2,
         message_count=4,
+        active_episode_id=None,
     )
     rows = [
         _message(1, "user", "Old question"),
@@ -205,6 +211,10 @@ def test_assemble_agent_messages_uses_turns_without_duplication(monkeypatch):
     monkeypatch.setattr(
         "app.engine.memory_service.get_or_create_session",
         lambda *args, **kwargs: session,
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_active_episode",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         "app.engine.memory_service.retrieve_memory_records",
@@ -245,6 +255,7 @@ def test_assemble_history_text_supports_recent_first_order(monkeypatch):
         summary_text="Earlier summary block.",
         summary_through_turn=2,
         message_count=4,
+        active_episode_id=None,
     )
     rows = [
         _message(1, "user", "Old question"),
@@ -265,6 +276,10 @@ def test_assemble_history_text_supports_recent_first_order(monkeypatch):
     monkeypatch.setattr(
         "app.engine.memory_service.get_or_create_session",
         lambda *args, **kwargs: session,
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_active_episode",
+        lambda *args, **kwargs: None,
     )
 
     history_text, debug = assemble_history_text(

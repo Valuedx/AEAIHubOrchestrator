@@ -36,7 +36,7 @@ def test_bridge_user_reply_preserves_upstream_memory_debug():
 
 def test_save_conversation_uses_response_memory_debug_policy(monkeypatch):
     fake_db = _FakeDB()
-    session = SimpleNamespace(id=uuid.uuid4(), message_count=2)
+    session = SimpleNamespace(id=uuid.uuid4(), message_count=2, active_episode_id=None)
     profile_id = str(uuid.uuid4())
     captured: dict[str, object] = {}
 
@@ -44,6 +44,10 @@ def test_save_conversation_uses_response_memory_debug_policy(monkeypatch):
     monkeypatch.setattr(
         "app.engine.memory_service.append_conversation_turns",
         lambda *args, **kwargs: (session, []),
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_active_episode",
+        lambda *args, **kwargs: None,
     )
 
     def _fake_resolve_memory_policy(db, **kwargs):
@@ -107,13 +111,17 @@ def test_save_conversation_uses_response_memory_debug_policy(monkeypatch):
 
 def test_save_conversation_skips_advanced_memory_when_response_memory_disabled(monkeypatch):
     fake_db = _FakeDB()
-    session = SimpleNamespace(id=uuid.uuid4(), message_count=2)
+    session = SimpleNamespace(id=uuid.uuid4(), message_count=2, active_episode_id=None)
     calls = {"summary": 0, "facts": 0, "records": 0}
 
     monkeypatch.setattr("app.database.SessionLocal", lambda: fake_db)
     monkeypatch.setattr(
         "app.engine.memory_service.append_conversation_turns",
         lambda *args, **kwargs: (session, []),
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_active_episode",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         "app.engine.memory_service.resolve_memory_policy",
@@ -156,13 +164,17 @@ def test_save_conversation_skips_advanced_memory_when_response_memory_disabled(m
 
 def test_save_conversation_skips_memory_record_promotion_for_error_output(monkeypatch):
     fake_db = _FakeDB()
-    session = SimpleNamespace(id=uuid.uuid4(), message_count=2)
+    session = SimpleNamespace(id=uuid.uuid4(), message_count=2, active_episode_id=None)
     calls = {"records": 0}
 
     monkeypatch.setattr("app.database.SessionLocal", lambda: fake_db)
     monkeypatch.setattr(
         "app.engine.memory_service.append_conversation_turns",
         lambda *args, **kwargs: (session, []),
+    )
+    monkeypatch.setattr(
+        "app.engine.memory_service.get_active_episode",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         "app.engine.memory_service.resolve_memory_policy",

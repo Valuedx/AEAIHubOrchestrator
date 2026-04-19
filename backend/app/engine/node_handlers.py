@@ -18,6 +18,40 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def check_subworkflow_recursion(
+    *,
+    parent_chain: list[str],
+    current_wf_id: str,
+    target_wf_id: str,
+    target_name: str,
+    max_depth: int,
+) -> list[str]:
+    """Validate a Sub-Workflow call against the ancestor chain.
+
+    Builds ``parent_chain + [current_wf_id]`` and raises ``ValueError`` if
+    the target workflow is already in that chain (cycle) or if the chain
+    has already reached ``max_depth`` (too deep). Returns the extended
+    chain on success so the caller can thread it into the child context.
+
+    Separated from ``_handle_sub_workflow`` so it can be unit-tested
+    without touching the database.
+    """
+    full_chain = list(parent_chain)
+    if current_wf_id:
+        full_chain.append(current_wf_id)
+
+    if target_wf_id in full_chain:
+        raise ValueError(
+            f"Sub-Workflow: recursive cycle detected — workflow '{target_name}' "
+            f"is already in the call chain"
+        )
+    if len(full_chain) >= max_depth:
+        raise ValueError(
+            f"Sub-Workflow: maximum nesting depth ({max_depth}) exceeded"
+        )
+    return full_chain
+
+
 def dispatch_node(
     node_data: dict, context: dict[str, Any], tenant_id: str,
     db: Any = None,
@@ -1078,20 +1112,13 @@ def _execute_sub_workflow(
     # 3. Recursion protection: walk the parent chain
     parent_chain: list[str] = list(context.get("_parent_chain", []))
     current_wf_id = str(context.get("_workflow_def_id", ""))
-    if current_wf_id:
-        full_chain = parent_chain + [current_wf_id]
-    else:
-        full_chain = parent_chain
-
-    if str(workflow_id) in full_chain:
-        raise ValueError(
-            f"Sub-Workflow: recursive cycle detected — workflow '{wf_def.name}' "
-            f"is already in the call chain"
-        )
-    if len(full_chain) >= max_depth:
-        raise ValueError(
-            f"Sub-Workflow: maximum nesting depth ({max_depth}) exceeded"
-        )
+    full_chain = check_subworkflow_recursion(
+        parent_chain=parent_chain,
+        current_wf_id=current_wf_id,
+        target_wf_id=str(workflow_id),
+        target_name=wf_def.name,
+        max_depth=max_depth,
+    )
 
     # 4. Build trigger_payload from input mapping
     trigger_payload: dict[str, Any] = {}
