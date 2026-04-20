@@ -18,6 +18,8 @@ import {
   Bug,
   Clock,
   Layers,
+  List,
+  Workflow,
 } from "lucide-react";
 import { useState, useCallback, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +35,7 @@ import {
 import { useWorkflowStore } from "@/store/workflowStore";
 import { HITLResumeDialog } from "@/components/toolbar/HITLResumeDialog";
 import { DebugReplayBar } from "@/components/toolbar/DebugReplayBar";
+import { ExecutionFlowView } from "@/components/toolbar/ExecutionFlowView";
 import { api, type AsyncJobOut, type ExecutionLogOut } from "@/lib/api";
 import { waitingBadgeFor } from "@/lib/asyncJob";
 
@@ -378,6 +381,9 @@ export function ExecutionPanel() {
   const isDebugMode = useWorkflowStore((s) => s.isDebugMode);
   const enterDebugMode = useWorkflowStore((s) => s.enterDebugMode);
   const [hitlOpen, setHitlOpen] = useState(false);
+  // FV-02: Logs (default) vs Flow — read-only mini canvas with live
+  // status overlays. Toggle lives in the panel header.
+  const [view, setView] = useState<"logs" | "flow">("logs");
 
   // When the instance is suspended-on-async-external, keep the async_jobs
   // list fresh so the cyan badge shows accurate elapsed time + Diverted
@@ -444,6 +450,34 @@ export function ExecutionPanel() {
           </span>
         )}
         <div className="flex-1" />
+        {/* FV-02 — Logs / Flow toggle. Lazy-mounts the React Flow
+            instance only when the user opts in. */}
+        <div className="inline-flex items-center border rounded-md overflow-hidden text-[10px] shrink-0">
+          <button
+            onClick={() => setView("logs")}
+            className={`flex items-center gap-1 px-2 py-0.5 transition-colors ${
+              view === "logs"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/50"
+            }`}
+            title="Flat list of per-node execution logs"
+          >
+            <List className="h-3 w-3" />
+            Logs
+          </button>
+          <button
+            onClick={() => setView("flow")}
+            className={`flex items-center gap-1 px-2 py-0.5 transition-colors ${
+              view === "flow"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/50"
+            }`}
+            title="Read-only graph view with live status overlays"
+          >
+            <Workflow className="h-3 w-3" />
+            Flow
+          </button>
+        </div>
         {canPause && (
           <Button
             variant="outline"
@@ -536,6 +570,11 @@ export function ExecutionPanel() {
       )}
       <Separator />
       {isDebugMode && <DebugReplayBar />}
+      {view === "flow" ? (
+        <div className="flex-1 min-h-[240px]">
+          <ExecutionFlowView />
+        </div>
+      ) : (
       <ScrollArea className="flex-1 px-4 py-2">
         <div className="space-y-1.5">
           {activeInstance.logs.length === 0 ? (
@@ -558,6 +597,7 @@ export function ExecutionPanel() {
           )}
         </div>
       </ScrollArea>
+      )}
     </div>
   );
 }
