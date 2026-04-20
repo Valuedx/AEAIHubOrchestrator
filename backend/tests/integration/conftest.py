@@ -195,12 +195,29 @@ def app_session(app_engine, superuser_engine):
     finally:
         session.close()
         # Truncate tenant-scoped tables as superuser to keep tests isolated.
+        # async_jobs + tenant_integrations added for AE-08 coverage.
         with superuser_engine.begin() as conn:
             conn.execute(text(
                 "TRUNCATE TABLE "
+                "async_jobs, tenant_integrations, "
                 "conversation_messages, conversation_episodes, conversation_sessions, "
                 "memory_records, memory_profiles, entity_facts, "
                 "workflow_snapshots, workflow_instances, workflow_definitions, "
                 "a2a_api_keys, scheduled_triggers "
                 "RESTART IDENTITY CASCADE"
             ))
+
+
+@pytest.fixture
+def superuser_sessionmaker(superuser_engine):
+    """sessionmaker bound to the superuser engine.
+
+    Used by AE-08's poll-task simulation: Beat is documented to run
+    under a BYPASSRLS role in production (SETUP_GUIDE §5.2b), so
+    tests that exercise the Beat path should use a session that
+    mimics that — otherwise RLS policies filter out the cross-tenant
+    async_jobs scan the poller needs.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    return sessionmaker(bind=superuser_engine, autoflush=False)
