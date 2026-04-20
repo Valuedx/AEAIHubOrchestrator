@@ -92,7 +92,14 @@ def check_scheduled_workflows():
     """
     db = SessionLocal()
     try:
-        workflows = db.query(WorkflowDefinition).all()
+        # DV-07 — only active workflows fire on schedule. Manual Run
+        # still works for inactive workflows (users toggle them off
+        # precisely so cron stops while iteration continues).
+        workflows = (
+            db.query(WorkflowDefinition)
+            .filter(WorkflowDefinition.is_active.is_(True))
+            .all()
+        )
         now = datetime.now(timezone.utc)
         scheduled_for = minute_bucket(now)
         triggered = 0

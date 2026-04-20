@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
+import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -34,6 +35,9 @@ class WorkflowDefinition(Base):
     version = Column(Integer, nullable=False, default=1)
     # When True, this workflow is listed in the tenant's A2A agent card as a skill
     is_published = Column(Boolean, nullable=False, default=False)
+    # DV-07 — when False, Schedule Triggers stop firing. Manual Run, PATCH,
+    # and duplicate all continue to work. Default True keeps legacy behaviour.
+    is_active = Column(Boolean, nullable=False, default=True, server_default=sa.text("TRUE"))
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

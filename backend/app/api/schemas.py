@@ -23,6 +23,9 @@ class WorkflowUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     graph_json: dict[str, Any] | None = None
+    # DV-07 — when False, Schedule Triggers stop firing. Not tied to
+    # version: toggling is_active does not bump version or snapshot.
+    is_active: bool | None = None
 
 
 class WorkflowOut(BaseModel):
@@ -32,6 +35,7 @@ class WorkflowOut(BaseModel):
     description: str | None
     graph_json: dict[str, Any]
     version: int
+    is_active: bool = True
     created_at: datetime
     updated_at: datetime
 

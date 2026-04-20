@@ -165,6 +165,11 @@ def update_workflow(
         wf.name = body.name
     if body.description is not None:
         wf.description = body.description
+    # DV-07 — is_active is a runtime switch, not a graph change. It
+    # must not trigger snapshot / version bump (otherwise toggling
+    # during iteration would churn workflow_snapshots).
+    if body.is_active is not None:
+        wf.is_active = body.is_active
     if body.graph_json is not None:
         import logging
         _log = logging.getLogger(__name__)
@@ -193,6 +198,81 @@ def update_workflow(
     db.commit()
     db.refresh(wf)
     return wf
+
+
+# ---------------------------------------------------------------------------
+# DV-05 — Duplicate workflow
+# ---------------------------------------------------------------------------
+
+import copy as _copy
+
+
+def _next_copy_name(db: Session, tenant_id: str, base_name: str) -> str:
+    """Return a name that doesn't collide with an existing workflow for
+    this tenant. First try ``"<base> (copy)"``; if that's taken, try
+    ``"<base> (copy 2)"``, ``"<base> (copy 3)"``, etc.
+
+    ``base_name`` is the source's already-stripped root — callers pass
+    the original definition's name directly; any existing " (copy...)"
+    suffix on the source is preserved so duplicating a duplicate reads
+    naturally (``Foo (copy) (copy)`` rather than ``Foo (copy)`` again).
+    """
+    first = f"{base_name} (copy)"
+    existing = {
+        row[0]
+        for row in db.query(WorkflowDefinition.name)
+        .filter_by(tenant_id=tenant_id)
+        .all()
+    }
+    if first not in existing:
+        return first
+    # Find the smallest n >= 2 that doesn't collide.
+    n = 2
+    while f"{base_name} (copy {n})" in existing:
+        n += 1
+    return f"{base_name} (copy {n})"
+
+
+@router.post("/{workflow_id}/duplicate", response_model=WorkflowOut, status_code=201)
+def duplicate_workflow(
+    workflow_id: uuid.UUID,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_db),
+):
+    """Clone a workflow definition.
+
+    * Copies ``graph_json`` deeply — including any ``pinnedOutput``
+      blocks — so probe state carries over. The operator can unpin
+      pieces in the clone without affecting the original.
+    * New row starts at ``version=1``; does NOT copy snapshots.
+    * ``is_active`` defaults to True on the clone regardless of the
+      source's state, so the clone is immediately testable without a
+      second toggle. Source's active flag is left alone.
+    * Name collision handling: ``"<orig> (copy)"``, then ``(copy 2)``,
+      ``(copy 3)``, etc., so repeated duplicates don't clobber each
+      other.
+    """
+    src = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=workflow_id, tenant_id=tenant_id)
+        .first()
+    )
+    if not src:
+        raise HTTPException(404, "Workflow not found")
+
+    new_name = _next_copy_name(db, tenant_id, src.name)
+    clone = WorkflowDefinition(
+        tenant_id=tenant_id,
+        name=new_name,
+        description=src.description,
+        graph_json=_copy.deepcopy(src.graph_json or {}),
+        version=1,
+        is_active=True,
+    )
+    db.add(clone)
+    db.commit()
+    db.refresh(clone)
+    return clone
 
 
 # ---------------------------------------------------------------------------

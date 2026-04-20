@@ -21,6 +21,8 @@ import {
   KeyRound,
   StickyNote as StickyNoteIcon,
   Keyboard,
+  Power,
+  PowerOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -93,6 +95,7 @@ export function Toolbar() {
   const saveWorkflow = useWorkflowStore((s) => s.saveWorkflow);
   const executeWorkflow = useWorkflowStore((s) => s.executeWorkflow);
   const newWorkflow = useWorkflowStore((s) => s.newWorkflow);
+  const setActive = useWorkflowStore((s) => s.setActive);
   const runSync = useWorkflowStore((s) => s.runSync);
   const setRunSync = useWorkflowStore((s) => s.setRunSync);
   const nodes = useFlowStore((s) => s.nodes);
@@ -183,6 +186,33 @@ export function Toolbar() {
           <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
             v{currentWorkflow.version}
           </Badge>
+        )}
+
+        {currentWorkflow && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setActive(!currentWorkflow.is_active)}
+            title={
+              currentWorkflow.is_active
+                ? "Active — Schedule Triggers will fire. Click to pause."
+                : "Inactive — Schedule Triggers are paused. Manual Run still works. Click to resume."
+            }
+            className={
+              currentWorkflow.is_active
+                ? "gap-1.5 text-green-600 hover:text-green-600"
+                : "gap-1.5 text-muted-foreground hover:text-foreground"
+            }
+          >
+            {currentWorkflow.is_active ? (
+              <Power className="h-3.5 w-3.5" />
+            ) : (
+              <PowerOff className="h-3.5 w-3.5" />
+            )}
+            <span className="text-[11px] font-medium hidden lg:inline">
+              {currentWorkflow.is_active ? "Active" : "Inactive"}
+            </span>
+          </Button>
         )}
 
         <Separator orientation="vertical" className="h-6" />

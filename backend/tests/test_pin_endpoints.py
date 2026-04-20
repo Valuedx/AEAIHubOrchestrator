@@ -57,6 +57,7 @@ def _make_wf(
     wf.name = "Test Workflow"
     wf.description = None
     wf.version = 1
+    wf.is_active = True
     wf.created_at = datetime(2026, 4, 21, tzinfo=timezone.utc)
     wf.updated_at = datetime(2026, 4, 21, tzinfo=timezone.utc)
     wf.graph_json = graph or {

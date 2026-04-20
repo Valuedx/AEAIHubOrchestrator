@@ -2,7 +2,7 @@
 
 Sprint 2A bundles the **developer-velocity** features that shorten the edit → run → inspect loop. Each section below covers one capability, what it solves, how to use it from the UI, and the backend surface it sits on. Tickets are referenced as `DV-NN` for cross-linking with the roadmap.
 
-> This guide expands as each DV ticket lands. Currently documented: **DV-01 (data pinning)**, **DV-02 (test single node)**, **DV-03 (sticky notes)**, **DV-04 (expression helpers)**, **DV-06 (hotkey cheatsheet)**. DV-05, DV-07 sections will arrive with their respective commits.
+> All Sprint 2A DV tickets (DV-01 through DV-07) are now documented below.
 
 ---
 
@@ -258,7 +258,101 @@ No changes needed in `safe_eval.py` — the merge happens once via `**EXPRESSION
 
 ---
 
-## (reserved) DV-05 — Duplicate workflow
+## DV-05 — Duplicate workflow
+
+**What it solves**: forking a workflow to try an alternative without losing the original. Previous flow — open JSON, copy-paste, rename, save — was brittle and operators lost pins/descriptions along the way. DV-05 adds a first-class duplicate that clones the definition server-side in one click.
+
+### Using it from the UI
+
+1. Open **File** → **Open Workflow** (folder icon) to see the list.
+2. Hover any row → click the **copy** icon next to the trash icon.
+3. The clone appears in the list with a `(copy)` suffix. Click to open it.
+
+The currently loaded workflow is unchanged — the clone is a new row, ready to be edited and saved independently.
+
+### What gets copied
+
+* **Graph JSON** — every node, edge, and `pinnedOutput` block. Deep-copied so mutations on the clone don't touch the source.
+* **Name** — `"<original> (copy)"`. If that's already taken, `(copy 2)`, `(copy 3)`, … so repeated duplicates don't collide.
+* **Description** — verbatim.
+
+### What does NOT get copied
+
+* **Snapshots** — the clone starts at `version=1`. The source's history of `workflow_snapshots` rows stays with the source.
+* **Instances / execution logs** — clones have no run history; all of that is instance-scoped, not definition-scoped.
+* **`is_active` state** — the clone is always created active (`is_active=True`) so the operator can immediately test it. The source's flag is left alone. If you were deliberately keeping the source paused, the clone will fire on any Schedule Trigger it carries — toggle it off first if that matters.
+
+### Backend surface
+
+```http
+POST /api/v1/workflows/{workflow_id}/duplicate
+→ 201 WorkflowOut  (the new row)
+→ 404 when the source doesn't exist for this tenant
+```
+
+Tenant-scoped via the standard `get_tenant_id` dependency. The source is resolved and the clone is written in the same session; either both commit or both roll back.
+
+### Related tests
+
+* `backend/tests/test_workflow_duplicate.py` — 7 tests: happy path (name suffix, version=1, is_active=True, deep-copy graph + pinnedOutput), collision handling (`(copy)` → `(copy 2)` → `(copy 3)`), numbered-hole skip to first free, nested `(copy) (copy)` on a source that's already a clone, inactive-source-produces-active-clone, 404 on missing source, "no clone written on 404".
+
+---
+
+## DV-07 — Active / Inactive toggle
+
+**What it solves**: pausing a workflow's Schedule Trigger without deleting it or editing its cron expression. Useful when a workflow misbehaves in production and you want to stop the firehose while you investigate, or when a cron-driven workflow is still in development and shouldn't fire yet.
+
+### Using it from the UI
+
+* **Toolbar** — next to the version badge, a green **Power / Active** button. Click to flip to a grey **PowerOff / Inactive** button. Same button toggles back.
+* **WorkflowListDialog** — inactive rows render dimmed with an **inactive** pill next to the name, so the state is visible even when the workflow isn't loaded.
+
+### What "inactive" actually does
+
+| Path | Active | Inactive |
+| ---- | ------ | -------- |
+| Schedule Trigger (Beat fires on cron) | ✅ | ⏸️ Skipped |
+| Manual Run (toolbar Run button / POST /execute) | ✅ | ✅ Still works |
+| PATCH / Save edits | ✅ | ✅ Still works |
+| Duplicate (DV-05) | ✅ | ✅ Still works; clone starts Active |
+| Webhook Trigger | ✅ | ✅ *(no gated webhook endpoint exists yet; revisit when one is added)* |
+
+Inactive is the *scheduled-fire-off* flag, not a read-only flag. You can still iterate freely.
+
+### Storage semantics
+
+`workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` (migration **0018**). Existing rows backfill to `TRUE` on upgrade. Toggling is_active does NOT bump `version` or write a `workflow_snapshots` row — same discipline as pins (DV-01): runtime switches shouldn't churn history.
+
+### Backend surface
+
+Reuses the existing `PATCH /api/v1/workflows/{workflow_id}` endpoint:
+
+```http
+PATCH /api/v1/workflows/{workflow_id}
+Body: { "is_active": false }
+→ 200 WorkflowOut with is_active set, version unchanged
+```
+
+Combined PATCH (`is_active` + `graph_json`) is allowed: the graph change snapshots + bumps version as usual; the flag toggle piggybacks without extra work.
+
+### Beat filter
+
+`backend/app/workers/scheduler.py::check_scheduled_workflows` runs:
+
+```python
+workflows = (
+    db.query(WorkflowDefinition)
+    .filter(WorkflowDefinition.is_active.is_(True))
+    .all()
+)
+```
+
+One-line filter; inactive workflows never reach `_extract_schedule_cron`. The `scheduled_triggers` claim row (0015) is also never written, so dedupe isn't affected by toggled state.
+
+### Related tests
+
+* `backend/tests/test_workflow_is_active.py` — 5 tests: PATCH off without version bump, PATCH on, PATCH with both is_active and graph still snapshots/bumps, PATCH-without-is_active leaves flag untouched, WorkflowOut serialises the field.
+* `backend/tests/test_scheduler_is_active.py` — 2 tests: scheduler query contains the is_active filter, model column has `server_default=TRUE` (backfill contract for migration 0018).
 
 ---
 

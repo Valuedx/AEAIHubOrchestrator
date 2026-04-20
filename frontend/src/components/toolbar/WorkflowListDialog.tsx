@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Trash2, ExternalLink, Loader2 } from "lucide-react";
+import { Trash2, ExternalLink, Loader2, Copy, PowerOff } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -24,6 +24,7 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
   const fetchWorkflows = useWorkflowStore((s) => s.fetchWorkflows);
   const loadWorkflow = useWorkflowStore((s) => s.loadWorkflow);
   const deleteWorkflow = useWorkflowStore((s) => s.deleteWorkflow);
+  const duplicateWorkflow = useWorkflowStore((s) => s.duplicateWorkflow);
 
   useEffect(() => {
     if (open) fetchWorkflows();
@@ -39,6 +40,11 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
     if (confirm("Delete this workflow? This cannot be undone.")) {
       deleteWorkflow(id);
     }
+  };
+
+  const handleDuplicate = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    duplicateWorkflow(id);
   };
 
   return (
@@ -65,7 +71,7 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
                   onClick={() => handleLoad(wf.id)}
                   className={`w-full flex items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-accent ${
                     currentWorkflow?.id === wf.id ? "bg-accent" : ""
-                  }`}
+                  } ${wf.is_active === false ? "opacity-60" : ""}`}
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -73,6 +79,16 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
                       <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
                         v{wf.version}
                       </Badge>
+                      {wf.is_active === false && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] px-1.5 py-0 shrink-0 text-muted-foreground gap-1"
+                          title="Schedule Triggers paused; manual Run still works"
+                        >
+                          <PowerOff className="h-2.5 w-2.5" />
+                          inactive
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
                       Updated {new Date(wf.updated_at).toLocaleDateString()} {new Date(wf.updated_at).toLocaleTimeString()}
@@ -80,6 +96,15 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+                      onClick={(e) => handleDuplicate(wf.id, e)}
+                      title="Duplicate workflow"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"

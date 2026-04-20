@@ -84,6 +84,9 @@ export interface WorkflowOut {
   description: string | null;
   graph_json: { nodes: unknown[]; edges: unknown[] };
   version: number;
+  /** DV-07 — when false, Schedule Triggers are suspended for this
+   *  workflow. Manual Run and PATCH still work. */
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -465,6 +468,7 @@ export const api = {
       name?: string;
       description?: string;
       graph_json?: { nodes: unknown[]; edges: unknown[] };
+      is_active?: boolean;
     },
   ): Promise<WorkflowOut> {
     return request(`/api/v1/workflows/${id}`, {
@@ -475,6 +479,11 @@ export const api = {
 
   deleteWorkflow(id: string): Promise<void> {
     return request(`/api/v1/workflows/${id}`, { method: "DELETE" });
+  },
+
+  /** DV-05 — duplicate a workflow definition. */
+  duplicateWorkflow(id: string): Promise<WorkflowOut> {
+    return request(`/api/v1/workflows/${id}/duplicate`, { method: "POST" });
   },
 
   // ---------------------------------------------------------------------------

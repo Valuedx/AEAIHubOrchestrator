@@ -88,6 +88,12 @@ interface WorkflowState {
   loadWorkflow: (id: string) => Promise<void>;
   saveWorkflow: (name?: string) => Promise<void>;
   deleteWorkflow: (id: string) => Promise<void>;
+  /** DV-05 — clone a workflow on the server, then reload the list.
+   *  The clone stays on the server; we do not auto-open it. */
+  duplicateWorkflow: (id: string) => Promise<void>;
+  /** DV-07 — flip the active flag on the current workflow. No-op when
+   *  nothing is loaded. Does NOT bump version. */
+  setActive: (isActive: boolean) => Promise<void>;
   newWorkflow: () => void;
   /** Load a bundled template by id (see `lib/templates`). */
   loadTemplate: (templateId: string) => void;
@@ -431,6 +437,35 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       get().fetchWorkflows();
     } catch (e) {
       set({ error: String(e), loading: false });
+    }
+  },
+
+  duplicateWorkflow: async (id) => {
+    set({ loading: true, error: null });
+    try {
+      await api.duplicateWorkflow(id);
+      set({ loading: false });
+      // Refresh so the list dialog picks up the new row.
+      get().fetchWorkflows();
+    } catch (e) {
+      set({ error: String(e), loading: false });
+    }
+  },
+
+  setActive: async (isActive) => {
+    const current = get().currentWorkflow;
+    if (!current) return;
+    // Optimistic — the server is the source of truth but flicker during
+    // a round-trip would be distracting on a toggle.
+    set({ currentWorkflow: { ...current, is_active: isActive } });
+    try {
+      const wf = await api.updateWorkflow(current.id, { is_active: isActive });
+      set({ currentWorkflow: wf });
+      // Keep the list in sync so the dialog's dimmed-row style matches.
+      get().fetchWorkflows();
+    } catch (e) {
+      // Roll back optimistic update on failure.
+      set({ currentWorkflow: current, error: String(e) });
     }
   },
 
