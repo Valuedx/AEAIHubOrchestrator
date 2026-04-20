@@ -30,6 +30,7 @@ oracle to probe which jobs exist.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import uuid
 from hashlib import sha256
@@ -170,7 +171,24 @@ async def complete_async_job(
             )
             return {"ok": True, "note": "non-terminal status ignored"}
 
-        finalize_terminal(db, job, terminal, body if isinstance(body, dict) else {})
+        normalised = body if isinstance(body, dict) else {}
+        # Mirror the Beat poller's get_status behaviour: AE emits
+        # ``workflowResponse`` as a JSON-encoded string, and the context
+        # patch builder looks for ``workflow_response_parsed`` to promote
+        # ``outputParameters`` onto the top level of the resume payload.
+        # Parse it opportunistically so downstream context shape is
+        # identical whether completion arrived via poll or webhook.
+        raw_wf_response = normalised.get("workflowResponse")
+        if isinstance(raw_wf_response, str) and raw_wf_response.strip():
+            try:
+                normalised["workflow_response_parsed"] = json.loads(raw_wf_response)
+            except json.JSONDecodeError:
+                logger.debug(
+                    "Webhook workflowResponse for async_job %s is not valid JSON; skipping parse",
+                    job.id,
+                )
+
+        finalize_terminal(db, job, terminal, normalised)
         return {"ok": True, "status": terminal}
     finally:
         db.close()

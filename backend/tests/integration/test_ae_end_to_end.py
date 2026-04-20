@@ -587,7 +587,7 @@ class TestBeatPollInstanceStateAtRest:
 
     @respx.mock
     def test_parent_no_longer_suspended_marks_job_abandoned(
-        self, superuser_sessionmaker,
+        self, superuser_sessionmaker, superuser_engine,
     ):
         from app.workers.scheduler import poll_async_jobs
         from app.engine import automationedge_client as ae_mod
@@ -595,21 +595,33 @@ class TestBeatPollInstanceStateAtRest:
         ae_mod.reset_session_cache()
         seeded = _seed_ae_suspension(superuser_sessionmaker)
 
-        # Flip the instance to cancelled behind the poller's back.
-        session = superuser_sessionmaker()
-        try:
-            session.execute(
+        # Flip the instance to cancelled behind the poller's back. Use
+        # engine.begin() for a cleanly-committed transaction — no
+        # chance of a session-level cache or autocommit surprise.
+        with superuser_engine.begin() as conn:
+            conn.execute(
                 text(
                     "UPDATE workflow_instances SET status='cancelled' WHERE id=:id"
                 ),
-                {"id": seeded["instance_id"]},
+                {"id": str(seeded["instance_id"])},
             )
-            session.commit()
-        finally:
-            session.close()
 
+        # Pre-flight verification: the flip actually landed.
+        with superuser_engine.connect() as conn:
+            current = conn.execute(
+                text("SELECT status FROM workflow_instances WHERE id=:id"),
+                {"id": str(seeded["instance_id"])},
+            ).scalar_one()
+            assert current == "cancelled", (
+                f"pre-condition: instance should be cancelled, got {current!r}"
+            )
+
+        # Explicit 200 response so an unintended AE call produces a
+        # clean failure trace rather than a respx ConnectError.
         _mock_ae_auth_login()
-        ae_call = respx.get(f"{AE_BASE}/workflowinstances/42")
+        ae_call = respx.get(f"{AE_BASE}/workflowinstances/42").mock(
+            return_value=httpx.Response(200, json={"id": 42, "status": "Complete"}),
+        )
 
         with _mock_vault_creds(), \
              patch("app.workers.scheduler.SessionLocal", superuser_sessionmaker), \
@@ -618,5 +630,7 @@ class TestBeatPollInstanceStateAtRest:
 
         job = _reload_async_job(superuser_sessionmaker, seeded["async_job_id"])
         assert job["status"] == "abandoned"
-        assert ae_call.call_count == 0
+        assert ae_call.call_count == 0, (
+            "scheduler should short-circuit on abandoned parent BEFORE hitting AE"
+        )
         resume_mock.assert_not_called()
