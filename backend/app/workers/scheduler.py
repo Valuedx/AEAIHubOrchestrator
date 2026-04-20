@@ -31,6 +31,7 @@ from app.database import SessionLocal
 from app.engine.memory_service import archive_active_episode, resolve_episode_policy
 from app.models.memory import ConversationEpisode
 from app.models.workflow import (
+    AsyncJob,
     ConversationSession,
     ScheduledTrigger,
     WorkflowDefinition,
@@ -56,6 +57,12 @@ celery_app.conf.beat_schedule = {
     "check-scheduled-workflows": {
         "task": "orchestrator.check_scheduled_workflows",
         "schedule": 60.0,
+    },
+    "poll-async-jobs": {
+        "task": "orchestrator.poll_async_jobs",
+        # Tight cadence. Individual jobs opt into slower polling via their
+        # metadata.poll_interval_seconds (stored in async_jobs.next_poll_at).
+        "schedule": 30.0,
     },
     "prune-old-snapshots": {
         "task": "orchestrator.prune_old_snapshots",
@@ -173,6 +180,233 @@ def prune_old_scheduled_triggers():
         db.rollback()
     finally:
         db.close()
+
+
+@celery_app.task(name="orchestrator.poll_async_jobs")
+def poll_async_jobs():
+    """Poll external async systems for jobs that are past their
+    next_poll_at deadline; resume parent workflows on terminal outcomes
+    or timeout.
+
+    Currently handles system='automationedge'. Adding another external
+    system is one ``if system ==`` branch that delegates to a different
+    client + terminal-status helper.
+
+    Per-job cadence: ``next_poll_at`` is the deadline for the next poll.
+    Jobs with a 5-minute poll interval get skipped for 10 Beat ticks;
+    jobs with a 10-second interval get picked up every tick. Natural
+    backoff + rate limiting without a separate scheduling table.
+    """
+    from datetime import datetime, timezone
+    from app.engine.async_job_poller import (
+        budget_from_metadata, check_timeout, compute_transition,
+        build_resume_context_patch, next_poll_at,
+    )
+    from app.engine.automationedge_client import (
+        AEConnection, get_status, terminal_status_for,
+    )
+
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        batch = (
+            db.query(AsyncJob)
+            .filter(
+                AsyncJob.status.in_(("submitted", "running")),
+                AsyncJob.next_poll_at <= now,
+            )
+            .order_by(AsyncJob.next_poll_at.asc())
+            .limit(100)
+            .all()
+        )
+        if not batch:
+            return
+
+        resumed = 0
+        for job in batch:
+            try:
+                if job.system != "automationedge":
+                    logger.warning(
+                        "Unsupported async_job system %r (id=%s) — skipping",
+                        job.system, job.id,
+                    )
+                    continue
+                conn = _ae_conn_from_metadata(job)
+
+                # Short-circuit: if the parent instance is already cancelled
+                # or no longer suspended, drop the job.
+                instance = (
+                    db.query(WorkflowInstance)
+                    .filter_by(id=job.instance_id)
+                    .first()
+                )
+                if instance is None or instance.status != "suspended":
+                    job.status = "abandoned"
+                    db.commit()
+                    continue
+
+                # Pre-poll timeout check catches jobs that have drifted so far
+                # past their budget we shouldn't even bother asking AE.
+                budget = budget_from_metadata(job.metadata_json)
+                verdict = check_timeout(
+                    submitted_at=job.submitted_at,
+                    total_diverted_ms=job.total_diverted_ms,
+                    diverted_since=job.diverted_since,
+                    budget=budget,
+                    now=now,
+                )
+                if verdict.timed_out:
+                    _finalize_timeout(db, job, verdict.reason or "timeout", now)
+                    resumed += 1
+                    continue
+
+                # Poll AE
+                try:
+                    ae_body = get_status(conn, job.external_job_id)
+                except Exception as exc:
+                    job.last_polled_at = now
+                    job.next_poll_at = next_poll_at(budget, now)
+                    job.last_error = str(exc)[:2000]
+                    db.commit()
+                    logger.warning(
+                        "AE poll failed for job %s — will retry at %s",
+                        job.id, job.next_poll_at,
+                    )
+                    continue
+
+                ae_status = ae_body.get("status")
+                transition = compute_transition(
+                    prior_last_external_status=job.last_external_status,
+                    prior_total_diverted_ms=job.total_diverted_ms,
+                    prior_diverted_since=job.diverted_since,
+                    new_ae_status=ae_status,
+                    now=now,
+                )
+                job.last_external_status = transition.new_last_external_status
+                job.total_diverted_ms = transition.new_total_diverted_ms
+                job.diverted_since = transition.new_diverted_since
+                job.last_polled_at = now
+
+                terminal = terminal_status_for(ae_status)
+                if terminal is None:
+                    # Still running (or Diverted) — reschedule.
+                    job.status = "running" if ae_status else job.status
+                    job.next_poll_at = next_poll_at(budget, now)
+                    db.commit()
+                    continue
+
+                # Terminal outcome — resume the parent.
+                _finalize_terminal(db, job, terminal, ae_body, now)
+                resumed += 1
+
+            except Exception:
+                logger.exception("poll_async_jobs: job %s raised — continuing", job.id)
+                db.rollback()
+
+        if resumed:
+            logger.info("poll_async_jobs: resumed %d parent workflow(s)", resumed)
+    except Exception:
+        logger.exception("poll_async_jobs top-level failure")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _ae_conn_from_metadata(job: "AsyncJob"):
+    """Rebuild an AEConnection from the snapshot stored at submit time."""
+    from app.engine.automationedge_client import AEConnection
+    meta = job.metadata_json or {}
+    instance_tenant_id = _resolve_tenant_for_job(job)
+    return AEConnection(
+        base_url=meta["base_url"],
+        tenant_id=instance_tenant_id,
+        credentials_secret_prefix=meta.get("credentials_secret_prefix", "AUTOMATIONEDGE"),
+        auth_mode=meta.get("auth_mode", "ae_session"),
+        org_code=meta.get("org_code"),
+        source=meta.get("source", "AE AI Hub Orchestrator"),
+        user_id=meta.get("user_id", "orchestrator"),
+    )
+
+
+def _resolve_tenant_for_job(job: "AsyncJob") -> str:
+    """Join to workflow_instances to get the tenant that owns this job."""
+    db = SessionLocal()
+    try:
+        inst = db.query(WorkflowInstance).filter_by(id=job.instance_id).first()
+        if inst is None:
+            raise RuntimeError(f"async_job {job.id} has no parent instance")
+        return inst.tenant_id
+    finally:
+        db.close()
+
+
+def _finalize_terminal(db, job, terminal, ae_body, now):
+    """Mark the async_jobs row terminal and dispatch the parent resume."""
+    from app.engine.async_job_poller import build_resume_context_patch
+    job.status = terminal
+    job.completed_at = now
+    job.next_poll_at = now   # harmless; row is terminal and the query filters it out
+    outcome_map = {"completed": "completed", "failed": "failed", "cancelled": "cancelled"}
+    outcome = outcome_map.get(terminal, "failed")
+    patch = build_resume_context_patch(
+        node_id=job.node_id,
+        outcome=outcome,
+        ae_response=ae_body,
+        external_job_id=str(job.external_job_id),
+        error=ae_body.get("failureReason") if outcome == "failed" else None,
+    )
+    db.commit()
+
+    instance = db.query(WorkflowInstance).filter_by(id=job.instance_id).first()
+    if instance is None:
+        logger.warning(
+            "async_job %s terminal but parent instance missing — skipping resume", job.id,
+        )
+        return
+
+    from app.workers.tasks import resume_workflow_task
+    resume_workflow_task.delay(
+        instance.tenant_id,
+        str(instance.id),
+        {},           # approval_payload (unused by async-external resumes)
+        patch,        # context_patch
+    )
+    logger.info(
+        "async_job %s terminal (%s); queued resume for instance %s",
+        job.id, terminal, instance.id,
+    )
+
+
+def _finalize_timeout(db, job, reason, now):
+    from app.engine.async_job_poller import build_resume_context_patch
+    job.status = "timed_out"
+    job.completed_at = now
+    job.next_poll_at = now
+    job.last_error = reason
+    patch = build_resume_context_patch(
+        node_id=job.node_id,
+        outcome="timed_out",
+        ae_response=None,
+        external_job_id=str(job.external_job_id),
+        timeout_reason=reason,
+    )
+    db.commit()
+
+    instance = db.query(WorkflowInstance).filter_by(id=job.instance_id).first()
+    if instance is None:
+        return
+
+    from app.workers.tasks import resume_workflow_task
+    resume_workflow_task.delay(
+        instance.tenant_id,
+        str(instance.id),
+        {},
+        patch,
+    )
+    logger.warning(
+        "async_job %s timed out (%s); queued failed resume for instance %s",
+        job.id, reason, instance.id,
+    )
 
 
 @celery_app.task(name="orchestrator.prune_old_snapshots")

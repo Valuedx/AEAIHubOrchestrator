@@ -65,8 +65,56 @@ def _finalize_cancelled(
     for child in children:
         child.cancel_requested = True
 
+    # Cascade cancel to any outstanding async_jobs rows (AutomationEdge
+    # and any other external system). We mark them cancelled in our DB
+    # and make a best-effort call to terminate the external job —
+    # failures are logged but don't block the cancel.
+    from app.models.workflow import AsyncJob
+    outstanding = (
+        db.query(AsyncJob)
+        .filter(
+            AsyncJob.instance_id == instance.id,
+            AsyncJob.status.in_(("submitted", "running")),
+        )
+        .all()
+    )
+    for job in outstanding:
+        job.status = "cancelled"
+        job.completed_at = _utcnow()
+        try:
+            _best_effort_cancel_external(db, job)
+        except Exception as exc:
+            logger.warning(
+                "External cancel for async_job %s (%s) failed non-fatally: %s",
+                job.id, job.system, exc,
+            )
+
     db.commit()
     logger.info("Workflow %s cancelled (cooperative, between nodes)", instance.id)
+
+
+def _best_effort_cancel_external(db: Session, job: "Any") -> None:
+    """Ping the external system to terminate the job. Never raises."""
+    from app.models.workflow import AsyncJob, WorkflowInstance  # local import
+
+    if job.system != "automationedge":
+        return  # no other systems wired yet
+
+    instance = db.query(WorkflowInstance).filter_by(id=job.instance_id).first()
+    if instance is None:
+        return
+    meta = job.metadata_json or {}
+    from app.engine.automationedge_client import AEConnection, try_terminate
+    conn = AEConnection(
+        base_url=meta.get("base_url", ""),
+        tenant_id=instance.tenant_id,
+        credentials_secret_prefix=meta.get("credentials_secret_prefix", "AUTOMATIONEDGE"),
+        auth_mode=meta.get("auth_mode", "ae_session"),
+        org_code=meta.get("org_code"),
+    )
+    if not conn.base_url:
+        return
+    try_terminate(conn, job.external_job_id)
 
 
 def _finalize_paused(
