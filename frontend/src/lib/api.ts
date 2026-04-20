@@ -372,6 +372,32 @@ export interface SecretOut {
   updated_at: string;
 }
 
+// Tenant Integrations — per-tenant connection defaults for external systems
+// (AutomationEdge, future Jenkins/Temporal). See AE-06.
+export interface TenantIntegrationOut {
+  id: string;
+  tenant_id: string;
+  system: string;
+  label: string;
+  config_json: Record<string, unknown>;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TenantIntegrationCreate {
+  system: string;
+  label: string;
+  config_json: Record<string, unknown>;
+  is_default?: boolean;
+}
+
+export interface TenantIntegrationUpdate {
+  label?: string;
+  config_json?: Record<string, unknown>;
+  is_default?: boolean;
+}
+
 export interface KBChunkOut {
   content: string;
   score: number;
@@ -835,5 +861,35 @@ export const api = {
 
   deleteSecret(id: string): Promise<void> {
     return request(`/api/v1/secrets/${id}`, { method: "DELETE" });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Tenant Integrations (external-system connection defaults)
+  // ---------------------------------------------------------------------------
+
+  listIntegrations(system?: string): Promise<TenantIntegrationOut[]> {
+    const qs = system ? `?system=${encodeURIComponent(system)}` : "";
+    return request(`/api/v1/tenant-integrations${qs}`);
+  },
+
+  createIntegration(body: TenantIntegrationCreate): Promise<TenantIntegrationOut> {
+    return request("/api/v1/tenant-integrations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  updateIntegration(
+    id: string,
+    body: TenantIntegrationUpdate,
+  ): Promise<TenantIntegrationOut> {
+    return request(`/api/v1/tenant-integrations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteIntegration(id: string): Promise<void> {
+    return request(`/api/v1/tenant-integrations/${id}`, { method: "DELETE" });
   },
 };
