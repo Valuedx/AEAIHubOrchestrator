@@ -364,6 +364,23 @@ export interface VectorStoreOption {
   description: string;
 }
 
+// Async external jobs (AutomationEdge, future Jenkins, ...) — AE-07
+export interface AsyncJobOut {
+  id: string;
+  instance_id: string;
+  node_id: string;
+  system: string;
+  external_job_id: string;
+  status: string;                        // submitted | running | completed | failed | cancelled | timed_out
+  submitted_at: string;
+  last_polled_at: string | null;
+  completed_at: string | null;
+  last_external_status: string | null;   // AE's own status ('Executing', 'Diverted', 'Complete', ...)
+  total_diverted_ms: number;
+  diverted_since: string | null;
+  last_error: string | null;
+}
+
 // Tenant Secrets
 export interface SecretOut {
   id: string;
@@ -550,6 +567,15 @@ export const api = {
   ): Promise<InstanceDetailOut> {
     return request(
       `/api/v1/workflows/${workflowId}/instances/${instanceId}`,
+    );
+  },
+
+  listInstanceAsyncJobs(
+    workflowId: string,
+    instanceId: string,
+  ): Promise<AsyncJobOut[]> {
+    return request(
+      `/api/v1/workflows/${workflowId}/instances/${instanceId}/async-jobs`,
     );
   },
 

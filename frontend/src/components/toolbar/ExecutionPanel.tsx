@@ -16,6 +16,7 @@ import {
   Maximize2,
   ClipboardCheck,
   Bug,
+  Clock,
   Layers,
 } from "lucide-react";
 import { useState, useCallback, useEffect } from "react";
@@ -32,7 +33,8 @@ import {
 import { useWorkflowStore } from "@/store/workflowStore";
 import { HITLResumeDialog } from "@/components/toolbar/HITLResumeDialog";
 import { DebugReplayBar } from "@/components/toolbar/DebugReplayBar";
-import { api, type ExecutionLogOut } from "@/lib/api";
+import { api, type AsyncJobOut, type ExecutionLogOut } from "@/lib/api";
+import { waitingBadgeFor } from "@/lib/asyncJob";
 
 // ---------------------------------------------------------------------------
 // CopyButton — clipboard copy with 2s checkmark confirmation
@@ -230,6 +232,10 @@ function ChildInstanceLogs({
             logs.map((log) => (
               <LogEntry key={log.id} log={log} />
             ))
+            // Child instance logs — no asyncJobs pass-through. The AE
+            // node can't be inside a sub-workflow in v1 (sub-workflow
+            // suspend is unsupported) so this path never shows the cyan
+            // badge, which is correct.
           )}
         </div>
       )}
@@ -240,13 +246,25 @@ function ChildInstanceLogs({
 function LogEntry({
   log,
   streamingText,
+  asyncJob,
 }: {
   log: ExecutionLogOut;
   streamingText?: string;
+  /** Active async-external job on the same node, if any. Drives the
+   *  cyan "waiting-on-external" badge. */
+  asyncJob?: AsyncJobOut;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const Icon = STATUS_ICON[log.status] ?? CircleDot;
-  const color = STATUS_COLOR[log.status] ?? "text-muted-foreground";
+  // When we have an in-flight async job tied to this node, treat it as
+  // "waiting-on-external" — dedicated cyan styling instead of the plain
+  // yellow "suspended" treatment.
+  const waitingBadge = waitingBadgeFor(asyncJob);
+  const isWaitingExternal = waitingBadge !== null;
+
+  const Icon = isWaitingExternal ? Clock : (STATUS_ICON[log.status] ?? CircleDot);
+  const color = isWaitingExternal
+    ? "text-cyan-500"
+    : (STATUS_COLOR[log.status] ?? "text-muted-foreground");
 
   const duration =
     log.started_at && log.completed_at
@@ -274,17 +292,29 @@ function LogEntry({
         <Icon
           className={`h-3.5 w-3.5 shrink-0 ${color} ${log.status === "running" ? "animate-spin" : ""}`}
         />
-        <span className="text-sm font-medium truncate flex-1">
-          {log.node_type}
-        </span>
-        {duration && (
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="text-sm font-medium truncate">
+            {log.node_type}
+          </span>
+          {waitingBadge && (
+            <span className="text-[10px] text-cyan-600 dark:text-cyan-400 truncate">
+              {waitingBadge.primary}
+              {waitingBadge.subLabel && (
+                <span className="ml-1 text-amber-600 dark:text-amber-400">
+                  · {waitingBadge.subLabel}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+        {duration && !waitingBadge && (
           <span className="text-[10px] text-muted-foreground shrink-0">{duration}</span>
         )}
         <Badge
           variant="outline"
           className={`text-[10px] px-1 py-0 shrink-0 ${color}`}
         >
-          {log.status}
+          {isWaitingExternal ? "waiting" : log.status}
         </Badge>
         {expanded ? (
           <ChevronUp className="h-3 w-3 text-muted-foreground" />
@@ -342,10 +372,35 @@ export function ExecutionPanel() {
   const currentWorkflow = useWorkflowStore((s) => s.currentWorkflow);
   const instanceContext = useWorkflowStore((s) => s.instanceContext);
   const fetchInstanceContext = useWorkflowStore((s) => s.fetchInstanceContext);
+  const asyncJobs = useWorkflowStore((s) => s.asyncJobs);
+  const fetchInstanceAsyncJobs = useWorkflowStore((s) => s.fetchInstanceAsyncJobs);
   const streamingTokens = useWorkflowStore((s) => s.streamingTokens);
   const isDebugMode = useWorkflowStore((s) => s.isDebugMode);
   const enterDebugMode = useWorkflowStore((s) => s.enterDebugMode);
   const [hitlOpen, setHitlOpen] = useState(false);
+
+  // When the instance is suspended-on-async-external, keep the async_jobs
+  // list fresh so the cyan badge shows accurate elapsed time + Diverted
+  // sub-state. 10-second refresh is cheap and matches the resolution the
+  // user actually reads off the badge.
+  const isAsyncExternalSuspended =
+    activeInstance?.status === "suspended" &&
+    activeInstance.suspended_reason === "async_external";
+  useEffect(() => {
+    if (!isAsyncExternalSuspended || !currentWorkflow || !activeInstance) return;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      fetchInstanceAsyncJobs(currentWorkflow.id, activeInstance.id);
+    };
+    // Fire once immediately, then poll.
+    queueMicrotask(tick);
+    const handle = window.setInterval(tick, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [isAsyncExternalSuspended, currentWorkflow, activeInstance, fetchInstanceAsyncJobs]);
 
   if (!activeInstance) return null;
 
@@ -429,7 +484,7 @@ export function ExecutionPanel() {
             Stop
           </Button>
         )}
-        {isSuspended && currentWorkflow && (
+        {isSuspended && !isAsyncExternalSuspended && currentWorkflow && (
           <Button
             variant="outline"
             size="sm"
@@ -439,6 +494,15 @@ export function ExecutionPanel() {
             <ClipboardCheck className="h-3 w-3" />
             Review &amp; Resume
           </Button>
+        )}
+        {isAsyncExternalSuspended && (
+          <span
+            className="inline-flex items-center gap-1 h-6 px-2 text-[11px] text-cyan-700 dark:text-cyan-300"
+            title="Beat poller will resume automatically on AE terminal status; operator cancel still works."
+          >
+            <Clock className="h-3 w-3" />
+            waiting on external
+          </span>
         )}
         {canReplay && currentWorkflow && !isDebugMode && (
           <Button
@@ -484,6 +548,11 @@ export function ExecutionPanel() {
                 key={log.id}
                 log={log}
                 streamingText={streamingTokens[log.node_id]}
+                asyncJob={asyncJobs.find(
+                  (j) =>
+                    j.node_id === log.node_id &&
+                    (j.status === "submitted" || j.status === "running"),
+                )}
               />
             ))
           )}

@@ -13,7 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.database import SessionLocal, get_db, set_tenant_context
 from app.security.tenant import get_tenant_id
-from app.models.workflow import WorkflowDefinition, WorkflowInstance, WorkflowSnapshot, ExecutionLog, InstanceCheckpoint
+from app.models.workflow import AsyncJob, WorkflowDefinition, WorkflowInstance, WorkflowSnapshot, ExecutionLog, InstanceCheckpoint
 from app.api.schemas import (
     WorkflowCreate,
     WorkflowUpdate,
@@ -32,6 +32,7 @@ from app.api.schemas import (
     CheckpointOut,
     CheckpointDetailOut,
     ChildInstanceSummary,
+    AsyncJobOut,
 )
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
@@ -491,6 +492,41 @@ def list_instances(
         .limit(50)
         .all()
     )
+
+
+@router.get(
+    "/{workflow_id}/instances/{instance_id}/async-jobs",
+    response_model=list[AsyncJobOut],
+)
+def list_instance_async_jobs(
+    workflow_id: uuid.UUID,
+    instance_id: uuid.UUID,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_db),
+):
+    """List async-external jobs (AutomationEdge, future Jenkins, ...) for
+    an instance.
+
+    The UI consumes this to render the 'waiting-on-external' badge with
+    elapsed time + AE-side status (Executing / Diverted / terminal).
+    Tenant scoping goes through the WorkflowInstance join — ``async_jobs``
+    itself has no tenant column so the check lives here.
+    """
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_id, workflow_def_id=workflow_id, tenant_id=tenant_id)
+        .first()
+    )
+    if instance is None:
+        raise HTTPException(404, "Instance not found")
+
+    rows = (
+        db.query(AsyncJob)
+        .filter(AsyncJob.instance_id == instance_id)
+        .order_by(AsyncJob.submitted_at.desc())
+        .all()
+    )
+    return rows
 
 
 @router.get("/{workflow_id}/versions", response_model=list[SnapshotOut])

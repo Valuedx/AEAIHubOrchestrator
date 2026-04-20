@@ -10,6 +10,7 @@ import {
   type SyncExecuteOut,
   type CheckpointOut,
   type CheckpointDetailOut,
+  type AsyncJobOut,
 } from "@/lib/api";
 import { useFlowStore } from "@/store/flowStore";
 import { getWorkflowTemplate } from "@/lib/templates";
@@ -29,6 +30,15 @@ interface WorkflowState {
 
   /** Context snapshot loaded for HITL review of a suspended instance. */
   instanceContext: InstanceContextOut | null;
+
+  /**
+   * Async-external jobs (AutomationEdge, future Jenkins, ...) on the
+   * active instance. Populated when ``activeInstance.suspended_reason
+   * === 'async_external'`` so the ExecutionPanel can render the cyan
+   * "waiting-on-external" badge with elapsed time and Diverted state.
+   */
+  asyncJobs: AsyncJobOut[];
+  fetchInstanceAsyncJobs: (workflowId: string, instanceId: string) => Promise<void>;
 
   /**
    * Live streaming token buffer per node_id.
@@ -119,6 +129,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   activeInstance: null,
   isExecuting: false,
   instanceContext: null,
+  asyncJobs: [],
   streamingTokens: {},
   loading: false,
   error: null,
@@ -610,6 +621,16 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       set({ instanceContext: ctx });
     } catch (e) {
       set({ error: String(e) });
+    }
+  },
+
+  fetchInstanceAsyncJobs: async (workflowId, instanceId) => {
+    try {
+      const jobs = await api.listInstanceAsyncJobs(workflowId, instanceId);
+      set({ asyncJobs: jobs });
+    } catch {
+      // Non-fatal: the waiting-on-external badge just won't render if the
+      // fetch fails. The underlying suspend+resume still works via Beat.
     }
   },
 

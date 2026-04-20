@@ -188,6 +188,33 @@ class ChildInstanceSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AsyncJobOut(BaseModel):
+    """Outstanding (or recently-finalised) async-external job on a
+    workflow instance. Surfaced to the UI so the 'waiting-on-external'
+    badge can show the system, elapsed time, and Diverted sub-state.
+
+    Secret-bearing fields (webhook_token, webhook_hmac_secret) never
+    leave the server — only the handful of public metadata fields are
+    returned so the UI can render the badge without exposing
+    credentials.
+    """
+    id: uuid.UUID
+    instance_id: uuid.UUID
+    node_id: str
+    system: str
+    external_job_id: str
+    status: str
+    submitted_at: datetime
+    last_polled_at: datetime | None
+    completed_at: datetime | None
+    last_external_status: str | None = None
+    total_diverted_ms: int = 0
+    diverted_since: datetime | None = None
+    last_error: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class InstanceDetailOut(InstanceOut):
     logs: list[ExecutionLogOut] = []
     children: list[ChildInstanceSummary] = Field(
