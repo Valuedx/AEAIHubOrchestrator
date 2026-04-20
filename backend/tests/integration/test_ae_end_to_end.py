@@ -64,6 +64,8 @@ def _seed_ae_suspension(
     completion_mode: str = "poll",
     timeout_seconds: int = 3600,
     max_diverted_seconds: int = 604800,
+    instance_status: str = "suspended",
+    instance_suspended_reason: str | None = "async_external",
 ) -> dict:
     """Insert the trio (workflow_definition, workflow_instance, async_jobs)
     representing an AE node that has submitted to AE and is now waiting.
@@ -109,11 +111,17 @@ def _seed_ae_suspension(
                      context_json, cancel_requested, pause_requested,
                      created_at)
                 VALUES
-                    (:id, :tenant, :wf_id, 'suspended', 'async_external',
+                    (:id, :tenant, :wf_id, :status, :reason,
                      CAST('{}' AS jsonb), false, false, now())
                 """
             ),
-            {"id": instance_id, "tenant": tenant_id, "wf_id": wf_id},
+            {
+                "id": instance_id,
+                "tenant": tenant_id,
+                "wf_id": wf_id,
+                "status": instance_status,
+                "reason": instance_suspended_reason,
+            },
         )
 
         metadata = {
@@ -586,38 +594,24 @@ class TestBeatPollInstanceStateAtRest:
     out-of-band between submit and poll."""
 
     @respx.mock
-    def test_parent_no_longer_suspended_marks_job_abandoned(
-        self, superuser_sessionmaker, superuser_engine,
+    def test_parent_already_cancelled_marks_job_abandoned(
+        self, superuser_sessionmaker,
     ):
         from app.workers.scheduler import poll_async_jobs
         from app.engine import automationedge_client as ae_mod
 
         ae_mod.reset_session_cache()
-        seeded = _seed_ae_suspension(superuser_sessionmaker)
-
-        # Flip the instance to cancelled behind the poller's back. Use
-        # engine.begin() for a cleanly-committed transaction — no
-        # chance of a session-level cache or autocommit surprise.
-        with superuser_engine.begin() as conn:
-            conn.execute(
-                text(
-                    "UPDATE workflow_instances SET status='cancelled' WHERE id=:id"
-                ),
-                {"id": str(seeded["instance_id"])},
-            )
-
-        # Pre-flight verification: the flip actually landed.
-        with superuser_engine.connect() as conn:
-            current = conn.execute(
-                text("SELECT status FROM workflow_instances WHERE id=:id"),
-                {"id": str(seeded["instance_id"])},
-            ).scalar_one()
-            assert current == "cancelled", (
-                f"pre-condition: instance should be cancelled, got {current!r}"
-            )
+        # Seed the instance already cancelled — covers the case where
+        # parent cancel happened between submit and this poll tick. No
+        # flip-mid-test, no transaction-visibility ambiguity.
+        seeded = _seed_ae_suspension(
+            superuser_sessionmaker,
+            instance_status="cancelled",
+            instance_suspended_reason=None,
+        )
 
         # Explicit 200 response so an unintended AE call produces a
-        # clean failure trace rather than a respx ConnectError.
+        # clean assertion failure rather than a respx ConnectError.
         _mock_ae_auth_login()
         ae_call = respx.get(f"{AE_BASE}/workflowinstances/42").mock(
             return_value=httpx.Response(200, json={"id": 42, "status": "Complete"}),
@@ -631,6 +625,6 @@ class TestBeatPollInstanceStateAtRest:
         job = _reload_async_job(superuser_sessionmaker, seeded["async_job_id"])
         assert job["status"] == "abandoned"
         assert ae_call.call_count == 0, (
-            "scheduler should short-circuit on abandoned parent BEFORE hitting AE"
+            "scheduler should short-circuit on non-suspended parent BEFORE hitting AE"
         )
         resume_mock.assert_not_called()
