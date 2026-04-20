@@ -24,6 +24,8 @@ import operator
 import re
 from typing import Any
 
+from app.engine.expression_helpers import EXPRESSION_HELPERS, ExpressionHelperError
+
 logger = logging.getLogger(__name__)
 
 _COMPARE_OPS = {
@@ -55,7 +57,9 @@ _BIN_OPS = {
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
     ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
     ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
 }
 
 
@@ -92,6 +96,11 @@ _WHITELISTED_FUNCTIONS: dict[str, Any] = {
     "endswith": lambda s, suffix: str(s).endswith(str(suffix)),
     "contains": _safe_contains,
     "matches": _safe_matches,
+    # DV-04 — bulk helpers (string / math / array / object / date / util).
+    # Defined in expression_helpers.py and merged here so safe_eval has
+    # a single whitelist lookup. Any name overlap lets the DV-04 entry win;
+    # for now nothing overlaps.
+    **EXPRESSION_HELPERS,
 }
 
 # String methods allowed via obj.method() syntax
@@ -216,7 +225,12 @@ def _eval_node(node: ast.AST, env: dict[str, Any]) -> Any:
                     f"Function '{fn_name}' is not allowed. "
                     f"Allowed: {', '.join(sorted(_WHITELISTED_FUNCTIONS))}"
                 )
-            return fn(*args)
+            try:
+                return fn(*args)
+            except ExpressionHelperError as exc:
+                # Translate helper-level errors into the SafeEvalError
+                # contract so every caller can keep a single except clause.
+                raise SafeEvalError(f"{fn_name}(): {exc}") from exc
 
         # Case 2: method call — e.g. x.lower(), x.startswith("abc")
         if isinstance(node.func, ast.Attribute):

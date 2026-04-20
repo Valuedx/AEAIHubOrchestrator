@@ -2,7 +2,7 @@
 
 Sprint 2A bundles the **developer-velocity** features that shorten the edit → run → inspect loop. Each section below covers one capability, what it solves, how to use it from the UI, and the backend surface it sits on. Tickets are referenced as `DV-NN` for cross-linking with the roadmap.
 
-> This guide expands as each DV ticket lands. Currently documented: **DV-01 (data pinning)**, **DV-02 (test single node)**, **DV-03 (sticky notes)**, **DV-06 (hotkey cheatsheet)**. DV-04, DV-05, DV-07 sections will arrive with their respective commits.
+> This guide expands as each DV ticket lands. Currently documented: **DV-01 (data pinning)**, **DV-02 (test single node)**, **DV-03 (sticky notes)**, **DV-04 (expression helpers)**, **DV-06 (hotkey cheatsheet)**. DV-05, DV-07 sections will arrive with their respective commits.
 
 ---
 
@@ -173,7 +173,91 @@ The live-status overlays on `AgenticNode` and the read-only Flow view (FV-02) bo
 
 ---
 
-## (reserved) DV-04 — Expression helpers library
+---
+
+## DV-04 — Expression helpers library
+
+**What it solves**: Condition / Loop / ForEach / Reflection / Memory / trigger-payload builder all evaluate user-authored expressions through the same `safe_eval` whitelist. Pre-DV-04 that whitelist held 15 functions — enough for comparisons, not enough for real data-shaping. DV-04 adds **45 helpers** covering strings, math, arrays, objects, date/time, and null/JSON utilities so operators rarely need to reach for a separate Code node.
+
+### Where expressions live
+
+The helpers are available anywhere `safe_eval` runs:
+
+* Condition nodes (`condition` field)
+* Loop (`continueExpression`)
+* ForEach (`arrayExpression`)
+* Reflection (`reflectionPrompt` evaluated fragments)
+* Sub-Workflow trigger payload builder (`{{ expr }}` bindings)
+* HTTP Request / MCP Tool config fields that pass through `safe_eval`
+* Intent Classifier + Entity Extractor dynamic scope resolution
+* Memory service retrieval expressions
+
+One whitelist, one source of truth — fix a helper once, every consumer gets the fix.
+
+### Registered helpers
+
+Grouped by category. Every helper is pure, deterministic, and has size-caps / type-guards to keep a bad expression from OOM-ing the worker.
+
+**Strings (18)** — `trim`, `replace`, `split`, `join`, `substring`, `left`, `right`, `pad_left`, `pad_right`, `repeat`, `reverse`, `truncate`, `title_case`, `snake_case`, `camel_case`, `regex_replace`, `regex_extract`, `slugify`
+
+**Math (7)** — `round`, `ceil`, `floor`, `sum`, `avg`, `median`, `clamp`
+
+**Arrays (11)** — `first`, `last`, `unique`, `sort_list`, `sort_by`, `flatten`, `chunk`, `slice`, `pluck`, `filter_by_key`, `count_where`
+
+**Objects (4)** — `has_key`, `pick`, `omit`, `get_path`
+
+**Date / time (11)** — `now`, `today`, `parse_date`, `format_date`, `add_days`, `add_hours`, `add_minutes`, `days_between`, `hours_between`, `is_past`, `is_future`
+
+**Utility (7)** — `is_null`, `is_empty`, `default`, `coalesce`, `to_json`, `parse_json`, `safe_number`
+
+Two AST operations were also added to `_BIN_OPS`: `**` (power) and `//` (floor division). Existing operators (`+`, `-`, `*`, `/`, `%`) already worked.
+
+### Example expressions
+
+```python
+# Bulk-shape list of dicts into a summary
+sum(pluck(orders, "amount")) > 1000
+
+# Date arithmetic without reaching for a Code node
+days_between(parse_date(trigger.created_at), now()) > 7
+
+# Safe optional field access with fallback
+default(get_path(output.node_1, "user.address.city"), "unknown")
+
+# Slug-friendly workflow IDs
+slugify(trigger.title) + "-" + str(trigger.id)
+
+# Null-safe aggregation
+avg(pluck(filter_by_key(items, "status", "ok"), "score"))
+```
+
+### Safety model
+
+Helpers inherit `safe_eval`'s sandbox — no I/O, no env access, no `__import__`. A few additional guards specific to DV-04:
+
+* `repeat(s, n)` caps `n ≤ 10_000` and total result size ≤ 1 MB
+* `chunk(arr, n)` requires `n ≥ 1`
+* `parse_json(s)` caps input size ≤ 1 MB
+* `clamp(x, lo, hi)` validates `lo ≤ hi`
+* `regex_replace` / `regex_extract` catch `re.error` and surface it as `SafeEvalError`
+* `ExpressionHelperError` (raised for bad args — empty `avg`, negative `repeat`, unparseable `parse_date`) is translated to `SafeEvalError` at the call site so existing callers keep their single `except SafeEvalError` branch.
+
+Regex catastrophic backtracking is NOT mitigated (Python's `re` module has no built-in timeout). Tenant data is tenant-trusted; if this becomes a vector in the future, move regex into a subprocess with a hard walltime.
+
+### Where to add the next helper
+
+1. Implement in `backend/app/engine/expression_helpers.py`. Raise `ExpressionHelperError` on bad input; never return a wrong-type silent result.
+2. Add it to the `EXPRESSION_HELPERS` dict at the bottom of that module.
+3. Add a test class or case in `backend/tests/test_safe_eval.py`.
+
+No changes needed in `safe_eval.py` — the merge happens once via `**EXPRESSION_HELPERS`.
+
+### Related tests
+
+* `backend/tests/test_safe_eval.py` — 113 tests total; the DV-04 suite (70 new cases) covers every helper, every size cap, every error path, plus combined-helper expressions mirroring real condition strings.
+
+---
+
 ## (reserved) DV-05 — Duplicate workflow
 
 ---
