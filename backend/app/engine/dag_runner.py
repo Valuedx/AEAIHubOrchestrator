@@ -19,6 +19,7 @@ from app.database import SessionLocal
 from app.models.workflow import WorkflowInstance, ExecutionLog, InstanceCheckpoint
 from app.engine.node_handlers import dispatch_node
 from app.engine.scrubber import scrub_secrets
+from app.engine.exceptions import NodeSuspendedAsync
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +288,9 @@ def resume_graph(
         )
 
     instance.status = "running"
+    # Clear the async-external flag (if set) so the UI flips back to
+    # running. NULL remains the default for plain HITL resumes too.
+    instance.suspended_reason = None
     db.commit()
 
     graph = instance.definition.graph_json
@@ -701,6 +705,35 @@ def _execute_single_node(
                 span_meta["checkpoint_id"] = checkpoint_id
             span.update(output=span_meta)
             return "completed"
+
+        except NodeSuspendedAsync as sus:
+            # Handler has already persisted an async_jobs row. Mark the
+            # instance suspended with an async_external reason so the UI
+            # can distinguish this from HITL and the Beat poller / webhook
+            # can resume it later.
+            log_entry.status = "suspended"
+            log_entry.output_json = {
+                "async_job_id": sus.async_job_id,
+                "system": sus.system,
+                "external_job_id": sus.external_job_id,
+            }
+            log_entry.completed_at = _utcnow()
+
+            instance.status = "suspended"
+            instance.suspended_reason = "async_external"
+            instance.context_json = _get_clean_context(context)
+            db.commit()
+            span.update(output={
+                "status": "suspended",
+                "reason": "async_external",
+                "system": sus.system,
+                "external_job_id": sus.external_job_id,
+            })
+            logger.info(
+                "Node %s in workflow %s suspended on %s job %s",
+                node_id, instance.id, sus.system, sus.external_job_id,
+            )
+            return "suspended"
 
         except Exception as exc:
             log_entry.status = "failed"

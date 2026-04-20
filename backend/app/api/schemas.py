@@ -148,6 +148,14 @@ class InstanceOut(BaseModel):
         None,
         description="Node ID in the parent workflow that spawned this sub-workflow.",
     )
+    suspended_reason: str | None = Field(
+        None,
+        description=(
+            "When status='suspended', distinguishes HITL (None) from "
+            "async-external systems like AutomationEdge ('async_external'). "
+            "Frontend uses this to pick the right UI state."
+        ),
+    )
 
     model_config = {"from_attributes": True}
 

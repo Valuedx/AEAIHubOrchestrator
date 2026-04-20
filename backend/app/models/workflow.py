@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     String,
@@ -71,6 +72,10 @@ class WorkflowInstance(Base):
     cancel_requested = Column(Boolean, nullable=False, default=False)
     # Set by POST …/pause; runner checks between nodes and sets status paused.
     pause_requested = Column(Boolean, nullable=False, default=False)
+    # Distinguishes HITL-suspended (NULL, legacy default) from async-external-
+    # suspended ('async_external'). Cleared on resume. Used by the UI to pick
+    # between the Review dialog and the "waiting-on-external" badge.
+    suspended_reason = Column(String(32), nullable=True)
     # Sub-workflow lineage: links a child instance back to the parent that spawned it.
     parent_instance_id = Column(
         UUID(as_uuid=True),
@@ -276,4 +281,90 @@ class ScheduledTrigger(Base):
             name="uq_scheduled_trigger_wf_minute",
         ),
         Index("ix_scheduled_trigger_created_at", "created_at"),
+    )
+
+
+class AsyncJob(Base):
+    """Tracks an outstanding job on an external async system (AutomationEdge,
+    future Jenkins/Temporal/...). One row per suspended node instance.
+
+    Beat polls ``WHERE system=? AND status IN ('submitted','running') AND
+    next_poll_at <= now() LIMIT 100`` to find work. On each poll the
+    system-specific status handler updates ``status``, ``last_external_
+    status``, ``last_polled_at``, and ``next_poll_at`` (now + the job's
+    configured poll interval from ``metadata_json.poll_interval_seconds``).
+
+    Diverted handling is a pause-the-clock model: when the external system
+    reports a "held for human intervention" state (AE's ``Diverted``),
+    ``diverted_since`` is set. When it exits that state the elapsed span
+    is banked into ``total_diverted_ms`` so the active-runtime timeout
+    budget ignores it.
+    """
+
+    __tablename__ = "async_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    instance_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_instances.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id = Column(String(128), nullable=False)
+    system = Column(String(32), nullable=False)
+    external_job_id = Column(String(256), nullable=False)
+    status = Column(String(32), nullable=False)
+    metadata_json = Column(JSONB, nullable=False)
+    submitted_at = Column(DateTime(timezone=True), nullable=False)
+    last_polled_at = Column(DateTime(timezone=True), nullable=True)
+    next_poll_at = Column(DateTime(timezone=True), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+
+    # Diverted-aware timeout accounting
+    last_external_status = Column(String(32), nullable=True)
+    total_diverted_ms = Column(BigInteger, nullable=False, default=0)
+    diverted_since = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "instance_id", "node_id",
+            name="uq_async_job_instance_node",
+        ),
+        Index("ix_async_jobs_poll_queue", "system", "status", "next_poll_at"),
+    )
+
+
+class TenantIntegration(Base):
+    """Per-tenant connection defaults for an external system.
+
+    Lets workflow nodes reference an integration by label
+    (``integrationLabel``) without redeclaring baseUrl / credentials per
+    node. A node's own config overrides any matching field on the
+    integration — per-node > tenant-default.
+
+    ``config_json`` schema is system-specific; for AutomationEdge it holds
+    ``{baseUrl, orgCode, credentialsSecretPrefix, authMode, source, userId}``.
+    Secret values never live here — only the prefix name that looks them
+    up in the Fernet-encrypted tenant_secrets vault.
+
+    ``(tenant_id, system)`` may have at most one row with ``is_default =
+    true`` — enforced by a partial unique index on the DB side.
+    """
+
+    __tablename__ = "tenant_integrations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    system = Column(String(32), nullable=False)
+    label = Column(String(128), nullable=False)
+    config_json = Column(JSONB, nullable=False)
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "system", "label",
+            name="uq_tenant_integration_label",
+        ),
     )
