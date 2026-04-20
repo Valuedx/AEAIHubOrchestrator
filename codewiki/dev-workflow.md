@@ -2,7 +2,7 @@
 
 Sprint 2A bundles the **developer-velocity** features that shorten the edit → run → inspect loop. Each section below covers one capability, what it solves, how to use it from the UI, and the backend surface it sits on. Tickets are referenced as `DV-NN` for cross-linking with the roadmap.
 
-> This guide expands as each DV ticket lands. Today only **DV-01 (data pinning)** is documented; DV-02..DV-07 sections will arrive with their respective commits.
+> This guide expands as each DV ticket lands. Currently documented: **DV-01 (data pinning)**, **DV-02 (test single node)**, **DV-03 (sticky notes)**, **DV-06 (hotkey cheatsheet)**. DV-04, DV-05, DV-07 sections will arrive with their respective commits.
 
 ---
 
@@ -129,8 +129,90 @@ Every exception the handler raises (except `HTTPException`) is caught and conver
 
 * `backend/tests/test_test_node_endpoint.py` — 9 tests: happy-path context shape (pins + trigger + synthetic keys), default empty trigger, pin-on-target dispatch short-circuit, handler-raise caught as error, `NodeSuspendedAsync` message format, 404 for unknown workflow / node, context isolation (no pin → key absent), no-side-effect assertion (no `.add()` on the session).
 
-## (reserved) DV-03 — Sticky notes on canvas
+---
+
+## DV-03 — Sticky notes on canvas
+
+**What it solves**: in-situ documentation for non-trivial DAGs. Instead of operators switching to Notion or a Confluence page to describe "why does this branch loop back through the classifier?", they drop a sticky note next to the cluster and keep the context with the workflow.
+
+### Using it from the UI
+
+* **Shift + S** — add a sticky at the current viewport centre.
+* Toolbar **sticky** icon (Keyboard shortcut: same) — same thing, for mouse users.
+* Click a sticky to edit its text inline. Blur commits the edit.
+* Palette icon on the sticky header cycles through six preset colours (yellow → blue → green → pink → purple → grey → yellow …).
+* Drag the corners/edges to resize (via React Flow's `NodeResizer`, min 120×80).
+* **Delete** / **Backspace** with the sticky selected, or click the trash icon on the header.
+
+### Storage semantics
+
+Sticky notes are ordinary entries in `flowStore.nodes`, discriminated by `Node.type === "stickyNote"`. They ride in `graph_json` alongside agentic nodes, so they survive saves, version snapshots, restores, and workflow duplicates the same way regular nodes do. Their data shape is:
+
+```ts
+{ text: string, color: "yellow" | "blue" | "green" | "pink" | "purple" | "grey" }
+```
+
+IDs use a `sticky_<timestamp>_<random>` format so they can't collide with the palette's `node_N` counter — and they stand out when grepping `graph_json`.
+
+### Execution semantics
+
+Stickies **never run**. Every place that iterates the graph for execution purposes filters them out:
+
+* `backend/app/engine/dag_runner.py::parse_graph` — only entries with `type == "agenticNode"` are admitted to `nodes_map`; edges touching a sticky are dropped. Legacy workflows whose nodes omit `type` default to `agenticNode`, so no migration is needed.
+* `frontend/src/lib/validateWorkflow.ts::validateWorkflow` — strips stickies before the trigger / reachability / required-field checks. A workflow containing only stickies still fails with "no trigger found", as it should.
+* `frontend/src/lib/executionStatus.ts::computeNodeStatuses` — excludes stickies from both the initial idle fill and the terminal-run "skipped" sweep. Sticky IDs never appear in the returned status map.
+* `frontend/src/components/sidebar/PropertyInspector.tsx` — short-circuits to a small help panel when a sticky is selected (they have no config schema to render).
+
+The live-status overlays on `AgenticNode` and the read-only Flow view (FV-02) both work unchanged — stickies are rendered by their own `stickyNote` type registered in the React Flow `nodeTypes` map alongside `agenticNode`.
+
+### Related tests
+
+* `backend/tests/test_dag_parse.py::TestParseGraphStickyNoteFiltering` — 4 tests: stickies dropped, edges touching stickies dropped, legacy `type`-less nodes default to agenticNode, pure-sticky graph yields empty map.
+* `frontend/src/lib/validateWorkflow.test.ts::sticky notes` — 2 tests: unreachable-node check ignores stickies, a sticky alone still fails the trigger check.
+* `frontend/src/lib/executionStatus.test.ts::computeNodeStatuses — sticky notes` — 2 tests: stickies omitted from the status map, no "skipped" assignment on terminal runs.
+
+---
+
 ## (reserved) DV-04 — Expression helpers library
 ## (reserved) DV-05 — Duplicate workflow
-## (reserved) DV-06 — Hotkey cheatsheet
+
+---
+
+## DV-06 — Hotkey cheatsheet
+
+**What it solves**: the canvas has accumulated keyboard shortcuts (undo/redo, delete, pan/zoom, now sticky-add and fit-view). Without a discoverability surface, operators either never learn them or have to read source. The cheatsheet puts every canvas-level shortcut one keystroke away.
+
+### Using it from the UI
+
+* Press **`?`** anywhere on the page, or click the **Keyboard** icon in the toolbar.
+* The dialog groups shortcuts by section (Canvas / History / Help).
+* Close with **Esc** or the dialog's close button.
+
+Single-key shortcuts (`?`, `S`, `1`, `Tab`) all share a common guard (`frontend/src/lib/keyboardUtils.ts::isTextEditingTarget`) so they never fire while the user is typing in an `input`, `textarea`, `select`, or contenteditable region. Typing "?" into a Property Inspector field is typing — not a help request.
+
+### Registered shortcuts
+
+| Context | Keys | Action |
+| ------- | ---- | ------ |
+| Canvas  | `Shift` + `S` | Add sticky note at viewport centre (DV-03) |
+| Canvas  | `1` | Fit view to whole workflow |
+| Canvas  | `Tab` | Toggle node palette |
+| Canvas  | `Delete` / `Backspace` | Delete selected node(s) or edge(s) — native React Flow |
+| History | `Ctrl` + `Z` | Undo |
+| History | `Ctrl` + `Y` / `Ctrl` + `Shift` + `Z` | Redo |
+| Help    | `?` | Open the cheatsheet |
+| Help    | `Esc` | Close dialogs / deselect — native browser / dialog |
+
+Adding a new shortcut? Register the handler in the component that owns the relevant state (FlowCanvas for canvas shortcuts, App for layout-level toggles, Toolbar for help dialogs) AND add a row to the `SECTIONS` constant in `frontend/src/components/toolbar/HotkeyCheatsheet.tsx` so it shows up in the dialog.
+
+### Where each handler lives
+
+* `App.tsx` — `Tab` (owns `paletteCollapsed`)
+* `FlowCanvas.tsx` — `Ctrl+Z`, `Ctrl+Y`, `Ctrl+Shift+Z`, `Shift+S`, `1` (owns the React Flow instance + undo/redo / `addStickyNote`)
+* `Toolbar.tsx` — `?` (owns `cheatsheetOpen`) + mounts `HotkeyCheatsheet`
+
+The toolbar "Add sticky" button dispatches a `CustomEvent("aeai:add-sticky")` that `FlowCanvas` listens for, so the canvas — which has the only access to the React Flow instance needed for viewport→flow-coord translation — owns the actual insert logic in one place.
+
+---
+
 ## (reserved) DV-07 — Active / Inactive toggle

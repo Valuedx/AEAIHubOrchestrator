@@ -36,10 +36,11 @@ import "@xyflow/react/dist/style.css";
 import { useFlowStore } from "@/store/flowStore";
 import { useWorkflowStore } from "@/store/workflowStore";
 import { AgenticNode } from "@/components/nodes/AgenticNode";
+import { StickyNote } from "@/components/nodes/StickyNote";
 
 // Module-top-level per xyflow perf guidance — recreating nodeTypes in
 // render would remount every node on each parent re-render.
-const nodeTypes = { agenticNode: AgenticNode };
+const nodeTypes = { agenticNode: AgenticNode, stickyNote: StickyNote };
 
 const defaultEdgeOptions: DefaultEdgeOptions = {
   markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },

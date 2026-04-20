@@ -169,14 +169,27 @@ class _Edge:
 def parse_graph(graph_json: dict) -> tuple[dict, list[_Edge]]:
     """Convert React Flow JSON into execution-friendly structures.
 
+    Only ``type == "agenticNode"`` entries become executable nodes.
+    Everything else (e.g. DV-03 sticky notes with ``type ==
+    "stickyNote"``) is a canvas annotation and is filtered out here so
+    it never enters the ready queue or the cycle check. Edges that
+    reference filtered-out nodes are dropped too — a stray connection
+    to a sticky can't corrupt in-degree computations downstream.
+
     Returns:
-        nodes_map: {node_id: node_dict}
-        edges:     list of _Edge with sourceHandle info
+        nodes_map: {node_id: node_dict} — executable nodes only
+        edges:     list of _Edge referencing ids in nodes_map
     """
     nodes_list: list[dict] = graph_json.get("nodes", [])
     edges_list: list[dict] = graph_json.get("edges", [])
 
-    nodes_map: dict[str, dict] = {n["id"]: n for n in nodes_list}
+    nodes_map: dict[str, dict] = {
+        n["id"]: n for n in nodes_list
+        # Default type is "agenticNode" for legacy workflows that don't
+        # set ``type`` explicitly — those predate the sticky-note
+        # addition and are all executable nodes.
+        if n.get("type", "agenticNode") == "agenticNode"
+    }
     edges = [
         _Edge(
             source=e["source"],
@@ -184,6 +197,7 @@ def parse_graph(graph_json: dict) -> tuple[dict, list[_Edge]]:
             source_handle=e.get("sourceHandle"),
         )
         for e in edges_list
+        if e["source"] in nodes_map and e["target"] in nodes_map
     ]
     return nodes_map, edges
 

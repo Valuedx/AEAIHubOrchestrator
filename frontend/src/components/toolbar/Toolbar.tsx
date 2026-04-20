@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Save,
   Play,
@@ -19,6 +19,8 @@ import {
   Bot,
   Database,
   KeyRound,
+  StickyNote as StickyNoteIcon,
+  Keyboard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +36,9 @@ import { TemplateGalleryDialog } from "@/components/toolbar/TemplateGalleryDialo
 import { KnowledgeBaseDialog } from "@/components/toolbar/KnowledgeBaseDialog";
 import { SecretsDialog } from "@/components/toolbar/SecretsDialog";
 import { IntegrationsDialog } from "@/components/toolbar/IntegrationsDialog";
+import { HotkeyCheatsheet } from "@/components/toolbar/HotkeyCheatsheet";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
+import { isTextEditingTarget } from "@/lib/keyboardUtils";
 
 const STATUS_CONFIG: Record<string, { icon: typeof CircleDot; label: string; className: string }> = {
   queued: { icon: CircleDot, label: "Queued", className: "text-muted-foreground" },
@@ -58,6 +62,28 @@ export function Toolbar() {
   const [kbOpen, setKbOpen] = useState(false);
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
+  const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+
+  // DV-06 — ? opens the hotkey cheatsheet from anywhere on the page.
+  // Guard against input/textarea focus so typing "?" into a field
+  // doesn't pop the dialog.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "?") return;
+      if (isTextEditingTarget(e.target)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      e.preventDefault();
+      setCheatsheetOpen(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const handleAddSticky = () => {
+    // Dispatched here and consumed by FlowCanvas, which owns the
+    // React Flow instance needed to translate viewport → flow coords.
+    window.dispatchEvent(new CustomEvent("aeai:add-sticky"));
+  };
 
   const currentWorkflow = useWorkflowStore((s) => s.currentWorkflow);
   const isDirty = useWorkflowStore((s) => s.isDirty);
@@ -235,6 +261,24 @@ export function Toolbar() {
           <Bot className="h-4 w-4" />
         </Button>
 
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleAddSticky}
+          title="Add sticky note (Shift+S)"
+        >
+          <StickyNoteIcon className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setCheatsheetOpen(true)}
+          title="Keyboard shortcuts (?)"
+        >
+          <Keyboard className="h-4 w-4" />
+        </Button>
+
         {currentWorkflow && (
           <>
             <Button
@@ -312,6 +356,7 @@ export function Toolbar() {
         onClose={() => setValidationOpen(false)}
         onRunAnyway={handleRunAnyway}
       />
+      <HotkeyCheatsheet open={cheatsheetOpen} onOpenChange={setCheatsheetOpen} />
     </>
   );
 }

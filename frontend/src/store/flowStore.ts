@@ -11,6 +11,10 @@ import {
   addEdge,
 } from "@xyflow/react";
 import type { AgenticNodeData, NodeCategory } from "@/types/nodes";
+import {
+  STICKY_NOTE_DEFAULT_DATA,
+  type StickyNoteData,
+} from "@/types/stickyNote";
 
 let nodeIdCounter = 0;
 const nextId = () => `node_${++nodeIdCounter}`;
@@ -60,8 +64,15 @@ interface FlowState {
     defaultConfig?: Record<string, unknown>,
   ) => void;
   selectNode: (id: string | null) => void;
-  updateNodeData: (id: string, data: Partial<AgenticNodeData>) => void;
+  updateNodeData: (
+    id: string,
+    data: Partial<AgenticNodeData> | Partial<StickyNoteData>,
+  ) => void;
   deleteNode: (id: string) => void;
+
+  /** DV-03 — add a sticky note at the given canvas position. Returns
+   *  the new node's id so callers can scroll / select it. */
+  addStickyNote: (position: XYPosition) => string;
 }
 
 export const useFlowStore = create<FlowState>((set, get) => ({
@@ -195,6 +206,23 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           : node,
       ),
     });
+  },
+
+  addStickyNote: (position) => {
+    get()._pushHistory();
+    // Separate id counter space to avoid colliding with node_N — sticky
+    // ids are easy to spot in graph_json for debugging.
+    const id = `sticky_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const newNode: Node = {
+      id,
+      type: "stickyNote",
+      position,
+      width: 220,
+      height: 140,
+      data: { ...STICKY_NOTE_DEFAULT_DATA },
+    };
+    set({ nodes: [...get().nodes, newNode], selectedNodeId: id });
+    return id;
   },
 
   deleteNode: (id) => {

@@ -15,6 +15,7 @@
 
 import type { Node, Edge } from "@xyflow/react";
 import { nodeCanvasTitle, type AgenticNodeData } from "@/types/nodes";
+import { isStickyNode } from "@/types/stickyNote";
 
 export interface ValidationError {
   nodeId: string;
@@ -52,6 +53,16 @@ export function validateWorkflow(
   edges: Edge[],
 ): ValidationError[] {
   const errors: ValidationError[] = [];
+  // DV-03 — stickies are canvas annotations, not executable. Strip them
+  // before any graph-level check so disconnected/empty-field rules don't
+  // fire on sticky nodes and edges touching them.
+  const executableNodes = nodes.filter((n) => !isStickyNode(n));
+  const executableIds = new Set(executableNodes.map((n) => n.id));
+  const executableEdges = edges.filter(
+    (e) => executableIds.has(e.source) && executableIds.has(e.target),
+  );
+  nodes = executableNodes;
+  edges = executableEdges;
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
   // ── 1. Must have at least one trigger ──────────────────────────────────────

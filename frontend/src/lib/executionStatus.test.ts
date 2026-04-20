@@ -249,3 +249,33 @@ const _typeCheck: NodeStatus[] = [
   "idle", "running", "completed", "failed", "suspended", "paused", "skipped",
 ];
 void _typeCheck;
+
+
+// DV-03 — sticky notes live in the same nodes array but are not
+// executable. computeNodeStatuses must omit them from the returned map
+// so neither the live overlay nor the terminal "skipped" sweep reacts
+// to their presence.
+describe("computeNodeStatuses — sticky notes", () => {
+  function sticky(id: string): Node {
+    return {
+      id,
+      type: "stickyNote",
+      position: { x: 0, y: 0 },
+      data: { text: "", color: "yellow" },
+    };
+  }
+
+  it("omits sticky ids from the returned status map", () => {
+    const nodes: Node[] = [node("trigger"), node("agent"), sticky("sticky_1")];
+    const logs: LogLite[] = [{ node_id: "trigger", status: "completed" }];
+    const s = computeNodeStatuses(nodes, logs, "running");
+    expect("sticky_1" in s).toBe(false);
+    expect(Object.keys(s).sort()).toEqual(["agent", "trigger"]);
+  });
+
+  it("does not mark stickies skipped on terminal runs", () => {
+    const nodes: Node[] = [node("trigger"), sticky("sticky_1")];
+    const s = computeNodeStatuses(nodes, [{ node_id: "trigger", status: "completed" }], "completed");
+    expect("sticky_1" in s).toBe(false);
+  });
+});

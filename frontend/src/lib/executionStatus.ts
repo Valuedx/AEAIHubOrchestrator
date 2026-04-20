@@ -85,8 +85,11 @@ export function computeNodeStatuses(
   logs: readonly LogLite[],
   instanceStatus: string,
 ): Record<string, NodeStatus> {
+  // DV-03 — stickies are annotations; they never produce logs and should
+  // not be marked ``skipped`` when the instance terminates.
+  const executable = nodes.filter((n) => n.type !== "stickyNote");
   const out: Record<string, NodeStatus> = {};
-  for (const n of nodes) {
+  for (const n of executable) {
     out[n.id] = "idle";
   }
 
@@ -102,7 +105,7 @@ export function computeNodeStatuses(
 
   if (TERMINAL_INSTANCE_STATUSES.has(instanceStatus)) {
     const reached = new Set(logs.map((l) => l.node_id));
-    for (const n of nodes) {
+    for (const n of executable) {
       if (!reached.has(n.id) && out[n.id] === "idle") {
         out[n.id] = "skipped";
       }

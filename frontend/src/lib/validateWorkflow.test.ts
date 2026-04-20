@@ -88,4 +88,32 @@ describe("validateWorkflow", () => {
     const errs = validateWorkflow(nodes, edges);
     expect(errs.find((x) => x.nodeId === "ic" && /intent/i.test(x.message))).toBeTruthy();
   });
+
+  // DV-03 — stickies are canvas annotations and must never influence
+  // validation (no unreachable warnings, no missing-trigger errors, no
+  // required-field errors for their StickyNoteData shape).
+  describe("sticky notes", () => {
+    const sticky = (id: string): Node => ({
+      id,
+      type: "stickyNote",
+      position: { x: 0, y: 0 },
+      data: { text: "hello", color: "yellow" } as unknown as AgenticNodeData,
+    });
+
+    it("is ignored by the unreachable-nodes check", () => {
+      const nodes: Node[] = [
+        n("t", "Webhook Trigger", "trigger"),
+        n("a", "LLM Agent", "agent", { systemPrompt: "x" }),
+        sticky("sticky_1"),
+      ];
+      const edges = [e("t", "a")];
+      const errs = validateWorkflow(nodes, edges);
+      expect(errs.find((x) => x.nodeId === "sticky_1")).toBeUndefined();
+    });
+
+    it("alone does not count as a trigger", () => {
+      const errs = validateWorkflow([sticky("sticky_only")], []);
+      expect(errs.some((x) => /trigger/i.test(x.message) && x.severity === "error")).toBe(true);
+    });
+  });
 });

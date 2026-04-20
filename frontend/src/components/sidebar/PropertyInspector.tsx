@@ -50,6 +50,31 @@ export function PropertyInspector() {
     );
   }
 
+  // DV-03 — sticky notes are canvas annotations, not executable nodes.
+  // They have no config schema, so the inspector shows a short hint
+  // instead of rendering the agentic-node config panel over StickyNoteData.
+  if (selectedNode.type === "stickyNote") {
+    return (
+      <div className="flex flex-col w-72 border-l bg-sidebar min-h-0">
+        <div className="flex items-center justify-between px-4 py-3">
+          <h2 className="text-sm font-semibold">Sticky note</h2>
+          <button
+            onClick={() => selectNode(null)}
+            className="p-1 rounded-md hover:bg-accent transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <Separator />
+        <div className="px-4 py-3 space-y-3 text-xs text-muted-foreground">
+          <p>Click the note to edit its text inline.</p>
+          <p>Use the palette icon on the note to cycle colours.</p>
+          <p>Press <kbd className="px-1 py-0.5 rounded border bg-muted">Delete</kbd> or the trash icon to remove it.</p>
+        </div>
+      </div>
+    );
+  }
+
   const data = selectedNode.data as AgenticNodeData;
   const onUpdate = (partial: Partial<AgenticNodeData>) =>
     updateNodeData(selectedNode.id, partial);
