@@ -101,6 +101,10 @@ export interface InstanceOut {
   definition_version_at_start?: number | null;
   parent_instance_id?: string | null;
   parent_node_id?: string | null;
+  /** Distinguishes HITL-suspended (null) from async-external-suspended
+   *  ('async_external'). Drives the ExecutionPanel UI between the
+   *  Review dialog and the cyan waiting-on-external badge. */
+  suspended_reason?: string | null;
 }
 
 /** Response when `sync: true` on execute — HTTP 200. */
