@@ -1433,6 +1433,10 @@ def _handle_automation_edge(
         "timeout_seconds": timeout_seconds,
         "max_diverted_seconds": max_diverted_seconds,
     }
+    if completion_mode == "webhook":
+        # Record the expected auth mode so the webhook endpoint applies
+        # the right check (token / hmac / both) against the callback.
+        metadata["webhook_auth"] = webhook_auth
     if webhook_token:
         metadata["webhook_token"] = webhook_token
     if webhook_hmac_secret:

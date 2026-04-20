@@ -200,7 +200,10 @@ def poll_async_jobs():
     from datetime import datetime, timezone
     from app.engine.async_job_poller import (
         budget_from_metadata, check_timeout, compute_transition,
-        build_resume_context_patch, next_poll_at,
+        next_poll_at,
+    )
+    from app.engine.async_job_finalizer import (
+        finalize_terminal, finalize_timeout,
     )
     from app.engine.automationedge_client import (
         AEConnection, get_status, terminal_status_for,
@@ -256,7 +259,7 @@ def poll_async_jobs():
                     now=now,
                 )
                 if verdict.timed_out:
-                    _finalize_timeout(db, job, verdict.reason or "timeout", now)
+                    finalize_timeout(db, job, verdict.reason or "timeout", now)
                     resumed += 1
                     continue
 
@@ -296,7 +299,7 @@ def poll_async_jobs():
                     continue
 
                 # Terminal outcome — resume the parent.
-                _finalize_terminal(db, job, terminal, ae_body, now)
+                finalize_terminal(db, job, terminal, ae_body, now)
                 resumed += 1
 
             except Exception:
@@ -340,73 +343,9 @@ def _resolve_tenant_for_job(job: "AsyncJob") -> str:
         db.close()
 
 
-def _finalize_terminal(db, job, terminal, ae_body, now):
-    """Mark the async_jobs row terminal and dispatch the parent resume."""
-    from app.engine.async_job_poller import build_resume_context_patch
-    job.status = terminal
-    job.completed_at = now
-    job.next_poll_at = now   # harmless; row is terminal and the query filters it out
-    outcome_map = {"completed": "completed", "failed": "failed", "cancelled": "cancelled"}
-    outcome = outcome_map.get(terminal, "failed")
-    patch = build_resume_context_patch(
-        node_id=job.node_id,
-        outcome=outcome,
-        ae_response=ae_body,
-        external_job_id=str(job.external_job_id),
-        error=ae_body.get("failureReason") if outcome == "failed" else None,
-    )
-    db.commit()
-
-    instance = db.query(WorkflowInstance).filter_by(id=job.instance_id).first()
-    if instance is None:
-        logger.warning(
-            "async_job %s terminal but parent instance missing — skipping resume", job.id,
-        )
-        return
-
-    from app.workers.tasks import resume_workflow_task
-    resume_workflow_task.delay(
-        instance.tenant_id,
-        str(instance.id),
-        {},           # approval_payload (unused by async-external resumes)
-        patch,        # context_patch
-    )
-    logger.info(
-        "async_job %s terminal (%s); queued resume for instance %s",
-        job.id, terminal, instance.id,
-    )
-
-
-def _finalize_timeout(db, job, reason, now):
-    from app.engine.async_job_poller import build_resume_context_patch
-    job.status = "timed_out"
-    job.completed_at = now
-    job.next_poll_at = now
-    job.last_error = reason
-    patch = build_resume_context_patch(
-        node_id=job.node_id,
-        outcome="timed_out",
-        ae_response=None,
-        external_job_id=str(job.external_job_id),
-        timeout_reason=reason,
-    )
-    db.commit()
-
-    instance = db.query(WorkflowInstance).filter_by(id=job.instance_id).first()
-    if instance is None:
-        return
-
-    from app.workers.tasks import resume_workflow_task
-    resume_workflow_task.delay(
-        instance.tenant_id,
-        str(instance.id),
-        {},
-        patch,
-    )
-    logger.warning(
-        "async_job %s timed out (%s); queued failed resume for instance %s",
-        job.id, reason, instance.id,
-    )
+# _finalize_terminal and _finalize_timeout moved to
+# app/engine/async_job_finalizer.py so the webhook endpoint can share
+# the exact same resume path.
 
 
 @celery_app.task(name="orchestrator.prune_old_snapshots")

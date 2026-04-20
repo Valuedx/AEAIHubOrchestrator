@@ -18,6 +18,7 @@ from app.api.a2a import router as a2a_router
 from app.api.knowledge import router as knowledge_router
 from app.api.memory import router as memory_router
 from app.api.secrets import router as secrets_router
+from app.api.async_jobs import router as async_jobs_router
 from app.security.rate_limiter import limiter
 
 logging.basicConfig(
@@ -50,6 +51,7 @@ app.include_router(a2a_router)
 app.include_router(knowledge_router, prefix="/api/v1/knowledge-bases", tags=["knowledge"])
 app.include_router(memory_router)
 app.include_router(secrets_router, prefix="/api/v1/secrets", tags=["secrets"])
+app.include_router(async_jobs_router)
 
 if settings.oidc_enabled:
     from app.api.auth import router as oidc_router
