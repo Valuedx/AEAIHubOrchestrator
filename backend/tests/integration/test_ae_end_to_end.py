@@ -41,6 +41,29 @@ AE_BASE = "http://ae.test.example.com/aeengine/rest"
 
 
 # ---------------------------------------------------------------------------
+# Per-test truncate — AE tests drive the ``superuser_sessionmaker`` fixture
+# directly (not ``app_session``) because Beat runs BYPASSRLS in production.
+# ``app_session``'s finally-block truncate doesn't fire in that path, so rows
+# seeded by earlier tests would otherwise survive into later tests — most
+# visibly, a lingering 'running' async_jobs row from the Diverted test would
+# get re-polled (and hit AE) during the abandoned-parent test's
+# poll_async_jobs() call, breaking its call-count assertion.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _truncate_between_ae_tests(superuser_engine):
+    yield
+    from sqlalchemy import text as _text
+    with superuser_engine.begin() as conn:
+        conn.execute(_text(
+            "TRUNCATE TABLE "
+            "async_jobs, tenant_integrations, workflow_instances, "
+            "workflow_definitions "
+            "RESTART IDENTITY CASCADE"
+        ))
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
