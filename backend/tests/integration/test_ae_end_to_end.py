@@ -86,7 +86,7 @@ def _seed_ae_suspension(
                      created_at, updated_at)
                 VALUES
                     (:id, :tenant, 'AE Test',
-                     :graph::jsonb, 1, false, now(), now())
+                     CAST(:graph AS jsonb), 1, false, now(), now())
                 """
             ),
             {
@@ -110,7 +110,7 @@ def _seed_ae_suspension(
                      created_at)
                 VALUES
                     (:id, :tenant, :wf_id, 'suspended', 'async_external',
-                     '{}'::jsonb, false, false, now())
+                     CAST('{}' AS jsonb), false, false, now())
                 """
             ),
             {"id": instance_id, "tenant": tenant_id, "wf_id": wf_id},
@@ -144,7 +144,7 @@ def _seed_ae_suspension(
                      total_diverted_ms, diverted_since, last_external_status)
                 VALUES
                     (:id, :inst_id, 'node_1', 'automationedge', :ext_id, 'submitted',
-                     :meta::jsonb, :submitted, :next_poll,
+                     CAST(:meta AS jsonb), :submitted, :next_poll,
                      :banked, :div_since, :last_ext)
                 """
             ),
