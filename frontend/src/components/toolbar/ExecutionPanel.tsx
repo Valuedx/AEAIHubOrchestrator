@@ -258,6 +258,18 @@ function LogEntry({
   asyncJob?: AsyncJobOut;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // FV-03 — scroll into view + temporary cyan ring when this log's node
+  // is the cross-surface highlight target (set by Flow-view click).
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const highlightedNodeId = useWorkflowStore((s) => s.highlightedNodeId);
+  const highlightNode = useWorkflowStore((s) => s.highlightNode);
+  const isHighlighted = highlightedNodeId === log.node_id;
+  useEffect(() => {
+    if (isHighlighted && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [isHighlighted]);
+
   // When we have an in-flight async job tied to this node, treat it as
   // "waiting-on-external" — dedicated cyan styling instead of the plain
   // yellow "suspended" treatment.
@@ -287,9 +299,20 @@ function LogEntry({
   const workflowDefIdForChild = childWorkflowDefId?.workflowId as string | undefined;
 
   return (
-    <div className="border rounded-md">
+    <div
+      ref={rowRef}
+      className={
+        "border rounded-md transition-shadow " +
+        (isHighlighted ? "ring-2 ring-cyan-400 ring-offset-1" : "")
+      }
+    >
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => {
+          setExpanded(!expanded);
+          // FV-03 — click on a log row highlights the same node so a
+          // subsequent flip to Flow view re-centres there.
+          highlightNode(log.node_id);
+        }}
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent/50 transition-colors"
       >
         <Icon
@@ -572,7 +595,7 @@ export function ExecutionPanel() {
       {isDebugMode && <DebugReplayBar />}
       {view === "flow" ? (
         <div className="flex-1 min-h-[240px]">
-          <ExecutionFlowView />
+          <ExecutionFlowView onNodeClickJumpToLogs={() => setView("logs")} />
         </div>
       ) : (
       <ScrollArea className="flex-1 px-4 py-2">

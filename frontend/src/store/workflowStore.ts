@@ -47,6 +47,17 @@ interface WorkflowState {
   fetchInstanceAsyncJobs: (workflowId: string, instanceId: string) => Promise<void>;
 
   /**
+   * FV-03 — cross-surface node highlight. Set by either the Flow
+   * view (on node click) or the Logs view (on row click), consumed
+   * by both: ExecutionFlowView centres its viewport on the node,
+   * LogEntry rows scroll into view with a cyan ring. Self-clears
+   * after ``HIGHLIGHT_DURATION_MS`` so the UI doesn't linger in a
+   * "selected" state when the user moves on.
+   */
+  highlightedNodeId: string | null;
+  highlightNode: (nodeId: string) => void;
+
+  /**
    * Live streaming token buffer per node_id.
    * Cleared when execution starts; accumulated as ``token`` SSE events arrive.
    * When a node's ``done: true`` message arrives the buffer is preserved
@@ -126,6 +137,14 @@ interface WorkflowState {
   stepDebugNext: () => Promise<void>;
 }
 
+// FV-03 — how long a cross-surface node highlight stays active.
+export const HIGHLIGHT_DURATION_MS = 2500;
+
+// Module-local timer handle so the highlightNode action can reset a
+// pending clear when a new highlight arrives.
+let _highlightTimer: number | null = null;
+
+
 // ---------------------------------------------------------------------------
 // FV-01 — live status reducer helpers
 // ---------------------------------------------------------------------------
@@ -184,6 +203,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   isExecuting: false,
   instanceContext: null,
   asyncJobs: [],
+  highlightedNodeId: null,
   streamingTokens: {},
   loading: false,
   error: null,
@@ -192,6 +212,26 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   dismissError: () => set({ error: null }),
   dismissNotice: () => set({ notice: null }),
+
+  highlightNode: (nodeId) => {
+    // Single shared timer: if a new highlight fires while one is pending,
+    // we want the fresh node to own the 2.5s window, not get clobbered
+    // by the outgoing clear.
+    if (_highlightTimer !== null) {
+      window.clearTimeout(_highlightTimer);
+      _highlightTimer = null;
+    }
+    set({ highlightedNodeId: nodeId });
+    _highlightTimer = window.setTimeout(() => {
+      _highlightTimer = null;
+      // Only clear if *this* node is still the highlighted one — a
+      // subsequent highlight between set and timeout has already reset
+      // the state, and we mustn't undo it.
+      if (useWorkflowStore.getState().highlightedNodeId === nodeId) {
+        set({ highlightedNodeId: null });
+      }
+    }, HIGHLIGHT_DURATION_MS);
+  },
   runSync: false,
   isDebugMode: false,
   debugCheckpoints: [],

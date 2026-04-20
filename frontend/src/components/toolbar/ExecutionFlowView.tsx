@@ -19,7 +19,8 @@
  * opts in.
  */
 
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import type React from "react";
 import {
   Background,
   BackgroundVariant,
@@ -28,10 +29,12 @@ import {
   ReactFlowProvider,
   useReactFlow,
   type DefaultEdgeOptions,
+  type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
 import { useFlowStore } from "@/store/flowStore";
+import { useWorkflowStore } from "@/store/workflowStore";
 import { AgenticNode } from "@/components/nodes/AgenticNode";
 
 // Module-top-level per xyflow perf guidance — recreating nodeTypes in
@@ -44,10 +47,21 @@ const defaultEdgeOptions: DefaultEdgeOptions = {
 };
 
 
-function ExecutionFlowInner() {
+interface ExecutionFlowViewProps {
+  /** FV-03 — called when a node is clicked in this view so
+   *  ExecutionPanel can flip the Logs/Flow toggle back to Logs. */
+  onNodeClickJumpToLogs?: () => void;
+}
+
+
+function ExecutionFlowInner({
+  onNodeClickJumpToLogs,
+}: ExecutionFlowViewProps) {
   const nodes = useFlowStore((s) => s.nodes);
   const edges = useFlowStore((s) => s.edges);
-  const { fitView } = useReactFlow();
+  const highlightedNodeId = useWorkflowStore((s) => s.highlightedNodeId);
+  const highlightNode = useWorkflowStore((s) => s.highlightNode);
+  const { fitView, setCenter } = useReactFlow();
 
   // Fit-to-view once when this component first becomes visible. Not on
   // every nodes-array change — that would jitter the viewport each time
@@ -57,6 +71,27 @@ function ExecutionFlowInner() {
     // Intentionally empty deps — we want this to run ONCE on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // FV-03 — when the highlight is set from the Logs side (row click),
+  // centre the viewport on the matching node so operators see it
+  // without having to pan.
+  useEffect(() => {
+    if (!highlightedNodeId) return;
+    const target = nodes.find((n) => n.id === highlightedNodeId);
+    if (!target) return;
+    setCenter(target.position.x + 90, target.position.y + 40, {
+      zoom: 1,
+      duration: 400,
+    });
+  }, [highlightedNodeId, nodes, setCenter]);
+
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      highlightNode(node.id);
+      onNodeClickJumpToLogs?.();
+    },
+    [highlightNode, onNodeClickJumpToLogs],
+  );
 
   if (nodes.length === 0) {
     return (
@@ -84,6 +119,7 @@ function ExecutionFlowInner() {
       fitView
       fitViewOptions={{ padding: 0.15 }}
       proOptions={{ hideAttribution: true }}
+      onNodeClick={handleNodeClick}
       className="bg-muted/20"
     >
       <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
@@ -92,10 +128,12 @@ function ExecutionFlowInner() {
 }
 
 
-export function ExecutionFlowView() {
+export function ExecutionFlowView({
+  onNodeClickJumpToLogs,
+}: ExecutionFlowViewProps = {}) {
   return (
     <ReactFlowProvider>
-      <ExecutionFlowInner />
+      <ExecutionFlowInner onNodeClickJumpToLogs={onNodeClickJumpToLogs} />
     </ReactFlowProvider>
   );
 }
