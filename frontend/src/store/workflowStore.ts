@@ -16,6 +16,12 @@ import { useFlowStore } from "@/store/flowStore";
 import { getWorkflowTemplate } from "@/lib/templates";
 import type { AgenticNodeData } from "@/types/nodes";
 import { nextBackoffMs, POLL_MAX_ATTEMPTS } from "@/lib/retry";
+import {
+  computeNodeStatuses,
+  statusForSingleLog,
+  type LogLite,
+  type NodeStatus,
+} from "@/lib/executionStatus";
 
 interface WorkflowState {
   currentWorkflow: WorkflowOut | null;
@@ -119,6 +125,54 @@ interface WorkflowState {
   stepDebugPrev: () => Promise<void>;
   stepDebugNext: () => Promise<void>;
 }
+
+// ---------------------------------------------------------------------------
+// FV-01 — live status reducer helpers
+// ---------------------------------------------------------------------------
+// Keep these module-local: they mutate the flowStore as a pure side effect
+// of execution lifecycle events. The SSE handler + executeWorkflow /
+// resumeInstance entry points call them so the AgenticNode dots reflect
+// live progress. Pure inference is in ``lib/executionStatus``; here we
+// only dispatch the resulting status into the flow store.
+
+function _resetNodeStatuses(): void {
+  const fs = useFlowStore.getState();
+  for (const n of fs.nodes) {
+    const current = (n.data as AgenticNodeData).status;
+    if (current !== "idle" && current !== undefined) {
+      fs.updateNodeData(n.id, { status: "idle" });
+    }
+  }
+}
+
+function _applySingleLogStatus(nodeId: string, logStatus: string): void {
+  const fs = useFlowStore.getState();
+  const node = fs.nodes.find((n) => n.id === nodeId);
+  if (!node) return;
+  const prev = (node.data as AgenticNodeData).status;
+  const next = statusForSingleLog(prev, { node_id: nodeId, status: logStatus });
+  if (next !== null) {
+    fs.updateNodeData(nodeId, { status: next });
+  }
+}
+
+function _applyTerminalStatuses(
+  logs: readonly LogLite[],
+  instanceStatus: string,
+): void {
+  const fs = useFlowStore.getState();
+  const statuses = computeNodeStatuses(fs.nodes, logs, instanceStatus);
+  for (const n of fs.nodes) {
+    const target = statuses[n.id];
+    const current = (n.data as AgenticNodeData).status;
+    // Only push changes; skip no-ops so we don't churn the node data
+    // reference (which forces React Flow re-renders).
+    if (target && target !== current) {
+      fs.updateNodeData(n.id, { status: target as NodeStatus });
+    }
+  }
+}
+
 
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   currentWorkflow: null,
@@ -419,6 +473,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       return;
     }
 
+    // Reset live-status overlays on every new run. Carries over from
+    // Debug Replay / a prior run; operators expect a clean slate.
+    _resetNodeStatuses();
     set({ isExecuting: true, error: null, notice: null, streamingTokens: {} });
     try {
       if (get().isDirty) {
@@ -451,6 +508,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
             definition_version_at_start: wfNow.version,
           };
         }
+        // Sync execute completes without firing SSE events — apply the
+        // status map directly from the full log list instead.
+        _applyTerminalStatuses(detail.logs, detail.status);
         set({
           activeInstance: detail,
           isExecuting: false,
@@ -575,6 +635,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
           ? inst.logs.map((l) => (l.id === log.id ? { ...l, ...log } : l))
           : [...inst.logs, log as InstanceDetailOut["logs"][number]];
         set({ activeInstance: { ...inst, logs } });
+        // FV-01 — live canvas overlay. Applies the idle → running →
+        // completed/failed/suspended progression on the node dots as
+        // each log event arrives. Guarded by shouldApplyTransition so
+        // late / out-of-order events don't demote terminal nodes.
+        if (log.node_id && typeof log.status === "string") {
+          _applySingleLogStatus(log.node_id, log.status);
+        }
       },
       (status) => {
         const inst = get().activeInstance;
@@ -588,6 +655,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         if (wf && inst) {
           api.getInstanceDetail(wf.id, inst.id).then((detail) => {
             set({ activeInstance: detail });
+            // On terminal, re-run the full status inference so Condition-
+            // pruned / never-reached nodes flip from idle → skipped.
+            _applyTerminalStatuses(detail.logs, detail.status);
           }).catch(() => {});
         }
       },

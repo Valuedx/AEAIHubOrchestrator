@@ -111,6 +111,9 @@ const STATUS_DOT: Record<string, string> = {
   failed: "bg-red-500",
   suspended: "bg-yellow-500",
   paused: "bg-cyan-500",
+  // Terminal-run, never-reached: Condition-branch-pruned or downstream
+  // of a failure. Lower-contrast so it reads as "not relevant to this run".
+  skipped: "bg-gray-300 opacity-60",
 };
 
 function AgenticNodeComponent({ id, data, selected }: NodeProps) {

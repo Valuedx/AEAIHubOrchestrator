@@ -9,7 +9,28 @@ export interface AgenticNodeData {
   nodeCategory: NodeCategory;
   description?: string;
   config: Record<string, unknown>;
-  status?: "idle" | "running" | "completed" | "failed" | "suspended" | "paused";
+  /**
+   * Per-node live status overlay.
+   *
+   * ``idle``      — never executed in the current run (or reset).
+   * ``running``   — log entry exists with status=running.
+   * ``completed`` — log entry with status=completed.
+   * ``failed``    — log entry with status=failed.
+   * ``suspended`` — log entry with status=suspended (HITL or async-external).
+   * ``paused``    — debug-replay only.
+   * ``skipped``   — terminal run completed but this node was never
+   *                 reached (Condition-branch-pruned or downstream of
+   *                 a failure). Populated post-terminal by
+   *                 ``computeNodeStatuses``.
+   */
+  status?:
+    | "idle"
+    | "running"
+    | "completed"
+    | "failed"
+    | "suspended"
+    | "paused"
+    | "skipped";
 }
 
 /** Title shown on the node card and in expression picker groups. */
