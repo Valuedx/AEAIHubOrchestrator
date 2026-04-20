@@ -572,6 +572,21 @@ export const api = {
     return request(`/api/v1/workflows/${workflowId}/status`);
   },
 
+  // DV-02 — run just one node in isolation against upstream pins.
+  testNode(
+    workflowId: string,
+    nodeId: string,
+    triggerPayload?: Record<string, unknown>,
+  ): Promise<TestNodeResponse> {
+    return request(
+      `/api/v1/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/test`,
+      {
+        method: "POST",
+        body: JSON.stringify({ trigger_payload: triggerPayload ?? null }),
+      },
+    );
+  },
+
   // DV-01 — pin / unpin a node's output for short-circuit dispatch.
   pinNodeOutput(
     workflowId: string,
