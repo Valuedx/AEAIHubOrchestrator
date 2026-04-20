@@ -631,6 +631,109 @@
       }
     },
     {
+      "type": "automation_edge",
+      "category": "action",
+      "label": "AutomationEdge",
+      "description": "Submit a workflow to AutomationEdge (RPA). The orchestrator suspends the parent workflow; the Beat poller (or an opt-in webhook callback) resumes it when AE reports a terminal state. Connection settings fall back to the tenant's default AutomationEdge integration when blank.",
+      "icon": "bot",
+      "config_schema": {
+        "integrationLabel": {
+          "type": "string",
+          "default": "",
+          "description": "Label of a tenant_integrations row to load connection defaults from. Leave blank to use the tenant's default AutomationEdge integration."
+        },
+        "baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "AE REST base URL, e.g. http://ae.example.com:8080/aeengine/rest. Overrides the integration default when non-empty."
+        },
+        "orgCode": {
+          "type": "string",
+          "default": "",
+          "description": "AE tenant orgCode to run under (the integration default is used if blank)."
+        },
+        "workflowName": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the AE workflow to submit (exactly as configured in AE Studio)."
+        },
+        "credentialsSecretPrefix": {
+          "type": "string",
+          "default": "AUTOMATIONEDGE",
+          "description": "Vault key prefix. ae_session mode reads {prefix}_USERNAME and {prefix}_PASSWORD; bearer mode reads {prefix}_TOKEN."
+        },
+        "authMode": {
+          "type": "string",
+          "enum": ["ae_session", "bearer"],
+          "default": "ae_session",
+          "description": "ae_session (default) uses AE's username+password login; bearer sends Authorization: Bearer <token> for API-gateway setups."
+        },
+        "source": {
+          "type": "string",
+          "default": "AE AI Hub Orchestrator",
+          "description": "Identifier recorded on the AE side as the source of the request."
+        },
+        "userId": {
+          "type": "string",
+          "default": "orchestrator",
+          "description": "AE user identity recorded on the request row."
+        },
+        "inputMapping": {
+          "type": "array",
+          "items": { "type": "object" },
+          "default": [],
+          "description": "Input params for the AE workflow. Each item: {name, valueExpression, type}. valueExpression is evaluated against the workflow context via safe_eval."
+        },
+        "completionMode": {
+          "type": "string",
+          "enum": ["poll", "webhook"],
+          "default": "poll",
+          "description": "poll (default): Beat polls AE every pollIntervalSeconds. webhook: an AE HTTP step calls back into /api/v1/async-jobs/{id}/complete."
+        },
+        "webhookAuth": {
+          "type": "string",
+          "enum": ["token", "hmac", "both"],
+          "default": "token",
+          "visibleWhen": { "completionMode": "webhook" },
+          "description": "token: per-job secret in ?token= query param. hmac: per-job secret signs the body via X-AE-Signature. both: endpoint accepts either."
+        },
+        "webhookCallbackBaseUrl": {
+          "type": "string",
+          "default": "",
+          "visibleWhen": { "completionMode": "webhook" },
+          "description": "Orchestrator base URL reachable from AE. Callback path /api/v1/async-jobs/{id}/complete is appended."
+        },
+        "webhookCallbackParamName": {
+          "type": "string",
+          "default": "callback_url",
+          "visibleWhen": { "completionMode": "webhook" },
+          "description": "AE workflow input param name that receives the fully-qualified callback URL."
+        },
+        "webhookTokenParamName": {
+          "type": "string",
+          "default": "callback_token",
+          "visibleWhen": { "completionMode": "webhook" },
+          "description": "AE workflow input param name that receives the per-job webhook token (token/both modes only)."
+        },
+        "pollIntervalSeconds": {
+          "type": "integer",
+          "default": 30,
+          "min": 5,
+          "description": "How often the Beat poller re-checks AE for this job's status. Per-job override of the Beat task's base cadence."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "default": 3600,
+          "description": "Active-runtime timeout. Time spent in AE's Diverted state is excluded (pause-the-clock)."
+        },
+        "maxDivertedSeconds": {
+          "type": "integer",
+          "default": 604800,
+          "description": "Hard cap on a single Diverted span. Default 7 days — failsafe against abandoned diverts."
+        }
+      }
+    },
+    {
       "type": "code_execution",
       "category": "action",
       "label": "Code",

@@ -95,6 +95,8 @@ def dispatch_node(
         return _handle_llm_router(node_data, context, tenant_id)
     if label == "A2A Agent Call":
         return _handle_a2a_call(node_data, context, tenant_id)
+    if label == "AutomationEdge":
+        return _handle_automation_edge(node_data, context, tenant_id, db)
     if label == "Sub-Workflow":
         return _handle_sub_workflow(node_data, context, tenant_id, db)
     if label == "Reflection":
@@ -1305,3 +1307,195 @@ def _handle_code_execution(
         },
     }
 
+
+# ---------------------------------------------------------------------------
+# AutomationEdge — async-external submission (Pattern C default, webhook opt-in)
+# ---------------------------------------------------------------------------
+
+def _handle_automation_edge(
+    node_data: dict, context: dict[str, Any], tenant_id: str, db: Any,
+) -> dict[str, Any]:
+    """Submit a workflow to AutomationEdge and suspend until Beat poll or
+    webhook reports completion.
+
+    This handler NEVER returns a completed output dict — on success it
+    raises ``NodeSuspendedAsync`` so ``_execute_single_node`` marks the
+    parent instance ``suspended`` with ``suspended_reason='async_external'``.
+    The parent resumes via ``poll_async_jobs`` (AE-04) or
+    ``POST /api/v1/async-jobs/{id}/complete`` (AE-05), at which point
+    the AE response is merged into ``context[node_X]`` and downstream
+    nodes can branch on it.
+
+    Raises:
+        NodeSuspendedAsync: on successful submission (control-flow, not error).
+        ValueError: if integration config is incomplete or required params
+            can't be resolved.
+        RuntimeError: if AE rejects the /execute call (success=false or
+            non-200 status).
+    """
+    import secrets
+    import uuid as _uuid
+    from datetime import timedelta
+
+    from app.engine.automationedge_client import (
+        AEConnection,
+        submit_workflow,
+    )
+    from app.engine.exceptions import NodeSuspendedAsync
+    from app.engine.integration_resolver import resolve_integration_config
+    from app.engine.safe_eval import safe_eval, SafeEvalError
+    from app.models.workflow import AsyncJob
+
+    config = node_data.get("config", {}) or {}
+
+    # 1. Resolve connection config — node > tenant_integration default
+    merged = resolve_integration_config(
+        db,
+        tenant_id=tenant_id,
+        system="automationedge",
+        node_config=config,
+        required_fields=("baseUrl", "orgCode", "workflowName"),
+    )
+
+    conn = AEConnection(
+        base_url=merged["baseUrl"],
+        tenant_id=tenant_id,
+        credentials_secret_prefix=merged.get("credentialsSecretPrefix", "AUTOMATIONEDGE"),
+        auth_mode=merged.get("authMode", "ae_session"),
+        org_code=merged["orgCode"],
+        source=merged.get("source", "AE AI Hub Orchestrator"),
+        user_id=merged.get("userId", "orchestrator"),
+    )
+
+    # 2. Resolve AE workflow input params via inputMapping
+    #    Config shape: inputMapping = [
+    #        {"name": "search_term", "valueExpression": "node_1.response", "type": "String"},
+    #        ...
+    #    ]
+    params: list[dict[str, Any]] = []
+    for spec in merged.get("inputMapping", []) or []:
+        if not isinstance(spec, dict):
+            continue
+        pname = spec.get("name")
+        expr = spec.get("valueExpression")
+        ptype = spec.get("type", "String")
+        if not pname:
+            continue
+        try:
+            value = safe_eval(expr, context) if expr else spec.get("defaultValue")
+        except SafeEvalError as exc:
+            logger.warning(
+                "AE inputMapping for '%s' rejected expression %r: %s",
+                pname, expr, exc,
+            )
+            value = None
+        params.append({"name": pname, "value": value, "type": ptype})
+
+    # 3. Webhook auth — if enabled, generate per-job secret now so we can
+    #    pass it into the AE workflow as one of its input params. Operator
+    #    designs the AE workflow to echo it back in the callback.
+    completion_mode = merged.get("completionMode", "poll")
+    webhook_auth = merged.get("webhookAuth", "token")
+    webhook_token: str | None = None
+    webhook_hmac_secret: str | None = None
+    if completion_mode == "webhook":
+        if webhook_auth in ("token", "both"):
+            webhook_token = secrets.token_urlsafe(32)
+        if webhook_auth in ("hmac", "both"):
+            webhook_hmac_secret = secrets.token_urlsafe(32)
+
+    # 4. Build the async_jobs row BEFORE the submit so a flush failure
+    #    doesn't leave an orphan AE job running in the wild with no
+    #    tracking row. We commit only after the submit succeeds.
+    async_job_id = _uuid.uuid4()
+    instance_id = context.get("_instance_id")
+    current_node_id = context.get("_current_node_id")
+    if not instance_id or not current_node_id:
+        # This shouldn't happen — dag_runner injects both before dispatch.
+        raise ValueError(
+            "AutomationEdge handler requires _instance_id and _current_node_id "
+            "in context (orchestrator invariant)"
+        )
+
+    poll_interval_seconds = int(merged.get("pollIntervalSeconds", 30) or 30)
+    timeout_seconds = int(merged.get("timeoutSeconds", 3600) or 3600)
+    max_diverted_seconds = int(merged.get("maxDivertedSeconds", 604800) or 604800)
+
+    metadata: dict[str, Any] = {
+        "base_url": conn.base_url,
+        "org_code": conn.org_code,
+        "credentials_secret_prefix": conn.credentials_secret_prefix,
+        "auth_mode": conn.auth_mode,
+        "user_id": conn.user_id,
+        "source": conn.source,
+        "completion_mode": completion_mode,
+        "poll_interval_seconds": poll_interval_seconds,
+        "timeout_seconds": timeout_seconds,
+        "max_diverted_seconds": max_diverted_seconds,
+    }
+    if webhook_token:
+        metadata["webhook_token"] = webhook_token
+    if webhook_hmac_secret:
+        metadata["webhook_hmac_secret"] = webhook_hmac_secret
+
+    # 5. Submit to AE. If webhook mode, include the callback URL + auth
+    #    secret as input params so the AE workflow author can wire their
+    #    terminal HTTP step.
+    if completion_mode == "webhook":
+        callback_param = merged.get("webhookCallbackParamName", "callback_url")
+        # Caller constructs the base URL at submission time because we don't
+        # have a trusted way to know our own public URL otherwise.
+        callback_base = merged.get("webhookCallbackBaseUrl", "").rstrip("/")
+        if callback_base:
+            params.append({
+                "name": callback_param,
+                "value": f"{callback_base}/api/v1/async-jobs/{async_job_id}/complete",
+                "type": "String",
+            })
+            if webhook_token:
+                params.append({
+                    "name": merged.get("webhookTokenParamName", "callback_token"),
+                    "value": webhook_token,
+                    "type": "String",
+                })
+
+    automation_request_id = submit_workflow(
+        conn,
+        workflow_name=merged["workflowName"],
+        params=params,
+        source_id=str(instance_id),
+    )
+
+    # 6. Persist the async_jobs row now that we know the external id
+    now = _utcnow()
+    job = AsyncJob(
+        id=async_job_id,
+        instance_id=instance_id,
+        node_id=current_node_id,
+        system="automationedge",
+        external_job_id=str(automation_request_id),
+        status="submitted",
+        metadata_json=metadata,
+        submitted_at=now,
+        next_poll_at=now + timedelta(seconds=poll_interval_seconds),
+    )
+    db.add(job)
+    db.commit()
+
+    logger.info(
+        "AutomationEdge submitted: tenant=%s node=%s ae_request_id=%s async_job=%s",
+        tenant_id, current_node_id, automation_request_id, async_job_id,
+    )
+
+    # 7. Signal suspension — dag_runner catches NodeSuspendedAsync and
+    #    flips the instance to status=suspended, suspended_reason=async_external.
+    raise NodeSuspendedAsync(
+        async_job_id=str(async_job_id),
+        system="automationedge",
+        external_job_id=str(automation_request_id),
+    )
+
+
+def _utcnow():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
