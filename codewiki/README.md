@@ -12,6 +12,7 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [Memory Management](memory-management.md) | Advanced memory architecture, storage model, runtime assembly, profiles, and inspection APIs |
 | [Node Types](node-types.md) | Registry of trigger, agent, action, logic, knowledge, notification, and NLP nodes with config schemas |
 | [Notification Guide](notification-guide.md) | User guide for the Notification node — channel setup, config value sources, examples, troubleshooting |
+| [AutomationEdge Node](automationedge.md) | Async-external RPA integration — setup, both completion modes (Beat poll / webhook), Diverted pause-the-clock, cancellation caveats, troubleshooting |
 | [RAG & Knowledge Base](rag-knowledge-base.md) | Vector stores, embedding providers, chunking strategies, ingestion and retrieval pipelines |
 | [Frontend Guide](frontend-guide.md) | React component tree, Zustand stores, canvas, toolbar, and sidebar |
 | [Deployment](deployment.md) | Docker Compose, environment variables, Celery, migrations |

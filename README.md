@@ -70,3 +70,4 @@ celery -A app.worker worker --loglevel=info
 - `TECHNICAL_BLUEPRINT.md`
 - `DEVELOPER_GUIDE.md`
 - `codewiki/memory-management.md`
+- `codewiki/automationedge.md` — AutomationEdge async-external node (Pattern C / Pattern A, Diverted handling, operator setup)
