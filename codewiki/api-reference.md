@@ -22,8 +22,9 @@ All endpoints are served by the FastAPI backend (default `http://localhost:8000`
 | `POST` | `/api/v1/workflows` | 201 | Create a workflow |
 | `GET` | `/api/v1/workflows` | 200 | List all workflows for the tenant |
 | `GET` | `/api/v1/workflows/{workflow_id}` | 200 | Get a single workflow |
-| `PATCH` | `/api/v1/workflows/{workflow_id}` | 200 | Update name, description, or graph (auto-snapshots on graph change) |
+| `PATCH` | `/api/v1/workflows/{workflow_id}` | 200 | Update name, description, graph, or is_active (auto-snapshots on graph change) |
 | `DELETE` | `/api/v1/workflows/{workflow_id}` | 204 | Delete a workflow and all related data |
+| `POST` | `/api/v1/workflows/{workflow_id}/duplicate` | 201 | **DV-05** — clone into a new row (`<name> (copy)`, graph deep-copied incl. pins, version=1, is_active=True) |
 
 **WorkflowCreate** (request body for POST):
 
@@ -35,7 +36,7 @@ All endpoints are served by the FastAPI backend (default `http://localhost:8000`
 
 **WorkflowUpdate** (request body for PATCH):
 
-All fields optional: `name`, `description`, `graph_json`. When `graph_json` is updated, the previous version is snapshotted and `version` is incremented.
+All fields optional: `name`, `description`, `graph_json`, `is_active`. When `graph_json` is updated, the previous version is snapshotted and `version` is incremented. Toggling **`is_active`** alone does NOT bump version or snapshot — it's a runtime switch only, matching the pins / DV-07 design.
 
 **Save-time side effects:** Both POST and PATCH validate node configs against the registry schema (returning warnings in logs). If the graph contains Intent Classifier nodes with `cacheEmbeddings=true`, embeddings for their intent definitions are precomputed and stored in the `embedding_cache` table. This is transparent to the caller — the API response is unchanged.
 
@@ -49,8 +50,25 @@ All fields optional: `name`, `description`, `graph_json`. When `graph_json` is u
 | `description` | string or null |
 | `graph_json` | object |
 | `version` | integer |
+| `is_active` | bool — DV-07; when false, Schedule Triggers skip this workflow. Manual Run / PATCH / duplicate all still work. |
 | `created_at` | ISO datetime |
 | `updated_at` | ISO datetime |
+
+### Developer probes — pin / test (DV-01, DV-02)
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `POST` | `.../{workflow_id}/nodes/{node_id}/pin` | 200 | **DV-01** — pin a dict to `graph_json.nodes[].data.pinnedOutput`. Subsequent runs short-circuit `dispatch_node` and return the pin. Does NOT bump version. |
+| `DELETE` | `.../{workflow_id}/nodes/{node_id}/pin` | 200 | Clear the pin (idempotent). |
+| `POST` | `.../{workflow_id}/nodes/{node_id}/test` | 200 | **DV-02** — run one node in isolation using upstream pins as synthetic context. Handler exceptions are caught and returned as `error`. No `workflow_instances` / `execution_logs` rows are written. |
+
+**PinNodeRequest:** `{ "output": { ... } }` — stored verbatim under `pinnedOutput`.
+
+**TestNodeRequest:** `{ "trigger_payload": { ... } }` (optional).
+
+**TestNodeResponse:** `{ "output": dict | null, "elapsed_ms": int, "error": string | null }`.
+
+See [Developer Workflow](dev-workflow.md) for the full UX + edge cases.
 
 ### Execution
 
@@ -182,8 +200,8 @@ All return **InstanceOut**:
 
 | Method | Path | Status | Description |
 |--------|------|--------|-------------|
-| `GET` | `/api/v1/tools` | 200 | List available MCP tools (respects tenant overrides) |
-| `POST` | `/api/v1/tools/invalidate-cache` | 204 | Clear cached tool list |
+| `GET` | `/api/v1/tools?server_label={label}` | 200 | List available MCP tools from the resolved server (respects tenant overrides). `server_label` is optional — blank picks the tenant default, or env-var fallback if no default is set. |
+| `POST` | `/api/v1/tools/invalidate-cache` | 204 | Clear this tenant's cached tool list. |
 
 **ToolOut:**
 
@@ -195,6 +213,70 @@ All return **InstanceOut**:
 | `category` | string |
 | `safety_tier` | string |
 | `tags` | list of strings |
+
+---
+
+## Tenant MCP Servers — `/api/v1/tenant-mcp-servers`
+
+**MCP-02** — per-tenant registry of MCP servers an operator wants to route tool calls to. Each row captures URL + auth config. Nodes resolve by label (MCP Tool / ReAct Agent `mcpServerLabel` config field); blank label → tenant `is_default` row → legacy `settings.mcp_server_url` env-var fallback.
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `POST` | `/api/v1/tenant-mcp-servers` | 201 | Register a server |
+| `GET` | `/api/v1/tenant-mcp-servers` | 200 | List servers for the tenant |
+| `GET` | `/api/v1/tenant-mcp-servers/{server_id}` | 200 | Get one |
+| `PATCH` | `/api/v1/tenant-mcp-servers/{server_id}` | 200 | Update label / url / auth_mode / config / is_default |
+| `DELETE` | `/api/v1/tenant-mcp-servers/{server_id}` | 204 | Delete a server |
+
+**TenantMcpServerCreate** (also the PATCH body, all fields optional):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `label` | string (1–128) | Unique per tenant — collision returns 409 |
+| `url` | string | Streamable-HTTP MCP endpoint |
+| `auth_mode` | `"none"` \| `"static_headers"` \| `"oauth_2_1"` | `oauth_2_1` is accepted but runtime raises `not yet implemented` (MCP-03) |
+| `config_json` | object | For `static_headers`: `{ "headers": { "Authorization": "Bearer {{ env.MY_TOKEN }}", ... } }`. `{{ env.KEY }}` placeholders resolve through the Secrets vault at call time. |
+| `is_default` | bool | At most one per tenant — partial unique index flips the prior default automatically on create / update |
+
+**TenantMcpServerOut** (response):
+
+| Field | Type |
+|-------|------|
+| `id` | string (UUID) |
+| `tenant_id` | string |
+| `label` | string |
+| `url` | string |
+| `auth_mode` | string |
+| `config_json` | object |
+| `is_default` | bool |
+| `created_at` | ISO datetime |
+| `updated_at` | ISO datetime |
+
+See [MCP Audit — §8 Per-tenant MCP server registry](mcp-audit.md) for the resolver precedence chain and auth-mode semantics.
+
+---
+
+## Tenant Integrations — `/api/v1/tenant-integrations`
+
+External-system connection defaults (currently AutomationEdge only). Same CRUD shape as Tenant MCP Servers but keyed by `(tenant_id, system, label)`. See [AutomationEdge Node](automationedge.md) for the AE-specific `config_json` shape.
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `POST` | `/api/v1/tenant-integrations` | 201 | Register an integration |
+| `GET` | `/api/v1/tenant-integrations?system={name}` | 200 | List (optional `system` filter) |
+| `GET` | `/api/v1/tenant-integrations/{id}` | 200 | Get one |
+| `PATCH` | `/api/v1/tenant-integrations/{id}` | 200 | Update |
+| `DELETE` | `/api/v1/tenant-integrations/{id}` | 204 | Delete |
+
+---
+
+## Async Jobs — `/api/v1/async-jobs`
+
+External-system job tracking (currently AutomationEdge). See [AutomationEdge Node](automationedge.md) for the pattern (Pattern A webhook callback vs. Pattern C Beat poll) and the shared `finalize_terminal` resume path.
+
+| Method | Path | Auth | Status | Description |
+|--------|------|------|--------|-------------|
+| `POST` | `/api/v1/async-jobs/{job_id}/complete` | Token or HMAC (in `metadata_json`) | 200 | External system posts terminal state back — resumes the parent `WorkflowInstance`. |
 
 ---
 

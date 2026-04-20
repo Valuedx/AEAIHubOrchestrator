@@ -25,6 +25,14 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `kb_documents` | Uploaded documents | Yes |
 | `kb_chunks` | Embedded text chunks (pgvector) | Yes |
 | `embedding_cache` | Precomputed intent embeddings (pgvector) | Yes |
+| `conversation_episodes` | Issue-scoped conversation memory with checkpointed summaries (0013) | Yes |
+| `scheduled_triggers` | Atomic claim rows for Beat schedule-fire dedupe (0015) | No (cross-tenant) |
+| `async_jobs` | External-system job tracking for AE-style suspended nodes (0017) | No (FK-scoped via instance) |
+| `tenant_integrations` | Per-tenant connection defaults for external systems (0017) | Yes |
+| `tenant_mcp_servers` | Per-tenant MCP server registry (0019) | Yes |
+| `tenant_mcp_server_tool_fingerprints` | Forward-declared side table for MCP-06 drift detection (0019) | No (FK-scoped) |
+
+**DV-07 (migration 0018):** `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` — when false, Schedule Triggers skip the workflow. Manual Run, PATCH, and duplicate all stay active.
 
 ---
 
@@ -418,6 +426,13 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0010 | `0010_add_embedding_cache.py` | `embedding_cache` table with pgvector `VECTOR` column, HNSW cosine index, and RLS |
 | 0011 | `0011_add_subworkflow_parent_tracking.py` | Add `parent_instance_id` (FK), `parent_node_id` columns and `ix_wf_inst_parent` index to `workflow_instances` |
 | 0012 | `0012_advanced_memory_hard_cutover.py` | Hard-cutover to normalized conversation rows; add session summary metadata, `conversation_messages`, `memory_profiles`, `memory_records`, `entity_facts`, vector indexes, and backfill/drop legacy JSONB transcripts |
+| 0013 | `0013_conversation_episodes_checkpointed_summaries.py` | `conversation_episodes` table + checkpointed summary metadata for issue-scoped conversation memory |
+| 0014 | `0014_rls_memory_tables.py` | Enable RLS on the memory tables added in 0012 |
+| 0015 | `0015_scheduled_triggers.py` | `scheduled_triggers` table — DB-enforced dedupe for Celery Beat fires (UNIQUE `(workflow_def_id, scheduled_for)`) |
+| 0016 | `0016_pgvector_dim_and_hnsw.py` | Pin vector column dimensions to 1536 and rebuild HNSW indexes |
+| 0017 | `0017_async_jobs_and_tenant_integrations.py` | `async_jobs` (AutomationEdge poll queue, Diverted pause-the-clock), `tenant_integrations` (per-tenant connection defaults), `workflow_instances.suspended_reason` column |
+| 0018 | `0018_workflow_is_active.py` | **DV-07** — `workflow_definitions.is_active BOOLEAN` (default TRUE; existing rows backfill active). Schedule Triggers skip `is_active=false` workflows. |
+| 0019 | `0019_tenant_mcp_servers.py` | **MCP-02** — `tenant_mcp_servers` (per-tenant MCP registry with `auth_mode` discriminator + partial unique index enforcing one default per tenant) + empty `tenant_mcp_server_tool_fingerprints` side table forward-declared for MCP-06 drift detection |
 
 ### Running migrations
 

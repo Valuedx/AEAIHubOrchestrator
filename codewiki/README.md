@@ -13,7 +13,8 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [Node Types](node-types.md) | Registry of trigger, agent, action, logic, knowledge, notification, and NLP nodes with config schemas |
 | [Notification Guide](notification-guide.md) | User guide for the Notification node — channel setup, config value sources, examples, troubleshooting |
 | [AutomationEdge Node](automationedge.md) | Async-external RPA integration — setup, both completion modes (Beat poll / webhook), Diverted pause-the-clock, cancellation caveats, troubleshooting |
-| [Developer Workflow](dev-workflow.md) | Testing and iteration features — data pinning (DV-01), test single node (DV-02), sticky notes (DV-03), expression helpers (DV-04), hotkeys + cheatsheet (DV-06), and more |
+| [Developer Workflow](dev-workflow.md) | Sprint 2A developer-velocity features — data pinning (DV-01), test single node (DV-02), sticky notes (DV-03), expression helpers (DV-04), duplicate workflow (DV-05), hotkey cheatsheet (DV-06), active/inactive toggle (DV-07) |
+| [MCP Audit](mcp-audit.md) | Sprint 2B — current MCP client vs. 2025-06-18 spec; ranked gap list and the per-tenant server registry (MCP-01 + MCP-02) |
 | [RAG & Knowledge Base](rag-knowledge-base.md) | Vector stores, embedding providers, chunking strategies, ingestion and retrieval pipelines |
 | [Frontend Guide](frontend-guide.md) | React component tree, Zustand stores, canvas, toolbar, and sidebar |
 | [Deployment](deployment.md) | Docker Compose, environment variables, Celery, migrations |
@@ -31,7 +32,7 @@ AEAIHubOrchestrator/
 │   │   ├── models/     SQLAlchemy ORM models, including advanced memory tables
 │   │   ├── security/   JWT, vault, rate limiter, tenant helpers
 │   │   └── workers/    Celery app, tasks, Beat scheduler
-│   ├── alembic/        Migration scripts (0000 – 0012)
+│   ├── alembic/        Migration scripts (0000 – 0019)
 │   └── main.py         App entrypoint, router wiring
 ├── frontend/           React + Vite + React Flow
 │   └── src/

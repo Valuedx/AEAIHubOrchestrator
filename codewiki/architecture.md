@@ -77,7 +77,8 @@ AE AI Hub Orchestrator is a **no-code visual DAG workflow builder** for agentic 
 | **Entity Extractor** | `engine/entity_extractor.py` | Rule-based entity extraction (regex, enum, number, date, free_text) with LLM fallback |
 | **Embedding cache** | `engine/embedding_cache_helper.py` | DB-backed embedding cache with save-time precompute for intent vectors |
 | **LLM providers** | `engine/llm_providers.py` | OpenAI, Anthropic, Google GenAI abstraction |
-| **MCP client** | `engine/mcp_client.py` | Streamable HTTP MCP SDK client |
+| **MCP client** | `engine/mcp_client.py` | Streamable HTTP MCP SDK client. Session pool + list-tools cache keyed by `(tenant_id, server)` so tenants can't share warm connections. |
+| **MCP server resolver** | `engine/mcp_server_resolver.py` | **MCP-02** — picks the URL + headers for a tool call. Precedence: explicit `server_label` → tenant `is_default` row → `settings.mcp_server_url` env fallback. Resolves `{{ env.KEY }}` placeholders against the Secrets vault. |
 | **RAG engine** | `engine/chunker.py`, `embedding_provider.py`, `ingestor.py`, `retriever.py` | Document ingestion and retrieval pipelines |
 | **Vector stores** | `engine/vector_store/` | Pluggable backends: pgvector, FAISS |
 | **Workers** | `workers/tasks.py` | Celery tasks (workflow execution, document ingestion) |
@@ -97,7 +98,7 @@ AE AI Hub Orchestrator is a **no-code visual DAG workflow builder** for agentic 
 |---------|-------|---------|
 | PostgreSQL | `pgvector/pgvector:pg16` | Primary data store with vector extension |
 | Redis | `redis:7-alpine` | Celery broker/result backend (optional) |
-| MCP Server | External | Tool execution server the orchestrator calls as a client |
+| MCP Server(s) | External | Zero or more per-tenant MCP servers registered in `tenant_mcp_servers` (MCP-02). Nodes pick by `mcpServerLabel` config field. If no registry row exists for a tenant, the orchestrator falls back to the `MCP_SERVER_URL` env var so pre-MCP-02 tenants keep working untouched. See [MCP Audit](mcp-audit.md). |
 
 ## Request lifecycle
 

@@ -79,6 +79,7 @@ Iterative Reason-Act-Observe loop with MCP tool access.
 | `systemPrompt` | string | `""` | Jinja2 template |
 | `maxIterations` | integer | `10` | Max Reason-Act cycles |
 | `tools` | string[] | `[]` | MCP tool names; empty = auto-discover all |
+| `mcpServerLabel` | string | `""` | **MCP-02** — pick a server from the tenant's registry (Toolbar → Globe icon). Blank → tenant default → legacy `MCP_SERVER_URL` env-var fallback. |
 | `temperature` | number | `0.7` | Sampling temperature used on each reasoning step |
 | `maxTokens` | integer | `4096` | Maximum output tokens for each reasoning step |
 | `historyNodeId` | string | `""` | Optional `Load Conversation State` node ID. Empty = auto-detect first upstream history node |
@@ -139,14 +140,15 @@ Calls an LLM with a summary of the workflow's execution history and returns a st
 
 ### MCP Tool (`mcp_tool`)
 
-Calls a tool on the configured MCP server.
+Calls a tool on the resolved MCP server for this tenant.
 
 | Config field | Type | Default | Description |
 |-------------|------|---------|-------------|
 | `toolName` | string | `""` | MCP tool name |
 | `parameters` | object | `{}` | Fixed parameters; runtime outputs can override |
+| `mcpServerLabel` | string | `""` | **MCP-02** — pick a server from the tenant's registry (Toolbar → Globe icon). Blank → tenant default → legacy `MCP_SERVER_URL` env-var fallback. |
 
-**Output:** Tool execution result.
+**Output:** Tool execution result. See [MCP Audit](mcp-audit.md) for the resolver precedence chain and the auth-mode semantics applied before the call leaves the orchestrator.
 
 ### HTTP Request (`http_request`)
 
@@ -492,6 +494,23 @@ Extracts structured entities from text using rule-based patterns (regex, enum, n
 Expression: node_X.destination           → extracted value
 Condition: len(node_X.missing_required) > 0    → ask user for more info
 ```
+
+---
+
+## Annotation nodes
+
+### Sticky Note (`stickyNote`)
+
+**DV-03** — inline documentation for the canvas. Not executable. Sticky nodes live in `graph_json` alongside agenticNode entries but are filtered out by `dag_runner.parse_graph`, `validateWorkflow`, and `computeNodeStatuses`, so they never enter the execution ready queue and never produce logs.
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `text` | string | `""` | Inline-editable note text |
+| `color` | enum | `"yellow"` | `yellow`, `blue`, `green`, `pink`, `purple`, `grey` |
+
+**Storage shape:** `{ id: "sticky_<ts>_<rand>", type: "stickyNote", position, width, height, data: { text, color } }`.
+
+Created via **Shift+S** (viewport centre) or the toolbar sticky-note icon. Resizable via React Flow's `NodeResizer`. No ports, no handles, no dispatch. See [Developer Workflow — DV-03](dev-workflow.md) for the full design.
 
 ---
 

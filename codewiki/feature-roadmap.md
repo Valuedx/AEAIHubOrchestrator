@@ -2,6 +2,56 @@
 
 Gap analysis comparing AEAIHubOrchestrator against top DAG workflow builders for agentic AI: **LangGraph**, **Dify**, **n8n**, **Flowise**, **CrewAI**, and **Rivet**.
 
+> **Skip to:** [Recent releases](#recent-releases) · [Priority matrix](#priority-matrix) · [Pending backlog](#pending-backlog)
+
+---
+
+## Recent releases
+
+### Sprint 2A — Developer Velocity (DV-01 … DV-07) — done
+
+| # | Feature | Commit |
+|---|---------|--------|
+| DV-01 | Data pinning — short-circuit dispatch on a pinned node output | `1e7994b` |
+| DV-02 | Test a single node in isolation (uses DV-01 pins for upstream context) | `47ce5f8` |
+| DV-03 | Sticky notes on the canvas (non-executable annotations) | `dd0b510` |
+| DV-04 | Expression helpers library — 45 new `safe_eval` functions | `8899574` |
+| DV-05 | Duplicate workflow with copy-suffix collision handling | `625adbc` |
+| DV-06 | Hotkey cheatsheet (`?`) + Shift+S / `1` / Tab shortcuts | `dd0b510` |
+| DV-07 | Active / Inactive toggle — Schedule Triggers stop firing on inactive workflows | `625adbc` |
+
+See [Developer Workflow](dev-workflow.md) for each feature's UI flow, storage semantics, and test coverage.
+
+### Sprint 2B — MCP Maturity (MCP-01 … MCP-02) — done
+
+| # | Feature | Commit |
+|---|---------|--------|
+| MCP-01 | Audit current client vs. 2025-06-18 spec + ranked gap list | `091403c` |
+| MCP-02 | Per-tenant MCP server registry (`tenant_mcp_servers`) + resolver + dialog | `f2327e6` |
+
+See [MCP Audit](mcp-audit.md) for findings and the per-tenant registry design.
+
+---
+
+## Pending backlog
+
+### MCP Maturity — next tickets (from [mcp-audit.md §6](mcp-audit.md))
+
+Ranked by impact-in-our-context:
+
+| # | Title | Why it matters |
+|---|-------|----------------|
+| MCP-03 | OAuth 2.1 resource-server client | Required to talk to any spec-compliant hosted MCP service. Registry already has `auth_mode='oauth_2_1'` column. |
+| MCP-04 | HITL confirmation gate for destructive tools | Biggest production-risk gap today — we ignore `destructiveHint`. |
+| MCP-05 | Structured tool output + `outputSchema` validation | Cheap; fixes lossy result parsing. |
+| MCP-06 | Tool-definition fingerprinting + drift detection | Mitigates tool-poisoning. Side table already exists from migration 0019. |
+| MCP-07 | Elicitation support (`elicitation/create` → HITL suspend) | Unlocks interactive MCP tools. |
+| MCP-08 | `notifications/tools/list_changed` subscription + cache invalidation | Closes the 5-minute staleness window. |
+| MCP-09 | `HTTP DELETE` session release on shutdown + resumability integration test | Politeness + confidence. |
+| MCP-10 | Bump protocol version to `2025-11-25` | Non-breaking; picks up OIDC discovery, scope-minimization, icons. |
+
+Deferred: sampling (MCP-11), resources / prompts primitives (MCP-12). See [mcp-audit.md §6](mcp-audit.md) for full rationale.
+
 ---
 
 ## Priority matrix
