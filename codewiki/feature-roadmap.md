@@ -68,16 +68,21 @@ Deferred: sampling (MCP-11), resources / prompts primitives (MCP-12). See [mcp-a
 | **P1** | 8 | Built-in Observability Dashboard | Dify, LangSmith | Planned |
 | **P1** | 9 | Per-Node Error Handling & Retry | n8n | Planned |
 | **P1** | 10 | Dynamic Fan-Out Map-Reduce | LangGraph | Planned |
+| **P1** | 21 | MCP Client Maturity (OAuth 2.1, elicitation, structured output, drift detection) | Claude Desktop, Cursor, 2026 ecosystem | **Partial** |
+| **P1** | 22 | Tool Trust & Safety UX (annotation-driven destructive-tool gate) | Spec MUST; 2025 OWASP-AI flagged | Planned |
 | **P2** | 11 | Advanced Memory (semantic, entity) | CrewAI, LangGraph | **Done** |
 | **P2** | 12 | Data Transformation Nodes | n8n, Dify | Planned |
 | **P2** | 13 | Evaluation / Testing Framework | LangSmith, Dify | Planned |
 | **P2** | 14 | RBAC / Team Collaboration | Dify | Planned |
 | **P2** | 15 | Marketplace / Community Nodes | n8n, Flowise | Planned |
 | **P2** | 16 | Multi-Way Branching (Switch Node) | n8n, Dify | Planned |
-| **P3** | 17 | Canvas UX (auto-layout, groups, comments) | Rivet, n8n | Planned |
+| **P3** | 17 | Canvas UX (auto-layout, groups, comments) | Rivet, n8n | **Partial** |
 | **P3** | 18 | API Playground / Embed Widgets | Dify, Flowise | Planned |
-| **P3** | 19 | Environment / Variable Management UI | n8n, Dify | Planned |
+| **P3** | 19 | Environment / Variable Management UI | n8n, Dify | **Partial** |
 | **P3** | 20 | Execution Analytics Dashboard | n8n, Dify | Planned |
+| **P3** | 23 | Real-time Collaboration (presence, comments) | Dify, Figma-class | Planned |
+| **P3** | 24 | Workflow Authoring Copilot (NL → draft) | Dify AI copilot, 2026 trend | Planned |
+| **P3** | 25 | MCP Server Catalogue (curated + verified fingerprints) | Claude Desktop server registry | Planned |
 
 ---
 
@@ -159,6 +164,27 @@ We have instance-level retry from a failed node but no per-node retry policies, 
 
 ForEach runs downstream nodes per-element but lacks dynamic fan-out where the number of parallel branches is determined at runtime by data shape, not graph structure. True parallel map-reduce with configurable concurrency limits would be valuable.
 
+#### 21. MCP Client Maturity — Partial
+
+> The MCP ecosystem standardized OAuth 2.1 resource-server auth in March 2025, added structured tool output and elicitation in 2025-06-18, and is shifting to OIDC discovery + scope-minimization in 2025-11-25. Claude Desktop, Cursor, and Continue all ship most of these; we ship tools/call + tools/list only.
+
+**Progress (MCP-01, MCP-02 done):** Full audit of our client against the 2025-06-18 spec lives in [MCP Audit](mcp-audit.md). Per-tenant MCP server registry (MCP-02) replaces the single-server env-var config with `tenant_mcp_servers` — each row captures URL, auth mode (`none` / `static_headers` / `oauth_2_1`), and optional `{{ env.KEY }}` header placeholders resolved through the Secrets vault. Session pool + list-tools cache are now keyed by `(tenant, server)` so tenants can't share warm connections.
+
+**Remaining (MCP-03..MCP-10):** OAuth 2.1 resource-server client (MCP-03; column exists, runtime raises today) · structured tool output + outputSchema validation (MCP-05) · elicitation → HITL suspend (MCP-07) · tool-definition fingerprint drift (MCP-06; empty side table already exists from migration 0019) · `notifications/tools/list_changed` cache invalidation (MCP-08) · `HTTP DELETE` session release + resumability test (MCP-09) · protocol-version bump to 2025-11-25 (MCP-10).
+
+#### 22. Tool Trust & Safety UX — Planned
+
+> The MCP spec declares that "applications **SHOULD** present confirmation prompts to the user for operations, to ensure a human is in the loop" and "clients **MUST** consider tool annotations to be untrusted unless they come from trusted servers." Today we ignore `destructiveHint` / `readOnlyHint` / `idempotentHint` / `openWorldHint` entirely. 2025-era advisories (tool poisoning, rug-pull via description mutation, confused-deputy via token passthrough) add pressure.
+
+A `delete_customer` tool is currently one config field away from firing unattended on a scheduled trigger. Closing this means:
+
+1. Surface tool annotations on the MCP Tool node at design time so workflow authors see the risk.
+2. Gate destructive tool calls (`destructiveHint: true` AND the server is not on a trust-list) behind a HITL suspend when the parent workflow is not marked autonomous. Piggybacks on the existing `suspended_reason` / resume path.
+3. Show the operator the tool call's inputs *before* it fires (spec: prevents accidental exfiltration).
+4. Pair with MCP-06 fingerprint drift so a mutated tool description re-prompts for consent.
+
+Together with MCP-06, this is the largest production-risk improvement available without new infrastructure.
+
 ---
 
 ### P2 — Moderate gaps (nice-to-have, common in mature tools)
@@ -205,16 +231,17 @@ Only binary true/false Condition nodes exist. No multi-way switch/case routing. 
 
 ### P3 — Lower priority (polish and advanced features)
 
-#### 17. Canvas UX Enhancements — Planned
+#### 17. Canvas UX Enhancements — Partial
 
 > Rivet and n8n have advanced canvas features.
 
-Missing features:
+**Shipped (Sprint 2A):** Comment/annotation nodes via **Sticky Notes** (DV-03) with six preset colours, non-executable, filtered at parse time. **Hotkey cheatsheet** (DV-06) surfaces every canvas shortcut behind `?` with shared `isTextEditingTarget` guard. Minimap + pannable zoom exists on the main canvas. **Duplicate workflow** (DV-05) with collision-safe copy-suffix handling.
+
+**Remaining:**
 - Auto-layout algorithm for graphs
-- Group/frame nodes for visually organizing workflow sections
-- Comment/annotation nodes
-- Copy-paste of node groups across workflows
-- Minimap or overview panel for large graphs
+- Group/frame nodes for visually organising workflow sections
+- Copy-paste of node groups across workflows (today: save as template, load as starter)
+- Multi-select + bulk-edit on the canvas
 
 #### 18. API Playground / Chatbot Embed — Planned
 
@@ -222,17 +249,37 @@ Missing features:
 
 No equivalent exists beyond the bridge/client pattern. A test console in the UI for sending payloads and viewing responses, plus embeddable chat widgets, would improve developer experience.
 
-#### 19. Environment / Variable Management UI — Planned
+#### 19. Environment / Variable Management UI — Partial
 
 > n8n and Dify have UIs for managing environment variables and workflow-level variables.
 
-`{{ env.* }}` resolution works, but there's no UI to view, create, or edit environment variables or workflow-level variables. This is closely related to gap #4 (Credential Management UI) and could be addressed together.
+**Shipped:** `{{ env.KEY }}` resolution works end-to-end. The **Secrets dialog** (KeyRound icon) handles Fernet-encrypted tenant-scoped env vars. The **Tenant Integrations dialog** (Bot icon) and **MCP Servers dialog** (Globe icon, MCP-02) both surface `{{ env.* }}` placeholders in their connection configs so operators register a secret once and reference it from multiple places.
+
+**Remaining:** No UI for workflow-scoped variables (today: pass via `trigger_payload` or derive in an early `safe_eval` node). No "variable autocomplete" in expression fields.
 
 #### 20. Execution Analytics Dashboard — Planned
 
 > n8n and Dify provide execution analytics with success rates, duration charts, and cost tracking.
 
 No searchable/filterable audit log across all workflow executions. No execution analytics (success rates, average duration, cost over time). Adding aggregate metrics and a dashboard view would support operations and capacity planning.
+
+#### 23. Real-time Collaboration (presence, comments) — Planned
+
+> Dify has team workspaces but no real-time co-editing. Figma-class multiplayer on the canvas is the direction the category is heading.
+
+Closely related to #14 (RBAC / Team Collaboration) but distinct: RBAC is *static* — who may edit. Collaboration is *live* — two editors see each other's cursors, per-node comment threads that persist across saves, "someone else is editing this node" locks. Requires a WebSocket broadcast layer (the SSE path is one-way) and per-node presence/comment storage. Would layer cleanly on top of the `workflow_snapshots` history — threads could anchor to a node id + version.
+
+#### 24. Workflow Authoring Copilot (NL → draft workflow) — Planned
+
+> Dify's AI Agent copilot can draft and refine workflows from a natural-language prompt. Anthropic's Claude Code has begun embedding this pattern for tool-chain generation.
+
+Today, authoring is drag-and-drop only. A copilot that accepts "build me a classifier that routes refund requests to AE and everything else to an LLM reply" and produces a draft graph would shorten the ramp for non-builder users. Architecture: a tenant-scoped LLM node chain that reads the current `node_registry.json`, emits a candidate `graph_json`, validates against `config_validator`, then opens it on the canvas as an unsaved draft. High-leverage combined with our existing **Test single node** (DV-02) probe — the copilot can iterate on a node's config without end-to-end runs.
+
+#### 25. MCP Server Catalogue — Planned
+
+> Claude Desktop ships a curated list of official MCP servers (filesystem, brave-search, github, …). Cursor and Continue extend similar lists. Each is one click to install.
+
+Natural pairing with MCP-02 (the registry is there; seed it). A catalogue UI that lists well-known public MCP servers, each with a verified fingerprint (pairs with MCP-06 drift detection), one-click "Add to tenant" action, and an indicator if the server requires OAuth (pairs with MCP-03). Lower-risk than a general node marketplace (#15) because each entry's surface area is bounded by the MCP protocol.
 
 ---
 
@@ -245,7 +292,7 @@ Features where AEAIHubOrchestrator is competitive or ahead:
 | **A2A Protocol** | First-class inter-agent delegation that most competitors lack natively |
 | **NLP Nodes** | Dedicated Intent Classifier (hybrid scoring) and Entity Extractor (rule-based + LLM fallback) with optional embedding caching |
 | **Advanced Memory** | Normalized conversation storage, rolling summaries, semantic/episodic/entity memory, profile-driven prompt assembly, and inspection APIs |
-| **MCP Integration** | Extensible tool discovery via a standard protocol |
+| **MCP Integration** | Per-tenant server registry (MCP-02) with auth-mode discriminator + `{{ env.KEY }}` vault indirection. Remaining gaps (OAuth, elicitation, structured output, drift detection) are named in [MCP Audit](mcp-audit.md) and scheduled as MCP-03..MCP-10. |
 | **HITL + Pause/Resume/Cancel** | Richer operator control than most visual builders |
 | **Checkpointing + Debug Replay** | On par with LangGraph's checkpointing |
 | **Deterministic Mode** | Unique feature for reproducible testing (sets LLM temperature to 0) |
@@ -253,3 +300,6 @@ Features where AEAIHubOrchestrator is competitive or ahead:
 | **Version History + Rollback** | On par with Dify |
 | **Portable Architecture** | Easier to deploy than LangGraph Cloud; fully self-contained |
 | **RAG / Knowledge Base** | Pluggable vector stores, multiple embedding providers, four chunking strategies |
+| **AutomationEdge Async-External Integration** | Pattern A webhook + Pattern C Beat poll both resume through the same `finalize_terminal` path. Diverted pause-the-clock timeout model. Tenant-scoped connection defaults via `tenant_integrations`. |
+| **Developer Velocity (Sprint 2A)** | Pin node outputs and test a single node in isolation (DV-01 + DV-02) — the edit→run→inspect loop no longer requires end-to-end runs. Plus 45 `safe_eval` expression helpers (DV-04), sticky notes (DV-03), duplicate workflow (DV-05), hotkey cheatsheet (DV-06), and active/inactive toggle (DV-07). See [Developer Workflow](dev-workflow.md). |
+| **Tenant-scoped MCP Registry (MCP-02)** | Per-tenant MCP server registration with session-pool isolation across tenants and a forward-declared fingerprint side table for drift detection. Supports `none` and `static_headers` auth modes today; registry schema ready for OAuth without migration churn. |
