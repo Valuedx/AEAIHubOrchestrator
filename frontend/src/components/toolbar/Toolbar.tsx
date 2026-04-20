@@ -23,6 +23,7 @@ import {
   Keyboard,
   Power,
   PowerOff,
+  Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +39,7 @@ import { TemplateGalleryDialog } from "@/components/toolbar/TemplateGalleryDialo
 import { KnowledgeBaseDialog } from "@/components/toolbar/KnowledgeBaseDialog";
 import { SecretsDialog } from "@/components/toolbar/SecretsDialog";
 import { IntegrationsDialog } from "@/components/toolbar/IntegrationsDialog";
+import { McpServersDialog } from "@/components/toolbar/McpServersDialog";
 import { HotkeyCheatsheet } from "@/components/toolbar/HotkeyCheatsheet";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
@@ -64,6 +66,7 @@ export function Toolbar() {
   const [kbOpen, setKbOpen] = useState(false);
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
+  const [mcpServersOpen, setMcpServersOpen] = useState(false);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
 
   // DV-06 — ? opens the hotkey cheatsheet from anywhere on the page.
@@ -294,6 +297,15 @@ export function Toolbar() {
         <Button
           variant="ghost"
           size="sm"
+          onClick={() => setMcpServersOpen(true)}
+          title="MCP Servers — per-tenant registry of tool-providing servers"
+        >
+          <Globe className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={handleAddSticky}
           title="Add sticky note (Shift+S)"
         >
@@ -376,6 +388,7 @@ export function Toolbar() {
       <KnowledgeBaseDialog open={kbOpen} onOpenChange={setKbOpen} />
       <SecretsDialog open={secretsOpen} onOpenChange={setSecretsOpen} />
       <IntegrationsDialog open={integrationsOpen} onOpenChange={setIntegrationsOpen} />
+      <McpServersDialog open={mcpServersOpen} onOpenChange={setMcpServersOpen} />
       <TemplateGalleryDialog open={templatesOpen} onOpenChange={setTemplatesOpen} />
       <WorkflowListDialog open={listOpen} onOpenChange={setListOpen} />
       <VersionHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} />

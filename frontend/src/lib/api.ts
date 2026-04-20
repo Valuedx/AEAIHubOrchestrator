@@ -429,6 +429,41 @@ export interface TenantIntegrationUpdate {
   is_default?: boolean;
 }
 
+// MCP-02 — per-tenant MCP server registry.
+// ``auth_mode``:
+//   * 'none'           — no auth
+//   * 'static_headers' — config_json.headers with {{ env.KEY }} placeholders
+//   * 'oauth_2_1'      — reserved (MCP-03); API accepts, runtime rejects
+export type McpAuthMode = "none" | "static_headers" | "oauth_2_1";
+
+export interface TenantMcpServerOut {
+  id: string;
+  tenant_id: string;
+  label: string;
+  url: string;
+  auth_mode: McpAuthMode;
+  config_json: Record<string, unknown>;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TenantMcpServerCreate {
+  label: string;
+  url: string;
+  auth_mode?: McpAuthMode;
+  config_json?: Record<string, unknown>;
+  is_default?: boolean;
+}
+
+export interface TenantMcpServerUpdate {
+  label?: string;
+  url?: string;
+  auth_mode?: McpAuthMode;
+  config_json?: Record<string, unknown>;
+  is_default?: boolean;
+}
+
 export interface KBChunkOut {
   content: string;
   score: number;
@@ -977,5 +1012,34 @@ export const api = {
 
   deleteIntegration(id: string): Promise<void> {
     return request(`/api/v1/tenant-integrations/${id}`, { method: "DELETE" });
+  },
+
+  // ---------------------------------------------------------------------------
+  // MCP-02 — per-tenant MCP server registry
+  // ---------------------------------------------------------------------------
+
+  listMcpServers(): Promise<TenantMcpServerOut[]> {
+    return request("/api/v1/tenant-mcp-servers");
+  },
+
+  createMcpServer(body: TenantMcpServerCreate): Promise<TenantMcpServerOut> {
+    return request("/api/v1/tenant-mcp-servers", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  updateMcpServer(
+    id: string,
+    body: TenantMcpServerUpdate,
+  ): Promise<TenantMcpServerOut> {
+    return request(`/api/v1/tenant-mcp-servers/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteMcpServer(id: string): Promise<void> {
+    return request(`/api/v1/tenant-mcp-servers/${id}`, { method: "DELETE" });
   },
 };

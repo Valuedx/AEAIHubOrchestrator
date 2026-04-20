@@ -242,7 +242,12 @@ def _handle_action(
     label = node_data.get("label", "")
 
     if config.get("toolName"):
-        return _call_mcp_tool(config["toolName"], config.get("parameters", {}), tenant_id)
+        return _call_mcp_tool(
+            config["toolName"],
+            config.get("parameters", {}),
+            tenant_id,
+            server_label=config.get("mcpServerLabel") or None,
+        )
 
     if config.get("url"):
         return _call_http(config)
@@ -252,15 +257,30 @@ def _handle_action(
 
 
 def _call_mcp_tool(
-    tool_name: str, parameters: dict, tenant_id: str
+    tool_name: str,
+    parameters: dict,
+    tenant_id: str,
+    *,
+    server_label: str | None = None,
 ) -> dict[str, Any]:
-    """Invoke a tool on the MCP server via Streamable HTTP transport."""
+    """Invoke a tool on the MCP server resolved for this tenant + label.
+
+    ``server_label`` is the optional ``mcpServerLabel`` config field
+    from the MCP Tool node. When absent, the resolver uses the
+    tenant's default server (or the legacy env-var URL when no
+    default is registered).
+    """
     from app.engine.mcp_client import call_tool
     from app.observability import span_tool, _NoOpSpan
     trace = _NoOpSpan()
 
     with span_tool(trace, tool_name=tool_name, arguments=parameters) as span:
-        result = call_tool(tool_name, parameters)
+        result = call_tool(
+            tool_name,
+            parameters,
+            tenant_id=tenant_id,
+            server_label=server_label,
+        )
         span.update(output=result)
         return result
 

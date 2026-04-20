@@ -338,6 +338,68 @@ class AsyncJob(Base):
     )
 
 
+class TenantMcpServer(Base):
+    """MCP-02 — per-tenant MCP server registration.
+
+    One row per server a tenant wants to route MCP Tool nodes to.
+    ``auth_mode`` discriminates how ``config_json`` is interpreted:
+
+        * ``none`` — bare URL, no auth; config_json is empty.
+        * ``static_headers`` — config_json.headers is a dict of HTTP
+          headers applied on every outbound request. Values may embed
+          ``{{ env.SECRET_NAME }}`` placeholders that are resolved at
+          call time via the Fernet-encrypted tenant_secrets vault.
+        * ``oauth_2_1`` — reserved for MCP-03. The column accepts the
+          value but the runtime currently raises NotImplementedError.
+
+    At most one row per tenant may have ``is_default=True`` — enforced
+    by the partial unique index ``ux_tenant_mcp_server_default`` from
+    migration 0019. Nodes with a blank ``mcpServerLabel`` resolve to
+    the default row; if no default exists, ``settings.mcp_server_url``
+    is used as a legacy fallback so pre-DV/MCP tenants keep working.
+    """
+
+    __tablename__ = "tenant_mcp_servers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    label = Column(String(128), nullable=False)
+    url = Column(String(1024), nullable=False)
+    auth_mode = Column(String(32), nullable=False, default="none")
+    config_json = Column(JSONB, nullable=False, default=dict)
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "label", name="uq_tenant_mcp_server_label"),
+    )
+
+
+class TenantMcpServerToolFingerprint(Base):
+    """MCP-06 forward declaration — SHA-256 of each tool's definition so
+    drift between fetches can be detected (tool-poisoning mitigation).
+
+    Empty at MCP-02. Populated by the audit path added in MCP-06.
+    """
+
+    __tablename__ = "tenant_mcp_server_tool_fingerprints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    server_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tenant_mcp_servers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tool_name = Column(String(256), nullable=False)
+    fingerprint_sha256 = Column(String(64), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("server_id", "tool_name", name="uq_mcp_tool_fingerprint"),
+    )
+
+
 class TenantIntegration(Base):
     """Per-tenant connection defaults for an external system.
 

@@ -2,6 +2,15 @@
 
 **MCP-01 — Sprint 2B**
 
+> **Status update (MCP-02 shipped):** the single-server env-var path
+> described in §1 is now a *fallback*, not the primary path. Operators
+> register per-tenant MCP servers via the Toolbar → Globe icon; see
+> the new "Per-tenant MCP server registry" section at the bottom of
+> this doc for the registry shape and resolver semantics. The backlog
+> in §6 is otherwise unchanged.
+
+
+
 This document audits `backend/app/engine/mcp_client.py` and the surfaces that depend on it against the [Model Context Protocol specification, revision 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18) and the 2025-11-25 follow-up revision. It names every meaningful gap and converts each into a ranked, actionable follow-up ticket. The intent is *not* to catch up on everything at once — half of what we're missing isn't load-bearing for our use cases — but to make the status visible so every future sprint can pick a gap off the top of the list deliberately.
 
 > **Reading order.** §1 summarises what we have today. §§2–5 walk the spec area-by-area with concrete "what we do" / "what the spec says" / "gap" deltas. §6 is the ranked backlog. §7 is the MCP-02 scoping note.
@@ -155,6 +164,78 @@ MCP-02 was originally scoped as "a `tenant_mcp_servers` table + CRUD + picker." 
 3. **The `settings.mcp_server_url` env path must keep working.** Add a synthetic "legacy fallback" registry row on first migration for any tenant that already has workflows referencing the default server — or, simpler, keep the env-var path as an implicit "unconfigured tenant" default and write the registry row only when the operator edits it.
 
 None of these block starting MCP-02; they constrain its schema. The audit closes here; MCP-02 begins when you're ready.
+
+---
+
+## 8. Per-tenant MCP server registry — MCP-02 as shipped
+
+### Operator flow
+
+1. Open the Toolbar → **Globe** icon.
+2. Click **Add server**. Give the server a label (used in node configs), its Streamable HTTP URL, and an auth mode.
+3. For `static_headers`, drop a block of `Name: value` headers. Values may embed `{{ env.KEY_NAME }}` placeholders — at call time the resolver substitutes them from the Fernet-encrypted Secrets vault, so raw tokens never live in the registry row.
+4. Tick **Use as default** if this server should serve every MCP Tool / ReAct Agent whose node config leaves `mcpServerLabel` blank. Only one default per tenant is allowed — the partial unique index `ux_tenant_mcp_server_default` enforces it at the DB layer.
+5. Reference the server from a node via the MCP Tool node's new `mcpServerLabel` config field (blank = default).
+
+### Resolution precedence
+
+`backend/app/engine/mcp_server_resolver.py::resolve_mcp_server` is the single source of truth. Precedence, highest first:
+
+1. Explicit `server_label` matches a row in `tenant_mcp_servers` for this tenant.
+2. The tenant's `is_default=True` row.
+3. `settings.mcp_server_url` — the pre-MCP-02 env-var fallback so tenants with zero registry rows keep working untouched.
+
+Auth-mode dispatch also lives in the resolver so `mcp_client` stays dumb:
+
+* `none` — no auth headers added.
+* `static_headers` — `config_json.headers` is read, `{{ env.KEY }}` placeholders resolved via `vault.get_tenant_secret(tenant, KEY)`. Missing secrets raise `McpServerResolutionError` loudly (better than sending an unauth'd request that a compliant server would 401 anyway).
+* `oauth_2_1` — accepted by the API so registry rows can be created ahead of MCP-03, but the runtime raises `McpServerResolutionError(not yet implemented)`. The auth-mode dropdown in the UI disables this option.
+
+### Schema (migration 0019)
+
+```
+tenant_mcp_servers
+  id            UUID PK
+  tenant_id     VARCHAR(64)        — RLS scope
+  label         VARCHAR(128)       — unique per (tenant_id, label)
+  url           VARCHAR(1024)
+  auth_mode     VARCHAR(32)        — CHECK IN ('none','static_headers','oauth_2_1')
+  config_json   JSONB              — { headers: {...} } for static_headers
+  is_default    BOOLEAN            — partial unique index: only one true per tenant
+  created_at, updated_at
+
+tenant_mcp_server_tool_fingerprints       -- forward-declared for MCP-06
+  id, server_id → tenant_mcp_servers(id), tool_name, fingerprint_sha256,
+  last_seen_at
+```
+
+Both tables enable RLS with the standard `tenant_id = current_setting('app.tenant_id', true)` policy (mirrors 0001 / 0014 / 0017).
+
+### Session pool changes
+
+`mcp_client._MCPSessionPool` is now keyed by `(tenant_id or "__env__", pool_key)` where `pool_key` is the server row id (or `"__env_fallback__"` for the env path). This isolates tenants from each other at the connection layer — a misbehaving server for tenant A can't pin a session that tenant B would pick up. The 300-second `list_tools` cache is keyed the same way.
+
+### Caller surface
+
+All three call sites now thread `tenant_id` + `server_label`:
+
+* `backend/app/api/tools.py::list_tools` — optional `?server_label=` query param.
+* `backend/app/engine/node_handlers.py::_call_mcp_tool` — reads `config.mcpServerLabel`.
+* `backend/app/engine/react_loop.py::_execute_tool` / `_load_tool_definitions` — reads `config.mcpServerLabel`.
+
+Leaving `server_label` unset keeps the old path — default row, or env-var fallback.
+
+### Related tests
+
+* `backend/tests/test_tenant_mcp_servers_api.py` — 14 tests: create / list / get / update / delete, 409 on label collision, default-swapping clears the prior default in the same transaction, 422 on invalid auth_mode, oauth_2_1 accepted at the API layer.
+* `backend/tests/test_mcp_server_resolver.py` — 8 tests: env fallback for `tenant_id=None`, explicit-label hit, missing label raises, blank label → default, blank label with no default → env, static_headers resolves `{{ env.KEY }}`, missing secret raises loud, oauth_2_1 raises `not yet implemented`.
+
+### What's intentionally NOT in MCP-02
+
+* **OAuth flow itself** — column exists, runtime rejects. That's MCP-03.
+* **Dropdown picker** on the MCP Tool node config — today `mcpServerLabel` is a plain text field (matching the `integrationLabel` precedent on the AutomationEdge node). A picker is a refinement, not a blocker.
+* **Fingerprint population** — the side table is empty. Written by MCP-06's drift-detection path.
+* **Auto-invalidation of the tool-def cache** on registry CRUD. 5-minute staleness window remains. MCP-08 will close it properly via `notifications/tools/list_changed`.
 
 ---
 

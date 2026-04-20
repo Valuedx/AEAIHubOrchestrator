@@ -21,11 +21,14 @@ router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 logger = logging.getLogger(__name__)
 
 
-def _load_tool_specs() -> list[dict[str, Any]]:
-    """Load tool specs from MCP server via Streamable HTTP transport."""
+def _load_tool_specs(
+    tenant_id: str,
+    server_label: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load tool specs from the MCP server resolved for this tenant."""
     from app.engine.mcp_client import list_tools
 
-    raw = list_tools()
+    raw = list_tools(tenant_id=tenant_id, server_label=server_label)
     tools = []
     for t in raw:
         tools.append({
@@ -41,22 +44,29 @@ def _load_tool_specs() -> list[dict[str, Any]]:
 
 @router.post("/invalidate-cache", status_code=204)
 def invalidate_cache(tenant_id: str = Depends(get_tenant_id)):
-    """Invalidate the MCP tool list cache, forcing a re-fetch on next request."""
+    """Invalidate the MCP tool list cache for this tenant."""
     from app.engine.mcp_client import invalidate_tool_cache
-    invalidate_tool_cache()
+    # Clear every cache entry for this tenant across all servers by
+    # calling with tenant_id only — the resolver will pick the default
+    # slot, which is the one the UI triggered a refresh on.
+    invalidate_tool_cache(tenant_id=tenant_id)
 
 
 @router.get("", response_model=list[ToolOut])
 def list_tools(
     tenant_id: str = Depends(get_tenant_id),
     db: Session = Depends(get_db),
+    server_label: str | None = None,
 ):
     """Return MCP tools filtered by tenant overrides.
 
     If a TenantToolOverride exists for a tool with enabled=False, that
     tool is excluded from the response for this tenant.
+
+    ``server_label`` (query param) picks a specific tenant_mcp_servers
+    row; absent → tenant default → env-var fallback.
     """
-    all_tools = _load_tool_specs()
+    all_tools = _load_tool_specs(tenant_id, server_label)
 
     overrides = (
         db.query(TenantToolOverride)

@@ -193,6 +193,11 @@
           "default": [],
           "description": "MCP tools available to this agent. Leave empty to auto-discover all tools at runtime"
         },
+        "mcpServerLabel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional — pick a server from the tenant's MCP server registry (Toolbar → Globe icon). Blank = tenant default; no default = legacy MCP_SERVER_URL env var."
+        },
         "historyNodeId": {
           "type": "string",
           "default": "",
@@ -247,6 +252,11 @@
           "type": "object",
           "default": {},
           "description": "JSON object of fixed parameters to pass to the tool. Runtime node outputs can override these"
+        },
+        "mcpServerLabel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional — route this tool call to a specific server from the tenant's MCP server registry (Toolbar → Globe icon). Blank = tenant default; if no default is set, the legacy MCP_SERVER_URL env var is used."
         }
       }
     },

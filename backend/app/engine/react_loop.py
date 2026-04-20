@@ -36,6 +36,7 @@ def run_react_loop(
     raw_prompt = config.get("systemPrompt", "")
     max_iterations = min(int(config.get("maxIterations", 10)), _MAX_ITERATIONS_HARD_CAP)
     tool_names: list[str] = config.get("tools", [])
+    mcp_server_label: str | None = config.get("mcpServerLabel") or None
     temperature = float(config.get("temperature", 0.7))
     max_tokens = int(config.get("maxTokens", 4096))
 
@@ -57,7 +58,11 @@ def run_react_loop(
     finally:
         db.close()
 
-    tool_defs = _load_tool_definitions(tool_names if tool_names else None)
+    tool_defs = _load_tool_definitions(
+        tool_names if tool_names else None,
+        tenant_id=tenant_id,
+        server_label=mcp_server_label,
+    )
 
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     iterations: list[dict[str, Any]] = []
@@ -97,7 +102,10 @@ def run_react_loop(
             tool_args = tc["arguments"]
             logger.info("ReAct calling tool: %s(%s)", tool_name, json.dumps(tool_args)[:200])
 
-            result = _execute_tool(tool_name, tool_args, tenant_id)
+            result = _execute_tool(
+                tool_name, tool_args, tenant_id,
+                server_label=mcp_server_label,
+            )
             tool_results.append({
                 "tool_call_id": tc.get("id", tool_name),
                 "name": tool_name,
@@ -131,21 +139,36 @@ def run_react_loop(
 # Tool execution
 # ---------------------------------------------------------------------------
 
-def _execute_tool(tool_name: str, arguments: dict, tenant_id: str) -> Any:
-    """Execute a tool via MCP Streamable HTTP transport."""
+def _execute_tool(
+    tool_name: str,
+    arguments: dict,
+    tenant_id: str,
+    *,
+    server_label: str | None = None,
+) -> Any:
+    """Execute a tool on the MCP server resolved for this tenant + label."""
     from app.engine.mcp_client import call_tool
-    return call_tool(tool_name, arguments)
+    return call_tool(
+        tool_name, arguments,
+        tenant_id=tenant_id,
+        server_label=server_label,
+    )
 
 
-def _load_tool_definitions(tool_names: list[str] | None) -> list[dict[str, Any]]:
-    """Load tool definitions from MCP server via Streamable HTTP.
+def _load_tool_definitions(
+    tool_names: list[str] | None,
+    *,
+    tenant_id: str,
+    server_label: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load tool definitions from the MCP server resolved for this tenant.
 
-    If tool_names is None (empty config), auto-discovers all tools from MCP.
-    Returns OpenAI-style function definitions that can be adapted per provider.
+    If tool_names is None (empty config), auto-discovers all tools.
+    Returns OpenAI-style function definitions.
     """
     from app.engine.mcp_client import get_openai_style_tool_defs, list_tools
     if tool_names is None:
-        raw = list_tools()
+        raw = list_tools(tenant_id=tenant_id, server_label=server_label)
         return [
             {
                 "type": "function",
@@ -157,7 +180,11 @@ def _load_tool_definitions(tool_names: list[str] | None) -> list[dict[str, Any]]
             }
             for t in raw
         ]
-    return get_openai_style_tool_defs(tool_names)
+    return get_openai_style_tool_defs(
+        tool_names,
+        tenant_id=tenant_id,
+        server_label=server_label,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from app.api.memory import router as memory_router
 from app.api.secrets import router as secrets_router
 from app.api.async_jobs import router as async_jobs_router
 from app.api.tenant_integrations import router as tenant_integrations_router
+from app.api.tenant_mcp_servers import router as tenant_mcp_servers_router
 from app.security.rate_limiter import limiter
 
 logging.basicConfig(
@@ -57,6 +58,11 @@ app.include_router(
     tenant_integrations_router,
     prefix="/api/v1/tenant-integrations",
     tags=["tenant-integrations"],
+)
+app.include_router(
+    tenant_mcp_servers_router,
+    prefix="/api/v1/tenant-mcp-servers",
+    tags=["tenant-mcp-servers"],
 )
 
 if settings.oidc_enabled:

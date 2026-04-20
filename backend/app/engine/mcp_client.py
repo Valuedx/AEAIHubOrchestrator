@@ -1,13 +1,23 @@
-"""MCP client using Streamable HTTP transport with connection pooling.
+"""MCP client over Streamable HTTP with a per-(tenant, server) session pool.
 
-Connects to a configured MCP server via the standard MCP protocol over
-Streamable HTTP.
+MCP-02 made this module tenant-aware. The request shape is:
 
-V0.9: Session pool maintains up to N warm connections to reduce per-call
-connection overhead.  Falls back to per-call sessions if pool is unavailable.
+    call_tool(tool_name, arguments, *, tenant_id=None, server_label=None)
+    list_tools(*, tenant_id=None, server_label=None)
 
-The MCP server must be running with ``--transport streamable-http``.
-Default endpoint: ``http://localhost:8000/mcp``
+``tenant_id`` is optional to keep internal paths that don't have tenant
+context working (they fall back to ``settings.mcp_server_url``). When
+both ``tenant_id`` and ``server_label`` are passed, the
+``mcp_server_resolver`` looks the row up in ``tenant_mcp_servers`` and
+returns a concrete URL + headers. An empty ``server_label`` resolves to
+the tenant's ``is_default`` row or, if none exists, the env-var fallback
+so pre-MCP-02 tenants keep working unchanged.
+
+Pools and caches are keyed by ``(tenant_id or '__env__', pool_key)``
+where ``pool_key`` is the server's row id (or ``'__env_fallback__'``
+for the env path). This isolates tenants from each other at the
+connection layer so a misbehaving server for tenant A can't pin a
+session that tenant B would pick up.
 """
 
 from __future__ import annotations
@@ -17,22 +27,28 @@ import json
 import logging
 from typing import Any
 
-from app.config import settings
+from app.engine.mcp_server_resolver import (
+    ResolvedMcpServer,
+    resolve_mcp_server,
+)
 
 logger = logging.getLogger(__name__)
 
 _TOOL_CACHE_TTL = 300  # seconds
-_tool_defs_cache: tuple[float, list[dict[str, Any]]] | None = None
+# cache_key → (timestamp, tool_defs)
+_tool_defs_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 
 
 # ---------------------------------------------------------------------------
-# Session pool (V0.9 — Component 3)
+# Session pools, keyed by (tenant_id, pool_key)
 # ---------------------------------------------------------------------------
+
 
 class _MCPSessionPool:
-    """Maintains a pool of warm MCP client sessions."""
+    """Maintains a pool of warm MCP client sessions for a single target."""
 
-    def __init__(self, max_size: int = 4):
+    def __init__(self, target: ResolvedMcpServer, max_size: int = 4):
+        self._target = target
         self._max_size = max_size
         self._available: asyncio.Queue | None = None
         self._created = 0
@@ -43,36 +59,33 @@ class _MCPSessionPool:
             self._available = asyncio.Queue(maxsize=self._max_size)
 
     async def acquire(self):
-        """Get a (read, write) transport pair from the pool or create new."""
         await self._ensure_queue()
 
-        # Try to get an existing session
         if not self._available.empty():
             return await self._available.get()
 
-        # Create a new session if under limit
         async with self._lock:
             if self._created < self._max_size:
                 self._created += 1
                 return await self._create_session()
 
-        # Pool exhausted — wait for one to be returned
         return await self._available.get()
 
     async def release(self, session_tuple):
-        """Return a session to the pool."""
         if self._available is not None:
             try:
                 self._available.put_nowait(session_tuple)
             except asyncio.QueueFull:
-                # Pool is full, discard this session
                 pass
 
     async def _create_session(self):
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        transport = streamablehttp_client(url=settings.mcp_server_url)
+        transport = streamablehttp_client(
+            url=self._target.url,
+            headers=self._target.headers or None,
+        )
         read, write, _ = await transport.__aenter__()
         session = ClientSession(read, write)
         await session.__aenter__()
@@ -80,7 +93,6 @@ class _MCPSessionPool:
         return (session, transport)
 
     async def shutdown(self):
-        """Close all pooled sessions."""
         if self._available is None:
             return
         while not self._available.empty():
@@ -96,32 +108,50 @@ class _MCPSessionPool:
         self._created = 0
 
 
-_pool = _MCPSessionPool(max_size=settings.mcp_pool_size)
+# cache_key → pool
+_pools: dict[tuple[str, str], _MCPSessionPool] = {}
+
+
+def _pool_for(target: ResolvedMcpServer, tenant_id: str | None) -> _MCPSessionPool:
+    from app.config import settings
+
+    key = (tenant_id or "__env__", target.pool_key)
+    pool = _pools.get(key)
+    if pool is None:
+        pool = _MCPSessionPool(target, max_size=settings.mcp_pool_size)
+        _pools[key] = pool
+    return pool
 
 
 # ---------------------------------------------------------------------------
 # Core async operations
 # ---------------------------------------------------------------------------
 
+
 async def _call_tool_async(
     tool_name: str,
     arguments: dict[str, Any],
+    target: ResolvedMcpServer,
+    tenant_id: str | None,
 ) -> Any:
-    """Call an MCP tool, using pooled session if available."""
+    pool = _pool_for(target, tenant_id)
     try:
-        session_tuple = await _pool.acquire()
+        session_tuple = await pool.acquire()
         session, transport = session_tuple
         try:
             result = await session.call_tool(tool_name, arguments=arguments)
         finally:
-            await _pool.release(session_tuple)
+            await pool.release(session_tuple)
     except Exception:
-        # Fallback to per-call session if pool fails
+        # Fallback to per-call session if pool fails.
         logger.debug("Pool acquire failed, falling back to per-call session")
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        async with streamablehttp_client(url=settings.mcp_server_url) as (read, write, _):
+        async with streamablehttp_client(
+            url=target.url,
+            headers=target.headers or None,
+        ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(tool_name, arguments=arguments)
@@ -138,21 +168,27 @@ async def _call_tool_async(
         return {"result": raw_text}
 
 
-async def _list_tools_async() -> list[dict[str, Any]]:
-    """List all MCP tools, using pooled session if available."""
+async def _list_tools_async(
+    target: ResolvedMcpServer,
+    tenant_id: str | None,
+) -> list[dict[str, Any]]:
+    pool = _pool_for(target, tenant_id)
     try:
-        session_tuple = await _pool.acquire()
+        session_tuple = await pool.acquire()
         session, transport = session_tuple
         try:
             result = await session.list_tools()
         finally:
-            await _pool.release(session_tuple)
+            await pool.release(session_tuple)
     except Exception:
         logger.debug("Pool acquire failed for list_tools, falling back")
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        async with streamablehttp_client(url=settings.mcp_server_url) as (read, write, _):
+        async with streamablehttp_client(
+            url=target.url,
+            headers=target.headers or None,
+        ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.list_tools()
@@ -168,11 +204,11 @@ async def _list_tools_async() -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Sync wrappers (safe to call from Celery workers / FastAPI sync endpoints)
+# Sync wrappers
 # ---------------------------------------------------------------------------
 
+
 def _get_or_create_loop() -> asyncio.AbstractEventLoop:
-    """Get the running event loop or create a new one for sync contexts."""
     try:
         loop = asyncio.get_running_loop()
         return loop
@@ -182,76 +218,118 @@ def _get_or_create_loop() -> asyncio.AbstractEventLoop:
         return loop
 
 
-def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    """Synchronous wrapper: call an MCP tool via Streamable HTTP."""
+def _run_async(coro, timeout: float):
+    loop = _get_or_create_loop()
+    if loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result(timeout=timeout)
+    return loop.run_until_complete(coro)
+
+
+def call_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    tenant_id: str | None = None,
+    server_label: str | None = None,
+) -> Any:
+    """Synchronous wrapper: call an MCP tool on the resolved server."""
     try:
-        loop = _get_or_create_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _call_tool_async(tool_name, arguments))
-                return future.result(timeout=120)
-        else:
-            return loop.run_until_complete(_call_tool_async(tool_name, arguments))
+        target = resolve_mcp_server(tenant_id, server_label)
+        return _run_async(
+            _call_tool_async(tool_name, arguments, target, tenant_id),
+            timeout=120,
+        )
     except Exception as exc:
         logger.error("MCP call_tool(%s) failed: %s", tool_name, exc)
         return {"error": str(exc)}
 
 
-def list_tools() -> list[dict[str, Any]]:
-    """Synchronous wrapper: list available MCP tools (cached with TTL)."""
+def list_tools(
+    *,
+    tenant_id: str | None = None,
+    server_label: str | None = None,
+) -> list[dict[str, Any]]:
+    """Synchronous wrapper: list tools on the resolved server (TTL-cached)."""
     import time
-    global _tool_defs_cache
+
+    target = resolve_mcp_server(tenant_id, server_label)
+    cache_key = (tenant_id or "__env__", target.pool_key)
+
     now = time.time()
-    if _tool_defs_cache is not None and now - _tool_defs_cache[0] < _TOOL_CACHE_TTL:
-        return _tool_defs_cache[1]
+    cached = _tool_defs_cache.get(cache_key)
+    if cached is not None and now - cached[0] < _TOOL_CACHE_TTL:
+        return cached[1]
 
     try:
-        loop = _get_or_create_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _list_tools_async())
-                result = future.result(timeout=30)
-        else:
-            result = loop.run_until_complete(_list_tools_async())
-
-        _tool_defs_cache = (now, result)
-        logger.info("Loaded %d tool definitions from MCP server", len(result))
+        result = _run_async(
+            _list_tools_async(target, tenant_id),
+            timeout=30,
+        )
+        _tool_defs_cache[cache_key] = (now, result)
+        logger.info(
+            "Loaded %d tool definitions from MCP server (tenant=%s, label=%s)",
+            len(result), tenant_id, target.label,
+        )
         return result
     except Exception as exc:
         logger.error("MCP list_tools failed: %s", exc)
         return []
 
 
-def invalidate_tool_cache() -> None:
-    """Clear the tool definition cache so the next call re-fetches from MCP."""
-    global _tool_defs_cache
-    _tool_defs_cache = None
-    logger.info("MCP tool cache invalidated")
+def invalidate_tool_cache(
+    *,
+    tenant_id: str | None = None,
+    server_label: str | None = None,
+) -> None:
+    """Clear the tool-definition cache.
+
+    With no args, clears every entry — used by the existing "invalidate
+    cache" button. Pass ``tenant_id`` (and optionally ``server_label``)
+    to invalidate only that slot, which the MCP-02 CRUD paths can use
+    after a registry edit (future work — MCP-08 deals with this
+    properly via ``notifications/tools/list_changed``).
+    """
+    if tenant_id is None and server_label is None:
+        _tool_defs_cache.clear()
+        logger.info("MCP tool cache invalidated (all slots)")
+        return
+
+    # Targeted invalidation: resolve first so we hit the same cache key
+    # the fetch used.
+    target = resolve_mcp_server(tenant_id, server_label)
+    cache_key = (tenant_id or "__env__", target.pool_key)
+    _tool_defs_cache.pop(cache_key, None)
+    logger.info("MCP tool cache invalidated for %s", cache_key)
 
 
 def shutdown_pool() -> None:
-    """Shut down the MCP session pool. Call on app shutdown."""
+    """Shut down every session pool. Call on app shutdown."""
+    async def _shutdown_all():
+        for pool in list(_pools.values()):
+            await pool.shutdown()
+        _pools.clear()
+
     try:
-        loop = _get_or_create_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                pool.submit(asyncio.run, _pool.shutdown()).result(timeout=10)
-        else:
-            loop.run_until_complete(_pool.shutdown())
-        logger.info("MCP session pool shut down")
+        _run_async(_shutdown_all(), timeout=10)
+        logger.info("MCP session pools shut down")
     except Exception as exc:
         logger.warning("MCP pool shutdown error: %s", exc)
 
 
-def get_openai_style_tool_defs(tool_names: list[str]) -> list[dict[str, Any]]:
-    """Load tool definitions from MCP and return in OpenAI function-calling format.
+def get_openai_style_tool_defs(
+    tool_names: list[str],
+    *,
+    tenant_id: str | None = None,
+    server_label: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load tool definitions and return in OpenAI function-calling format.
 
     Used by the ReAct loop to feed tool schemas to LLM providers.
     """
-    all_tools = list_tools()
+    all_tools = list_tools(tenant_id=tenant_id, server_label=server_label)
     tool_map = {t["name"]: t for t in all_tools}
 
     result = []
@@ -269,4 +347,3 @@ def get_openai_style_tool_defs(tool_names: list[str]) -> list[dict[str, Any]]:
             },
         })
     return result
-
