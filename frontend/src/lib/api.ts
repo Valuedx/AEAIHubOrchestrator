@@ -368,6 +368,13 @@ export interface VectorStoreOption {
   description: string;
 }
 
+// DV-02 — response shape from POST /workflows/{id}/nodes/{node_id}/test
+export interface TestNodeResponse {
+  output: Record<string, unknown> | null;
+  elapsed_ms: number;
+  error: string | null;
+}
+
 // Async external jobs (AutomationEdge, future Jenkins, ...) — AE-07
 export interface AsyncJobOut {
   id: string;

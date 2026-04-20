@@ -298,6 +298,129 @@ def unpin_node_output(
     return wf
 
 
+# ---------------------------------------------------------------------------
+# DV-02 — Test single node
+# ---------------------------------------------------------------------------
+
+
+class TestNodeRequest(BaseModel):
+    trigger_payload: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Synthetic ``trigger`` context for this test run. Pass the "
+            "payload the node's workflow would normally receive so "
+            "Jinja / safe_eval expressions on ``trigger.*`` resolve."
+        ),
+    )
+
+
+class TestNodeResponse(BaseModel):
+    output: dict[str, Any] | None
+    elapsed_ms: int
+    error: str | None
+
+
+@router.post(
+    "/{workflow_id}/nodes/{node_id}/test",
+    response_model=TestNodeResponse,
+)
+def test_node(
+    workflow_id: uuid.UUID,
+    node_id: str,
+    body: TestNodeRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_db),
+):
+    """Execute a single node in isolation against upstream pinned outputs.
+
+    Design-time probe:
+      * No ``workflow_instances`` row, no ``execution_logs`` row.
+      * Upstream ``pinnedOutput`` values populate the synthetic context
+        as ``node_X`` keys — exactly how they'd appear at runtime.
+        Any node without a pin is simply absent from the context; the
+        handler may fail loudly (which is the correct UX — tells the
+        operator to pin the predecessor first).
+      * Handler exceptions are caught and returned as ``error`` so the
+        operator can iterate on config without the HTTP call failing.
+      * ``NodeSuspendedAsync`` (AutomationEdge and friends) creates a
+        real ``async_jobs`` row; we report that explicitly so the
+        operator isn't surprised.
+    """
+    import time
+    from app.engine.exceptions import NodeSuspendedAsync
+    from app.engine.node_handlers import dispatch_node
+
+    set_tenant_context(db, tenant_id)
+
+    wf = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=workflow_id, tenant_id=tenant_id)
+        .first()
+    )
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    graph = wf.graph_json or {}
+    nodes = graph.get("nodes") or []
+    target_node = next((n for n in nodes if n.get("id") == node_id), None)
+    if target_node is None:
+        raise HTTPException(404, f"Node '{node_id}' not in workflow")
+
+    # Build a synthetic context from every pinned node on the graph.
+    # We don't restrict to "upstream of target" because the expression
+    # evaluator may reach any earlier node ID; pinning something that
+    # happens to be sideways is rare but valid.
+    context: dict[str, Any] = {}
+    for n in nodes:
+        data = n.get("data") or {}
+        pin = data.get("pinnedOutput")
+        if isinstance(pin, dict):
+            context[n["id"]] = dict(pin)  # defensive copy
+
+    context["trigger"] = body.trigger_payload or {}
+    # Synthetic internals — handlers that read these keys directly
+    # (_handle_agent, _handle_save_conversation_state, etc.) need
+    # non-null values even during a test probe.
+    context["_instance_id"] = str(uuid.uuid4())
+    context["_current_node_id"] = node_id
+    context["_workflow_def_id"] = str(workflow_id)
+
+    started = time.monotonic()
+    try:
+        node_data = target_node.get("data") or {}
+        output = dispatch_node(node_data, context, tenant_id, db=db)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return TestNodeResponse(
+            output=output,
+            elapsed_ms=elapsed_ms,
+            error=None,
+        )
+    except NodeSuspendedAsync as sus:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return TestNodeResponse(
+            output=None,
+            elapsed_ms=elapsed_ms,
+            error=(
+                f"Node suspended on external system '{sus.system}' "
+                f"(external_job_id={sus.external_job_id}). An async_job "
+                f"row was created as a side effect; this is expected "
+                f"for test runs of AutomationEdge-style nodes."
+            ),
+        )
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger = __import__("logging").getLogger(__name__)
+        logger.info(
+            "test_node: dispatch raised for node=%s (workflow=%s): %s",
+            node_id, workflow_id, exc,
+        )
+        return TestNodeResponse(
+            output=None,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+
+
 @router.delete("/{workflow_id}", status_code=204)
 def delete_workflow(
     workflow_id: uuid.UUID,

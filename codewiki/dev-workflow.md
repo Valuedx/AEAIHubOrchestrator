@@ -78,9 +78,56 @@ Downstream nodes reading `node_X.somekey` see the same shape whether `node_X` ra
 
 ---
 
-## (reserved) DV-02 — Test single node
+## DV-02 — Test single node
 
-_Planned. Ships in the next commit._ This section will document the `POST /workflows/{id}/nodes/{node_id}/test` endpoint and the **Test node** button in Property Inspector that executes one node against upstream pins + a trigger payload without writing a new workflow instance.
+**What it solves**: iterating on one node's config without rerunning the entire workflow. Pairs with DV-01: pin the predecessors once, then probe the node under test with different configs until it does what you want.
+
+### Using it from the UI
+
+1. (Optional) Pin any upstream nodes whose outputs you want to reuse (DV-01).
+2. Select the node you want to probe.
+3. In the **Property Inspector**, under **Test this node**, click **Test node**.
+4. The result appears inline: either a green OK badge + JSON output, or a red Error badge + message. Elapsed time is shown in ms.
+5. Edit config, click **Test node** again, repeat until satisfied.
+
+### What the test run does
+
+* Runs only the target node's handler via `dispatch_node`.
+* Populates the context with every pinned node's output as `node_X` keys. Upstream nodes without pins are absent from the context — the handler may fail loudly, which is the correct UX (tells you to pin the predecessor first).
+* Injects a synthetic `_instance_id` (random UUID), `_current_node_id`, and `_workflow_def_id` so handlers that read these invariants work as expected.
+* Uses an empty dict for `trigger` unless a payload is passed (the v1 UI doesn't expose the payload knob; the API does).
+
+### What the test run does NOT do
+
+* **No `workflow_instances` row.** No `execution_logs` row. No checkpoints.
+* **No SSE events.** The live-status canvas overlays (FV-01) stay untouched.
+* **No RLS bypass.** The handler still runs under the caller's tenant.
+
+One deliberate side effect exists — **`NodeSuspendedAsync`** (AutomationEdge) genuinely creates an `async_jobs` row when submitted, because that's the only way to verify the AE connection actually works. The response surfaces this explicitly:
+
+> `Node suspended on external system 'automationedge' (external_job_id=2968). An async_job row was created as a side effect; this is expected for test runs of AutomationEdge-style nodes.`
+
+The Beat poller will then resume / terminate the orphan row through normal channels; no cleanup needed on the operator side.
+
+### Backend surface
+
+```http
+POST /api/v1/workflows/{workflow_id}/nodes/{node_id}/test
+Body (optional): { "trigger_payload": { ... } }
+→ 200 { "output": { ... }, "elapsed_ms": 123, "error": null }
+→ 200 { "output": null,    "elapsed_ms": 87,  "error": "bad config: ..." }
+→ 404 workflow or node not found
+```
+
+The endpoint always returns 200 when the workflow / node exist. Handler exceptions → 200 + `error` string. 404 is reserved for "the target isn't in the graph at all". This keeps the UI's error-handling code simple: single branch on `error !== null`.
+
+### Error-catching semantics
+
+Every exception the handler raises (except `HTTPException`) is caught and converted to the `error` field. The endpoint logs at `INFO` level so operators' test failures don't pollute `WARNING` dashboards. Stack traces stay server-side; the string surfaced to the UI is just `str(exc)` — good enough for "config is wrong" feedback, not a full debugger.
+
+### Related tests
+
+* `backend/tests/test_test_node_endpoint.py` — 9 tests: happy-path context shape (pins + trigger + synthetic keys), default empty trigger, pin-on-target dispatch short-circuit, handler-raise caught as error, `NodeSuspendedAsync` message format, 404 for unknown workflow / node, context isolation (no pin → key absent), no-side-effect assertion (no `.add()` on the session).
 
 ## (reserved) DV-03 — Sticky notes on canvas
 ## (reserved) DV-04 — Expression helpers library

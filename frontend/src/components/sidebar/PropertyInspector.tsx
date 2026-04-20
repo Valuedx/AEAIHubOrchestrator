@@ -7,8 +7,18 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { X, Copy, Check, Pin, PinOff } from "lucide-react";
+import {
+  X,
+  Copy,
+  Check,
+  Pin,
+  PinOff,
+  Play,
+  Loader2,
+  CircleAlert,
+} from "lucide-react";
 import type { AgenticNodeData } from "@/types/nodes";
+import { api, type TestNodeResponse } from "@/lib/api";
 import { getRegistryNodeType, getConfigSchema } from "@/lib/registry";
 import { DynamicConfigForm } from "@/components/sidebar/DynamicConfigForm";
 
@@ -131,6 +141,10 @@ export function PropertyInspector() {
 
           <Separator />
 
+          <TestSection nodeId={selectedNode.id} />
+
+          <Separator />
+
           <PinSection nodeId={selectedNode.id} data={data} />
 
           <Separator />
@@ -147,6 +161,113 @@ export function PropertyInspector() {
           </Button>
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+
+/**
+ * DV-02 — Test single node section.
+ *
+ * Runs the selected node in isolation via the ``POST .../test``
+ * endpoint. Upstream pinned outputs populate the synthetic context,
+ * so this pairs naturally with DV-01: pin the predecessors, then
+ * iterate on the current node's config without re-running the whole
+ * DAG. Result is shown inline — elapsed time badge + JSON output OR
+ * error string.
+ */
+function TestSection({ nodeId }: { nodeId: string }) {
+  const currentWorkflow = useWorkflowStore((s) => s.currentWorkflow);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<TestNodeResponse | null>(null);
+
+  const canTest = !!currentWorkflow;
+
+  const handleTest = async () => {
+    if (!currentWorkflow) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await api.testNode(currentWorkflow.id, nodeId);
+      setResult(res);
+    } catch (e) {
+      // Only reached on transport-level failures (4xx on unknown node,
+      // network error, etc.). Handler raises are already caught server-
+      // side and returned as ``error`` in a 200 body.
+      setResult({
+        output: null,
+        elapsed_ms: 0,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Play className="h-3.5 w-3.5" />
+        <span className="font-medium">Test this node</span>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Runs just this node using upstream pinned outputs. No execution
+        log or workflow instance is created.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full gap-1.5"
+        onClick={handleTest}
+        disabled={!canTest || busy}
+        title={
+          canTest
+            ? "Execute only this node with current config"
+            : "Save the workflow first"
+        }
+      >
+        {busy ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Play className="h-3.5 w-3.5" />
+        )}
+        {busy ? "Running…" : "Test node"}
+      </Button>
+
+      {result && !busy && <TestResultPanel result={result} />}
+    </div>
+  );
+}
+
+function TestResultPanel({ result }: { result: TestNodeResponse }) {
+  if (result.error) {
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-1.5 text-[10px] text-red-600 dark:text-red-400">
+          <CircleAlert className="h-3 w-3" />
+          <span className="font-medium">Error</span>
+          <span className="text-muted-foreground ml-auto">
+            {result.elapsed_ms} ms
+          </span>
+        </div>
+        <pre className="text-xs bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded p-2 font-mono whitespace-pre-wrap break-words">
+          {result.error}
+        </pre>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5 text-[10px] text-green-600 dark:text-green-400">
+        <Check className="h-3 w-3" />
+        <span className="font-medium">OK</span>
+        <span className="text-muted-foreground ml-auto">
+          {result.elapsed_ms} ms
+        </span>
+      </div>
+      <pre className="text-xs bg-muted rounded p-2 max-h-56 overflow-y-auto font-mono whitespace-pre-wrap break-words">
+        {JSON.stringify(result.output, null, 2)}
+      </pre>
     </div>
   );
 }
