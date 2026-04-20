@@ -56,6 +56,25 @@ def dispatch_node(
     node_data: dict, context: dict[str, Any], tenant_id: str,
     db: Any = None,
 ) -> dict[str, Any]:
+    # ── DV-01 data pinning — short-circuit dispatch ─────────────────────────
+    # When operators pin a node's output in the PropertyInspector, the pinned
+    # payload lives at ``node_data.pinnedOutput`` (set via
+    # ``POST /workflows/{id}/nodes/{node_id}/pin``). On the next run the node
+    # skips its handler entirely and returns the pin — kills LLM token cost
+    # during iteration and makes Condition-branch debugging tractable.
+    #
+    # ``_from_pin`` is an underscore-prefixed breadcrumb so ``_get_clean_
+    # context`` strips it before persisting, but ``log_entry.output_json``
+    # (which doesn't strip) preserves it so the UI can badge the node as
+    # "returned from pin, not a live execution".
+    pinned = node_data.get("pinnedOutput")
+    if isinstance(pinned, dict):
+        logger.info(
+            "Node %r returning pinned output (skipping execution)",
+            node_data.get("label"),
+        )
+        return {**pinned, "_from_pin": True}
+
     # ── Resolve {{ env.* }} references in config (Component 6) ──
     try:
         from app.engine.prompt_template import resolve_config_env_vars

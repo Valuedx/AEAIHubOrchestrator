@@ -31,6 +31,18 @@ export interface AgenticNodeData {
     | "suspended"
     | "paused"
     | "skipped";
+
+  /**
+   * DV-01 — data pinning.
+   *
+   * When set, the backend's ``dispatch_node`` short-circuits and returns
+   * this payload without invoking the handler. Operators pin a node's
+   * last good output so subsequent test runs skip expensive LLM / MCP
+   * calls. Lives inside graph_json so it survives save / snapshot /
+   * restore / duplicate. Set/cleared via the Pin button in
+   * PropertyInspector; UI shows a 📌 on the node card when present.
+   */
+  pinnedOutput?: Record<string, unknown>;
 }
 
 /** Title shown on the node card and in expression picker groups. */

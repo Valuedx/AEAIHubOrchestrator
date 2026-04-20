@@ -58,6 +58,15 @@ interface WorkflowState {
   highlightNode: (nodeId: string) => void;
 
   /**
+   * DV-01 — pin a node's last successful output so subsequent runs
+   * short-circuit ``dispatch_node`` and return the pin without
+   * invoking the handler. Persists in graph_json, survives save /
+   * snapshot / restore / duplicate. Toggled from PropertyInspector.
+   */
+  pinNode: (nodeId: string) => Promise<void>;
+  unpinNode: (nodeId: string) => Promise<void>;
+
+  /**
    * Live streaming token buffer per node_id.
    * Cleared when execution starts; accumulated as ``token`` SSE events arrive.
    * When a node's ``done: true`` message arrives the buffer is preserved
@@ -204,6 +213,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   instanceContext: null,
   asyncJobs: [],
   highlightedNodeId: null,
+  // pinNode / unpinNode declared below the existing action block.
   streamingTokens: {},
   loading: false,
   error: null,
@@ -741,6 +751,59 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     } catch {
       // Non-fatal: the waiting-on-external badge just won't render if the
       // fetch fails. The underlying suspend+resume still works via Beat.
+    }
+  },
+
+  pinNode: async (nodeId) => {
+    const wf = get().currentWorkflow;
+    if (!wf) {
+      set({ error: "Save the workflow before pinning node outputs." });
+      return;
+    }
+    const inst = get().activeInstance;
+    if (!inst) {
+      set({ error: "Run the workflow first so there's an output to pin." });
+      return;
+    }
+    // Newest completed log for this node wins — ForEach / Loop bodies
+    // produce multiple log entries; the last one is the most recent
+    // iteration, which matches what the UI just showed as the output.
+    const log = [...inst.logs]
+      .reverse()
+      .find((l) => l.node_id === nodeId && l.status === "completed");
+    if (!log || !log.output_json) {
+      set({ error: `No completed output available for node ${nodeId}.` });
+      return;
+    }
+    try {
+      await api.pinNodeOutput(wf.id, nodeId, log.output_json);
+      // Mirror the pin into flowStore so the 📌 badge appears instantly
+      // without needing a full workflow reload.
+      useFlowStore.getState().updateNodeData(nodeId, {
+        pinnedOutput: log.output_json,
+      } as Partial<AgenticNodeData>);
+    } catch (e) {
+      set({ error: `Pin failed: ${String(e)}` });
+    }
+  },
+
+  unpinNode: async (nodeId) => {
+    const wf = get().currentWorkflow;
+    if (!wf) return;
+    try {
+      await api.unpinNodeOutput(wf.id, nodeId);
+      // updateNodeData is a shallow merge, so we can't just pass
+      // { pinnedOutput: undefined } — the field would stay in the
+      // persisted JSON. Build a fresh data object without the key.
+      const fs = useFlowStore.getState();
+      const node = fs.nodes.find((n) => n.id === nodeId);
+      if (node) {
+        const nextData = { ...(node.data as AgenticNodeData) };
+        delete nextData.pinnedOutput;
+        fs.updateNodeData(nodeId, nextData as Partial<AgenticNodeData>);
+      }
+    } catch (e) {
+      set({ error: `Unpin failed: ${String(e)}` });
     }
   },
 

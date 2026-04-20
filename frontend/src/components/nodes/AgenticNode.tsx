@@ -16,6 +16,7 @@ import {
   MessageSquare,
   AlertCircle,
   AlertTriangle,
+  Pin,
   RefreshCw,
   Database,
   Code2,
@@ -171,6 +172,14 @@ function AgenticNodeComponent({ id, data, selected }: NodeProps) {
               {nodeCanvasTitle(nodeData)}
             </CardTitle>
           </div>
+          {nodeData.pinnedOutput && (
+            <span
+              className="shrink-0"
+              title="Output pinned — dispatch is short-circuited until unpinned"
+            >
+              <Pin className="h-3.5 w-3.5 fill-amber-500 text-amber-500" />
+            </span>
+          )}
           {hasError && (
             <span className="shrink-0" title="This node has configuration errors">
               <AlertCircle className="h-3.5 w-3.5 text-red-500" />

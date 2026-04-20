@@ -71,3 +71,4 @@ celery -A app.worker worker --loglevel=info
 - `DEVELOPER_GUIDE.md`
 - `codewiki/memory-management.md`
 - `codewiki/automationedge.md` — AutomationEdge async-external node (Pattern C / Pattern A, Diverted handling, operator setup)
+- `codewiki/dev-workflow.md` — Sprint 2A developer-velocity features (data pinning and more as they land)

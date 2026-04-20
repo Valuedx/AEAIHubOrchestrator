@@ -1,12 +1,13 @@
 import { useState, useCallback } from "react";
 import { useFlowStore } from "@/store/flowStore";
+import { useWorkflowStore } from "@/store/workflowStore";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { X, Copy, Check } from "lucide-react";
+import { X, Copy, Check, Pin, PinOff } from "lucide-react";
 import type { AgenticNodeData } from "@/types/nodes";
 import { getRegistryNodeType, getConfigSchema } from "@/lib/registry";
 import { DynamicConfigForm } from "@/components/sidebar/DynamicConfigForm";
@@ -130,6 +131,10 @@ export function PropertyInspector() {
 
           <Separator />
 
+          <PinSection nodeId={selectedNode.id} data={data} />
+
+          <Separator />
+
           <Button
             variant="destructive"
             size="sm"
@@ -142,6 +147,106 @@ export function PropertyInspector() {
           </Button>
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+
+/**
+ * DV-01 — Pin / Unpin section.
+ *
+ * Three display states:
+ *   * node has ``pinnedOutput``  → unpin button + preview of pinned keys
+ *   * node has no pin + has a completed log in activeInstance → pin button
+ *   * node has no pin + no completed log               → disabled pin button
+ */
+function PinSection({
+  nodeId,
+  data,
+}: {
+  nodeId: string;
+  data: AgenticNodeData;
+}) {
+  const activeInstance = useWorkflowStore((s) => s.activeInstance);
+  const pinNode = useWorkflowStore((s) => s.pinNode);
+  const unpinNode = useWorkflowStore((s) => s.unpinNode);
+  const [busy, setBusy] = useState(false);
+
+  const isPinned = !!data.pinnedOutput;
+  const hasCompletedLog = !!activeInstance?.logs.some(
+    (l) => l.node_id === nodeId && l.status === "completed",
+  );
+
+  const handlePin = async () => {
+    setBusy(true);
+    await pinNode(nodeId);
+    setBusy(false);
+  };
+
+  const handleUnpin = async () => {
+    setBusy(true);
+    await unpinNode(nodeId);
+    setBusy(false);
+  };
+
+  if (isPinned) {
+    const keys = Object.keys(data.pinnedOutput ?? {}).filter(
+      (k) => !k.startsWith("_"),
+    );
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+          <Pin className="h-3.5 w-3.5 fill-amber-500 text-amber-500" />
+          <span className="font-medium">Output is pinned</span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          The next runs will short-circuit this node and return the saved
+          output without calling the handler. Unpin to re-run live.
+        </p>
+        {keys.length > 0 && (
+          <p className="text-[10px] text-muted-foreground font-mono truncate">
+            keys: {keys.join(", ")}
+          </p>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full gap-1.5"
+          onClick={handleUnpin}
+          disabled={busy}
+        >
+          <PinOff className="h-3.5 w-3.5" />
+          Unpin output
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Pin className="h-3.5 w-3.5" />
+        <span className="font-medium">Pin last output</span>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        After a successful run, pin the output to short-circuit this node on
+        subsequent tests. Saves LLM / MCP cost during iteration.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full gap-1.5"
+        onClick={handlePin}
+        disabled={busy || !hasCompletedLog}
+        title={
+          hasCompletedLog
+            ? "Pin the latest completed output for this node"
+            : "Run the workflow first to capture an output"
+        }
+      >
+        <Pin className="h-3.5 w-3.5" />
+        Pin output
+      </Button>
     </div>
   );
 }

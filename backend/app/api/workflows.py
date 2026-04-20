@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -189,6 +190,109 @@ def update_workflow(
         wf.graph_json = body.graph_json
         wf.version += 1
 
+    db.commit()
+    db.refresh(wf)
+    return wf
+
+
+# ---------------------------------------------------------------------------
+# DV-01 — Pin / Unpin node output
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+
+
+class PinNodeRequest(BaseModel):
+    output: dict[str, Any] = Field(
+        ...,
+        description=(
+            "The dict to return from this node on subsequent runs, "
+            "typically the last completed execution_log output_json."
+        ),
+    )
+
+
+def _mutate_node_data(
+    wf: WorkflowDefinition,
+    node_id: str,
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    """Apply ``mutate(data_dict)`` to the matching node's ``data`` block.
+
+    Raises HTTPException(404) if the node is not in the graph. Writes
+    back to ``wf.graph_json`` by shallow-copying — deep copy not
+    required because we only touch the target node's data.
+    """
+    graph = dict(wf.graph_json or {})
+    nodes = list(graph.get("nodes") or [])
+    for idx, n in enumerate(nodes):
+        if n.get("id") == node_id:
+            n = dict(n)
+            data = dict(n.get("data") or {})
+            mutate(data)
+            n["data"] = data
+            nodes[idx] = n
+            graph["nodes"] = nodes
+            wf.graph_json = graph
+            return
+    raise HTTPException(404, f"Node '{node_id}' not in workflow")
+
+
+@router.post("/{workflow_id}/nodes/{node_id}/pin", response_model=WorkflowOut)
+def pin_node_output(
+    workflow_id: uuid.UUID,
+    node_id: str,
+    body: PinNodeRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_db),
+):
+    """Pin the given output on a node so subsequent runs short-circuit
+    dispatch_node and return the pin without re-executing.
+
+    Pins are a design-time annotation: they live inside
+    ``graph_json.nodes[...].data.pinnedOutput`` and travel with the
+    workflow (save / snapshot / restore / duplicate). We deliberately
+    DO NOT bump ``version`` on pin / unpin — otherwise toggling pins
+    during development would churn workflow_snapshots. A regular save
+    still creates the next version.
+    """
+    wf = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=workflow_id, tenant_id=tenant_id)
+        .first()
+    )
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    def _set_pin(data: dict) -> None:
+        data["pinnedOutput"] = body.output
+
+    _mutate_node_data(wf, node_id, _set_pin)
+    db.commit()
+    db.refresh(wf)
+    return wf
+
+
+@router.delete("/{workflow_id}/nodes/{node_id}/pin", response_model=WorkflowOut)
+def unpin_node_output(
+    workflow_id: uuid.UUID,
+    node_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_db),
+):
+    """Clear a node's pinned output so the next run executes the handler."""
+    wf = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=workflow_id, tenant_id=tenant_id)
+        .first()
+    )
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    def _clear_pin(data: dict) -> None:
+        data.pop("pinnedOutput", None)
+
+    _mutate_node_data(wf, node_id, _clear_pin)
     db.commit()
     db.refresh(wf)
     return wf

@@ -565,6 +565,31 @@ export const api = {
     return request(`/api/v1/workflows/${workflowId}/status`);
   },
 
+  // DV-01 — pin / unpin a node's output for short-circuit dispatch.
+  pinNodeOutput(
+    workflowId: string,
+    nodeId: string,
+    output: Record<string, unknown>,
+  ): Promise<WorkflowOut> {
+    return request(
+      `/api/v1/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/pin`,
+      {
+        method: "POST",
+        body: JSON.stringify({ output }),
+      },
+    );
+  },
+
+  unpinNodeOutput(
+    workflowId: string,
+    nodeId: string,
+  ): Promise<WorkflowOut> {
+    return request(
+      `/api/v1/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/pin`,
+      { method: "DELETE" },
+    );
+  },
+
   getInstanceDetail(
     workflowId: string,
     instanceId: string,
