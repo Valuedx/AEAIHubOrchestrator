@@ -133,7 +133,7 @@ Every LLM-calling node (LLM Agent, ReAct Agent, LLM Router, Reflection, Intent C
 | Provider | Backend | Auth | When to pick |
 |---|---|---|---|
 | `google` | Google AI Studio | `ORCHESTRATOR_GOOGLE_API_KEY` | Fastest to set up, good for prototyping and solo developers. |
-| `vertex` | Google Cloud Vertex AI | Application Default Credentials — `GOOGLE_APPLICATION_CREDENTIALS` points at a service-account JSON, or workload identity on GKE / Cloud Run. Project + location come from the tenant's **Vertex Projects** dialog (VERTEX-02, toolbar Cloud icon) when configured, or from `ORCHESTRATOR_VERTEX_PROJECT` + `ORCHESTRATOR_VERTEX_LOCATION` env vars as a fallback. | Enterprise / regulated deployments: VPC-SC, CMEK, regional data residency, per-tenant GCP billing, no API keys in the vault. |
+| `vertex` | Google Cloud Vertex AI | Application Default Credentials — `GOOGLE_APPLICATION_CREDENTIALS` points at a service-account JSON, or workload identity on GKE / Cloud Run. Project + location come from the tenant's **Vertex Projects** dialog (VERTEX-02, toolbar Cloud icon) when configured, or from `ORCHESTRATOR_VERTEX_PROJECT` + `ORCHESTRATOR_VERTEX_LOCATION` env vars as a fallback. | Enterprise / regulated deployments: VPC-SC, CMEK, regional data residency, per-tenant GCP billing, no API keys in the vault. Read [`vertex.md` §5](vertex.md) for the scope caveat — service-account identity is still process-global. |
 | `openai` | OpenAI (or compatible via `ORCHESTRATOR_OPENAI_BASE_URL`) | `ORCHESTRATOR_OPENAI_API_KEY` | GPT-4o / 4o-mini models. |
 | `anthropic` | Anthropic direct | `ORCHESTRATOR_ANTHROPIC_API_KEY` | Claude Sonnet / Haiku. |
 

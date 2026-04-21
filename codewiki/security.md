@@ -169,7 +169,9 @@ This keeps sensitive values (API keys, passwords) out of the `graph_json` while 
 
 Both `tenant_integrations` (AutomationEdge connection defaults) and `tenant_mcp_servers` (MCP-02) store `{{ env.KEY }}` placeholders in their `config_json` rather than raw secrets. `engine/integration_resolver.py` (for AE) and `engine/mcp_server_resolver.py` (for MCP) substitute them against `get_tenant_secret` at call time. A missing referenced secret raises loudly — the caller fails rather than sending an unauth'd request a compliant server would 401 anyway.
 
-### Google Cloud auth — Vertex AI (VERTEX-01)
+### Google Cloud auth — Vertex AI (VERTEX-01 + VERTEX-02)
+
+> Full end-to-end Vertex setup + the per-tenant scope caveats live in [Vertex AI Integration](vertex.md). The summary below covers only the security-sensitive bits.
 
 When a node uses `provider: "vertex"`, the runtime authenticates via **Application Default Credentials**, not a vault secret. ADC is resolved in this order:
 
@@ -182,7 +184,7 @@ When a node uses `provider: "vertex"`, the runtime authenticates via **Applicati
 * The service account needs the `aiplatform.user` role (or narrower: `aiplatform.endpoints.predict` plus read on the region's model garden).
 * No Vertex credential ever lives in `tenant_secrets` or `graph_json`. Rotating the service-account key means replacing the JSON file referenced by the env var — no app restart if ADC re-reads.
 * **Per-tenant project routing (VERTEX-02)** — operators register per-tenant GCP projects via the toolbar **Cloud** icon. Rows live in `tenant_integrations` with `system='vertex'` and `config_json={project, location}`. At most one row per tenant is `is_default=true`. Missing row → `ORCHESTRATOR_VERTEX_PROJECT` env fallback. Each tenant's Vertex calls bill to their own project.
-* **ADC stays process-global** even after VERTEX-02. `GOOGLE_APPLICATION_CREDENTIALS` and workload identity are per-process, not per-tenant. The orchestrator's service account needs `aiplatform.user` (or narrower) on every GCP project listed in every tenant's registry. If you need per-tenant *identities* — where tenant A's traffic authenticates as SA-A and tenant B's as SA-B — that's a separate feature requiring runtime ADC swapping + `tenant_secrets`-style storage of service-account JSON (not scoped yet).
+* **ADC stays process-global** even after VERTEX-02. `GOOGLE_APPLICATION_CREDENTIALS` and workload identity are per-process, not per-tenant. The orchestrator's service account needs `aiplatform.user` (or narrower) on every GCP project listed in every tenant's registry. Cloud Audit Logs in each tenant's project show the orchestrator's SA, not a tenant-specific SA — so GCP-native auditing cannot distinguish which *tenant* made a given Vertex call. Use orchestrator-side logs / Langfuse traces for that mapping instead. A full per-tenant-identity implementation (SA-JSON swap or workload-identity impersonation) is outlined in [vertex.md §5.3](vertex.md) and is deliberately not scoped yet.
 * Vertex embeddings (pre-existing) and Vertex chat (VERTEX-01) both share the same project + location + ADC — one config surface, two code paths.
 
 ---

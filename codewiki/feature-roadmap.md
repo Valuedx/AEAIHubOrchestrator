@@ -41,7 +41,7 @@ See [MCP Audit](mcp-audit.md) for findings and the per-tenant registry design.
 
 VERTEX-01 adds `vertex` to every LLM node's `provider` enum, reusing the unified `google-genai` SDK via `Client(vertexai=True, project, location)`. Zero new dependencies. ADC auth (`GOOGLE_APPLICATION_CREDENTIALS` or workload identity). Previously Vertex was embeddings-only; the gap felt awkward for any tenant already on GCP.
 
-VERTEX-02 moves the Vertex project + location off the process-global env vars onto per-tenant rows in `tenant_integrations` (`system='vertex'`). Each tenant can bill to their own GCP project. No migration — rides the existing table. New `VertexProjectsDialog` behind the toolbar Cloud icon. ADC stays process-global (service-account identity can't be tenant-scoped without runtime ADC swapping + tenant_secrets storage — a separate, larger feature).
+VERTEX-02 moves the Vertex project + location off the process-global env vars onto per-tenant rows in `tenant_integrations` (`system='vertex'`). Each tenant can bill to their own GCP project. No migration — rides the existing table. New `VertexProjectsDialog` behind the toolbar Cloud icon. ADC stays process-global (service-account identity can't be tenant-scoped without runtime ADC swapping + tenant_secrets storage — a separate, larger feature). **Full scope caveat + future-work sketch** lives in [vertex.md §5](vertex.md).
 
 ---
 

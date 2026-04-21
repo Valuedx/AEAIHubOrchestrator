@@ -61,6 +61,7 @@ The orchestrator can run on its own. The only external runtime contracts are:
 
 - **MCP Server(s)** (optional): Operators register zero or more per-tenant MCP servers in the `tenant_mcp_servers` table via the **Globe** icon in the toolbar (MCP-02). Each entry captures a Streamable-HTTP MCP URL + optional auth headers (static, with `{{ env.KEY }}` indirection through the Secrets vault). Nodes pick a server by its `mcpServerLabel` config field; blank → tenant `is_default` row → the legacy `ORCHESTRATOR_MCP_SERVER_URL` env-var fallback so pre-MCP-02 tenants keep working untouched. See `codewiki/mcp-audit.md`.
 - **AutomationEdge / other async-external systems** (optional): Any node type that submits work to an external RPA / job-queue system (AutomationEdge today) uses the `async_jobs` table + `suspended_reason='async_external'` pattern. Beat polls terminal status by default; optional webhook callback via `POST /api/v1/async-jobs/{job_id}/complete`. See `codewiki/automationedge.md`.
+- **Google Cloud Vertex AI** (optional): when nodes use `provider: "vertex"` (chat + ReAct + streaming via VERTEX-01) or Vertex-backed embeddings. Auth is ADC (`GOOGLE_APPLICATION_CREDENTIALS` or workload identity). Operators can register per-tenant GCP projects via the **Cloud** toolbar icon (VERTEX-02) — tenants bill to their own projects. **Scope caveat**: service-account identity is still process-global; see `codewiki/vertex.md` §5 before assuming per-tenant isolation is total.
 
 ### 1.3 Network Ports
 
@@ -504,7 +505,7 @@ Backend settings use the `ORCHESTRATOR_` prefix; frontend uses `VITE_` variables
 | `ORCHESTRATOR_GOOGLE_API_KEY` | No | `""` | Google AI Studio API key for Gemini (used when a node's `provider: "google"`) |
 | `ORCHESTRATOR_GOOGLE_PROJECT` | No | `""` | GCP project ID (legacy — not used by the Gemini path today) |
 | `ORCHESTRATOR_GOOGLE_LOCATION` | No | `us-central1` | GCP region (legacy) |
-| `ORCHESTRATOR_VERTEX_PROJECT` | When using `provider: "vertex"` without a tenant registry row, or Vertex embeddings | `""` | **Fallback** GCP project for Vertex AI (Gemini + embeddings). Per-tenant registry rows (VERTEX-02) override this. Set ADC via `GOOGLE_APPLICATION_CREDENTIALS` or workload identity — no API key. |
+| `ORCHESTRATOR_VERTEX_PROJECT` | When using `provider: "vertex"` without a tenant registry row, or Vertex embeddings | `""` | **Fallback** GCP project for Vertex AI (Gemini + embeddings). Per-tenant registry rows (VERTEX-02) override this. Set ADC via `GOOGLE_APPLICATION_CREDENTIALS` or workload identity — no API key. Full guide incl. scope caveats: `codewiki/vertex.md`. |
 | `ORCHESTRATOR_VERTEX_LOCATION` | No | `us-central1` | Fallback Vertex AI region (overridden by the `location` field on a registry row) |
 | `ORCHESTRATOR_OPENAI_API_KEY` | No | `""` | OpenAI API key for GPT models |
 | `ORCHESTRATOR_OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI-compatible base URL |
