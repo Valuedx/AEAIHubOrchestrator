@@ -156,7 +156,7 @@ export function Toolbar() {
 
   return (
     <>
-      <div className="flex items-center h-12 px-3 border-b bg-sidebar gap-2 shrink-0">
+      <div className="flex items-center h-12 px-3 border-b bg-sidebar gap-2 shrink-0 min-w-0 overflow-x-auto">
         <div className="flex items-center gap-1.5 mr-2">
           <div className="h-6 w-6 rounded bg-primary flex items-center justify-center">
             <span className="text-xs font-bold text-primary-foreground">AE</span>
