@@ -1,3 +1,5 @@
+> - **ADMIN-01 Per-tenant policy overrides (2026-04-21)**: Three operational knobs — `execution_quota_per_hour`, `max_snapshots`, `mcp_pool_size` — move from process-global env vars onto a new `tenant_policies` table (migration `0020`, one row per tenant). Operators override per-tenant via the toolbar **SlidersHorizontal** icon (``TenantPolicyDialog``). Env values remain the fallback when a column is null. New `engine/tenant_policy_resolver.get_effective_policy(tenant_id)` is the single read path; it degrades gracefully to env defaults on any DB error so quota checks can't 500 because of a transient `tenant_policies` outage. Resolver-returned `source` metadata lets the UI show which fields are overridden vs. inherited. **Scope caveats** in `codewiki/tenant-policies.md` §4: rate-limit / rate-window stay on env vars pending **ADMIN-02** (slowapi dynamic limits refactor); per-tenant LLM provider keys pending **ADMIN-03**.
+>
 > - **VERTEX-02 Per-tenant Vertex project override (2026-04-21)**: Vertex project + location are no longer process-global. Operators register per-tenant rows via the toolbar **Cloud** icon (``VertexProjectsDialog``). Rides on the existing ``tenant_integrations`` table with ``system='vertex'`` — ``config_json`` stores ``{project, location}``. Resolver precedence: tenant's ``is_default=true`` row → ``ORCHESTRATOR_VERTEX_PROJECT`` env fallback. Each tenant can bill Vertex usage to their own GCP project. **Caveat**: ADC (service-account identity) is still process-global — the orchestrator's service account needs ``aiplatform.user`` on every target project listed in the registry. Per-tenant service-account JSON uploads are not in scope here. No migration — reuses table from migration `0017`.
 >
 > - **VERTEX-01 Vertex AI support for LLM nodes (2026-04-21)**: Gemini models can now run through **Google Cloud Vertex AI** in addition to AI Studio. Adds ``vertex`` to the ``provider`` enum on LLM Agent, ReAct Agent, LLM Router, Reflection, and Intent Classifier nodes. Zero new dependencies — reuses the unified ``google-genai`` SDK via ``Client(vertexai=True, project, location)``. Auth uses Application Default Credentials (``GOOGLE_APPLICATION_CREDENTIALS`` env var pointing at a service-account JSON, or workload identity on GKE / Cloud Run). Reuses the existing ``ORCHESTRATOR_VERTEX_PROJECT`` + ``ORCHESTRATOR_VERTEX_LOCATION`` settings that were previously embeddings-only. See §7.1 below. Per-tenant Vertex project override tracked as VERTEX-02.
@@ -514,7 +516,7 @@ Backend settings use the `ORCHESTRATOR_` prefix; frontend uses `VITE_` variables
 | `ORCHESTRATOR_VAULT_KEY` | No | `""` | Fernet encryption key for credential vault |
 | `ORCHESTRATOR_RATE_LIMIT_REQUESTS` | No | `100` | Max API requests per tenant per window |
 | `ORCHESTRATOR_RATE_LIMIT_WINDOW` | No | `1 minute` | Rate limit time window |
-| `ORCHESTRATOR_EXECUTION_QUOTA_PER_HOUR` | No | `50` | Max workflow executions per tenant per hour |
+| `ORCHESTRATOR_EXECUTION_QUOTA_PER_HOUR` | No | `50` | **Fallback** default when a tenant has no `tenant_policies.execution_quota_per_hour` override (ADMIN-01). Max workflow executions per tenant per hour. |
 | `ORCHESTRATOR_USE_CELERY` | No | `false` | If `true`, dispatches execution/resume/retry via Celery (requires Redis + worker). If `false`, runs tasks in-process in background threads (local dev-friendly). |
 | `ORCHESTRATOR_OIDC_ENABLED` | No | `false` | Enable OIDC Authorization Code + PKCE flow |
 | `ORCHESTRATOR_OIDC_ISSUER` | No | `""` | OIDC provider issuer URL (e.g. `https://accounts.google.com`) |
@@ -523,8 +525,8 @@ Backend settings use the `ORCHESTRATOR_` prefix; frontend uses `VITE_` variables
 | `ORCHESTRATOR_OIDC_REDIRECT_URI` | No | `http://localhost:8001/auth/oidc/callback` | Callback URL registered with the OIDC provider |
 | `ORCHESTRATOR_OIDC_TENANT_CLAIM` | No | `email` | ID token claim used as `tenant_id` (e.g. `email`, `sub`, `org_id`) |
 | `ORCHESTRATOR_OIDC_SCOPES` | No | `openid email profile` | OIDC scopes to request |
-| `ORCHESTRATOR_MAX_SNAPSHOTS` | No | `20` | Max snapshots to keep per workflow (0 = unlimited). Pruned daily by Celery Beat |
-| `ORCHESTRATOR_MCP_POOL_SIZE` | No | `4` | Number of warm MCP client sessions in the connection pool |
+| `ORCHESTRATOR_MAX_SNAPSHOTS` | No | `20` | **Fallback** retention cap when a tenant has no `tenant_policies.max_snapshots` override (ADMIN-01). 0 = unlimited. Pruned daily by Celery Beat. |
+| `ORCHESTRATOR_MCP_POOL_SIZE` | No | `4` | **Fallback** warm-session count per `(tenant, server)` MCP pool when a tenant has no `tenant_policies.mcp_pool_size` override (ADMIN-01). Applies at pool construction; existing pools keep their size. |
 
 ### 7.1.1 Langfuse observability (optional)
 

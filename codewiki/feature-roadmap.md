@@ -43,6 +43,16 @@ VERTEX-01 adds `vertex` to every LLM node's `provider` enum, reusing the unified
 
 VERTEX-02 moves the Vertex project + location off the process-global env vars onto per-tenant rows in `tenant_integrations` (`system='vertex'`). Each tenant can bill to their own GCP project. No migration — rides the existing table. New `VertexProjectsDialog` behind the toolbar Cloud icon. ADC stays process-global (service-account identity can't be tenant-scoped without runtime ADC swapping + tenant_secrets storage — a separate, larger feature). **Full scope caveat + future-work sketch** lives in [vertex.md §5](vertex.md).
 
+### Sprint 2D in flight — Multi-tenant admin knobs
+
+| # | Feature | Status |
+|---|---------|--------|
+| ADMIN-01 | Per-tenant overrides for `execution_quota_per_hour`, `max_snapshots`, `mcp_pool_size` | **Done** — see below |
+| ADMIN-02 | Dynamic per-tenant slowapi rate limits | Pending |
+| ADMIN-03 | Per-tenant LLM provider API keys (parallels VERTEX-02) | Pending |
+
+ADMIN-01 adds the `tenant_policies` table (migration `0020`) + the resolver + API + dialog (toolbar Sliders icon). Rate-limit and LLM-key tickets are deliberately separate because they each have meaningful engineering surface of their own — `slowapi` needs a decorator refactor, LLM keys need to thread tenant-scoped credentials through every `_call_*`/`stream_*` path. See [tenant-policies.md §4](tenant-policies.md) for the full env-var-by-env-var rationale on what's in, what's deferred, and what can't ever move (infra bootstrap vars).
+
 ---
 
 ## Pending backlog

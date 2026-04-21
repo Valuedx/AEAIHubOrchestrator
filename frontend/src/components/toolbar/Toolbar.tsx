@@ -26,6 +26,7 @@ import {
   Globe,
   FlaskConical,
   Cloud,
+  SlidersHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +44,7 @@ import { SecretsDialog } from "@/components/toolbar/SecretsDialog";
 import { IntegrationsDialog } from "@/components/toolbar/IntegrationsDialog";
 import { McpServersDialog } from "@/components/toolbar/McpServersDialog";
 import { VertexProjectsDialog } from "@/components/toolbar/VertexProjectsDialog";
+import { TenantPolicyDialog } from "@/components/toolbar/TenantPolicyDialog";
 import { HotkeyCheatsheet } from "@/components/toolbar/HotkeyCheatsheet";
 import { ApiPlaygroundDialog } from "@/components/toolbar/ApiPlaygroundDialog";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
@@ -72,6 +74,7 @@ export function Toolbar() {
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
   const [mcpServersOpen, setMcpServersOpen] = useState(false);
   const [vertexProjectsOpen, setVertexProjectsOpen] = useState(false);
+  const [tenantPolicyOpen, setTenantPolicyOpen] = useState(false);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
 
@@ -321,6 +324,15 @@ export function Toolbar() {
         <Button
           variant="ghost"
           size="sm"
+          onClick={() => setTenantPolicyOpen(true)}
+          title="Tenant Policy — per-tenant overrides for execution quota, snapshot retention, and MCP pool size"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={handleAddSticky}
           title="Add sticky note (Shift+S)"
         >
@@ -419,6 +431,7 @@ export function Toolbar() {
       <IntegrationsDialog open={integrationsOpen} onOpenChange={setIntegrationsOpen} />
       <McpServersDialog open={mcpServersOpen} onOpenChange={setMcpServersOpen} />
       <VertexProjectsDialog open={vertexProjectsOpen} onOpenChange={setVertexProjectsOpen} />
+      <TenantPolicyDialog open={tenantPolicyOpen} onOpenChange={setTenantPolicyOpen} />
       <TemplateGalleryDialog open={templatesOpen} onOpenChange={setTemplatesOpen} />
       <WorkflowListDialog open={listOpen} onOpenChange={setListOpen} />
       <VersionHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} />

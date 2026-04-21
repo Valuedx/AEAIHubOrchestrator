@@ -464,6 +464,39 @@ export interface TenantMcpServerUpdate {
   is_default?: boolean;
 }
 
+// ADMIN-01 — per-tenant policy overrides.
+//
+// A tenant has exactly one policy row (keyed by tenant_id, not a UUID).
+// ``values`` are the EFFECTIVE values (override if set; env default
+// otherwise). ``source`` names where each field actually came from so
+// the UI can show operators which knobs are inherited vs. overridden.
+export type TenantPolicySource = "tenant_policy" | "env_default";
+
+export interface TenantPolicyOut {
+  tenant_id: string;
+  values: {
+    execution_quota_per_hour: number;
+    max_snapshots: number;
+    mcp_pool_size: number;
+  };
+  source: {
+    execution_quota_per_hour: TenantPolicySource;
+    max_snapshots: TenantPolicySource;
+    mcp_pool_size: TenantPolicySource;
+  };
+  updated_at: string | null;
+}
+
+// PATCH body: each field is optional.
+// * ``undefined`` (field omitted)  → leave prior override alone
+// * ``null``                       → clear override, fall through to env default
+// * ``number``                     → set / overwrite override
+export interface TenantPolicyUpdate {
+  execution_quota_per_hour?: number | null;
+  max_snapshots?: number | null;
+  mcp_pool_size?: number | null;
+}
+
 export interface KBChunkOut {
   content: string;
   score: number;
@@ -1041,5 +1074,20 @@ export const api = {
 
   deleteMcpServer(id: string): Promise<void> {
     return request(`/api/v1/tenant-mcp-servers/${id}`, { method: "DELETE" });
+  },
+
+  // ---------------------------------------------------------------------------
+  // ADMIN-01 — per-tenant policy singleton
+  // ---------------------------------------------------------------------------
+
+  getTenantPolicy(): Promise<TenantPolicyOut> {
+    return request("/api/v1/tenant-policy");
+  },
+
+  updateTenantPolicy(body: TenantPolicyUpdate): Promise<TenantPolicyOut> {
+    return request("/api/v1/tenant-policy", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
   },
 };

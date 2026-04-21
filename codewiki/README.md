@@ -16,6 +16,7 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [Developer Workflow](dev-workflow.md) | Sprint 2A developer-velocity features — data pinning (DV-01), test single node (DV-02), sticky notes (DV-03), expression helpers (DV-04), duplicate workflow (DV-05), hotkey cheatsheet (DV-06), active/inactive toggle (DV-07) |
 | [MCP Audit](mcp-audit.md) | Sprint 2B — current MCP client vs. 2025-06-18 spec; ranked gap list and the per-tenant server registry (MCP-01 + MCP-02) |
 | [Vertex AI Integration](vertex.md) | VERTEX-01 + VERTEX-02 end-to-end — ADC setup, per-tenant project routing, and the scope caveat around per-tenant *identity* (which is NOT what VERTEX-02 provides). **Read before making multi-tenant compliance decisions.** |
+| [Tenant Policies](tenant-policies.md) | ADMIN-01 — per-tenant override of `execution_quota_per_hour`, `max_snapshots`, `mcp_pool_size`. Env vars become fallbacks. Section 4 enumerates every other env var and why it was / wasn't moved. |
 | [RAG & Knowledge Base](rag-knowledge-base.md) | Vector stores, embedding providers, chunking strategies, ingestion and retrieval pipelines |
 | [Frontend Guide](frontend-guide.md) | React component tree, Zustand stores, canvas, toolbar, and sidebar |
 | [Deployment](deployment.md) | Docker Compose, environment variables, Celery, migrations |
