@@ -47,11 +47,13 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 
 | # | Feature | Status |
 |---|---------|--------|
-| ADMIN-01 | Per-tenant overrides for `execution_quota_per_hour`, `max_snapshots`, `mcp_pool_size` | **Done** — see below |
-| ADMIN-02 | Dynamic per-tenant slowapi rate limits | Pending |
+| ADMIN-01 | Per-tenant overrides for `execution_quota_per_hour`, `max_snapshots`, `mcp_pool_size` | **Done** |
+| ADMIN-02 | Per-tenant API rate limits (real enforcement via `TenantRateLimitMiddleware`) | **Done** — see below |
 | ADMIN-03 | Per-tenant LLM provider API keys (parallels VERTEX-02) | Pending |
 
-ADMIN-01 adds the `tenant_policies` table (migration `0020`) + the resolver + API + dialog (toolbar Sliders icon). Rate-limit and LLM-key tickets are deliberately separate because they each have meaningful engineering surface of their own — `slowapi` needs a decorator refactor, LLM keys need to thread tenant-scoped credentials through every `_call_*`/`stream_*` path. See [tenant-policies.md §4](tenant-policies.md) for the full env-var-by-env-var rationale on what's in, what's deferred, and what can't ever move (infra bootstrap vars).
+ADMIN-01 adds the `tenant_policies` table (migration `0020`) + the resolver + API + dialog (toolbar Sliders icon).
+
+ADMIN-02 extends `tenant_policies` with two rate-limit columns (migration `0021`) and adds a `TenantRateLimitMiddleware`. **Notably, this is the first real API rate-limit enforcement in the orchestrator** — the previous `slowapi.Limiter` was instantiated but never wired into a middleware, so the pre-ADMIN-02 `RATE_LIMIT_*` env vars were inert. The new middleware does Redis INCR+EXPIRE per `(tenant, time-bucket)` with graceful fail-open on Redis errors. See [tenant-policies.md §4](tenant-policies.md) for the full env-var-by-env-var rationale.
 
 ---
 

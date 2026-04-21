@@ -29,7 +29,12 @@ class Settings(BaseSettings):
 
     # Rate limiting
     rate_limit_requests: int = 100
-    rate_limit_window: str = "1 minute"
+    rate_limit_window: str = "1 minute"  # DEPRECATED — see rate_limit_window_seconds
+    # ADMIN-02 — integer-seconds window used by the real rate-limit
+    # middleware. Supersedes the old slowapi-format string above, which
+    # was never actually enforced (no middleware was installed). Kept as
+    # an env default when a tenant has no tenant_policies override.
+    rate_limit_window_seconds: int = 60
     execution_quota_per_hour: int = 50
 
     # OIDC federation (optional — set oidc_enabled=true to activate)

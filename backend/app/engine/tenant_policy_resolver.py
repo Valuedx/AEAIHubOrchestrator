@@ -43,6 +43,9 @@ class EffectivePolicy:
     execution_quota_per_hour: int
     max_snapshots: int
     mcp_pool_size: int
+    # ADMIN-02
+    rate_limit_requests_per_window: int
+    rate_limit_window_seconds: int
     source: dict[str, PolicySource]
 
 
@@ -51,10 +54,14 @@ def _env_defaults() -> EffectivePolicy:
         execution_quota_per_hour=settings.execution_quota_per_hour,
         max_snapshots=settings.max_snapshots,
         mcp_pool_size=settings.mcp_pool_size,
+        rate_limit_requests_per_window=settings.rate_limit_requests,
+        rate_limit_window_seconds=settings.rate_limit_window_seconds,
         source={
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
             "mcp_pool_size": "env_default",
+            "rate_limit_requests_per_window": "env_default",
+            "rate_limit_window_seconds": "env_default",
         },
     )
 
@@ -110,6 +117,16 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 row.mcp_pool_size,
                 settings.mcp_pool_size,
                 "mcp_pool_size",
+            ),
+            rate_limit_requests_per_window=_pick(
+                row.rate_limit_requests_per_window,
+                settings.rate_limit_requests,
+                "rate_limit_requests_per_window",
+            ),
+            rate_limit_window_seconds=_pick(
+                row.rate_limit_window_seconds,
+                settings.rate_limit_window_seconds,
+                "rate_limit_window_seconds",
             ),
             source=source,
         )

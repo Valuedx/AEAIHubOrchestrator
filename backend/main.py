@@ -23,6 +23,7 @@ from app.api.tenant_integrations import router as tenant_integrations_router
 from app.api.tenant_mcp_servers import router as tenant_mcp_servers_router
 from app.api.tenant_policies import router as tenant_policies_router
 from app.security.rate_limiter import limiter
+from app.security.tenant_rate_limit import TenantRateLimitMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# ADMIN-02: per-tenant API rate limit. Added AFTER CORS so preflight
+# OPTIONS requests don't count against the tenant's budget (Starlette
+# processes middlewares outside-in; CORS short-circuits OPTIONS before
+# our middleware runs).
+app.add_middleware(TenantRateLimitMiddleware)
 
 app.include_router(workflows_router)
 app.include_router(tools_router)

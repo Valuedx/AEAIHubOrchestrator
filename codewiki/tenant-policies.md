@@ -15,6 +15,10 @@ This page is the canonical reference. Read §4 before assuming every env knob is
 | `execution_quota_per_hour` | Env only (`ORCHESTRATOR_EXECUTION_QUOTA_PER_HOUR`) | Per-tenant, env fallback | `security/rate_limiter.py::_check_via_redis` + `_check_via_db` |
 | `max_snapshots` | Env only (`ORCHESTRATOR_MAX_SNAPSHOTS`) | Per-tenant, env fallback | `workers/scheduler.py::prune_old_snapshots` (resolved once per tenant per run, not per workflow) |
 | `mcp_pool_size` | Env only (`ORCHESTRATOR_MCP_POOL_SIZE`) | Per-tenant, env fallback. **Applies at pool construction** — existing pools keep their original size until `shutdown_pool()` or app restart. | `engine/mcp_client.py::_pool_for` |
+| `rate_limit_requests_per_window` | Previously `ORCHESTRATOR_RATE_LIMIT_REQUESTS` *(but inert — see note below)* | **Now actually enforced**, per-tenant, env fallback | `security/tenant_rate_limit.py::TenantRateLimitMiddleware` (ADMIN-02) |
+| `rate_limit_window_seconds` | New — replaces the old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string ("1 minute") | Per-tenant, env fallback | Same middleware |
+
+> **Historical note:** before ADMIN-02 the `slowapi.Limiter` was instantiated with `default_limits` but no middleware was ever installed to apply it. The rate-limit env vars were effectively dead config. ADMIN-02's `TenantRateLimitMiddleware` is the first real enforcement. The old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string setting is deprecated — the new `ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS` int supersedes it.
 
 ---
 
@@ -129,9 +133,9 @@ The "bring `.env` configs to the admin UI" question in general is a minefield of
 
 ### 4c. Group: deliberately carved out as separate tickets
 
-| Env vars | Why separate |
+| Env vars | Why separate / status |
 |---|---|
-| `ORCHESTRATOR_RATE_LIMIT_REQUESTS` / `_WINDOW` | `slowapi.Limiter` reads its default-limits string at module import. Making it per-tenant requires replacing every `@limiter.limit(...)` decorator with a dynamic lambda — a route-by-route refactor. Tracked as **ADMIN-02**. |
+| `ORCHESTRATOR_RATE_LIMIT_REQUESTS` / `_WINDOW_SECONDS` | **Shipped as ADMIN-02.** Original deferral was because `slowapi` read its limit string at import time. Investigation showed slowapi was never actually wired into a middleware — the env vars had no runtime effect. ADMIN-02 dropped the slowapi path entirely in favour of a tiny custom `TenantRateLimitMiddleware` that does Redis INCR+EXPIRE per-tenant. |
 | Provider API keys (`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) | Per-tenant keys = per-tenant billing. Requires tenant_secrets-style storage + threading tenant_id into the six `_call_*` / `stream_*` functions (mirrors VERTEX-02's shape). Tracked as **ADMIN-03**. |
 
 ### 4d. Already solved via dedicated tables

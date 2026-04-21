@@ -358,6 +358,9 @@ class TenantPolicy(Base):
     execution_quota_per_hour = Column(Integer, nullable=True)
     max_snapshots = Column(Integer, nullable=True)
     mcp_pool_size = Column(Integer, nullable=True)
+    # ADMIN-02 — per-tenant API rate limit. Null = env default.
+    rate_limit_requests_per_window = Column(Integer, nullable=True)
+    rate_limit_window_seconds = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

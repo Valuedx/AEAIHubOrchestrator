@@ -68,6 +68,23 @@ class TenantPolicyUpdate(BaseModel):
             "Null clears the override."
         ),
     )
+    rate_limit_requests_per_window: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "ADMIN-02 — max API requests per window for this tenant. "
+            "Null clears the override so this tenant inherits "
+            "ORCHESTRATOR_RATE_LIMIT_REQUESTS."
+        ),
+    )
+    rate_limit_window_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "ADMIN-02 — rate-limit window duration in seconds. "
+            "60 = 1 minute, 3600 = 1 hour. Null clears the override."
+        ),
+    )
 
 
 class TenantPolicyOut(BaseModel):
@@ -91,6 +108,8 @@ def get_policy(
             "execution_quota_per_hour": policy.execution_quota_per_hour,
             "max_snapshots": policy.max_snapshots,
             "mcp_pool_size": policy.mcp_pool_size,
+            "rate_limit_requests_per_window": policy.rate_limit_requests_per_window,
+            "rate_limit_window_seconds": policy.rate_limit_window_seconds,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row and row.updated_at else None,
@@ -122,6 +141,10 @@ def update_policy(
         row.max_snapshots = body.max_snapshots
     if "mcp_pool_size" in sent:
         row.mcp_pool_size = body.mcp_pool_size
+    if "rate_limit_requests_per_window" in sent:
+        row.rate_limit_requests_per_window = body.rate_limit_requests_per_window
+    if "rate_limit_window_seconds" in sent:
+        row.rate_limit_window_seconds = body.rate_limit_window_seconds
 
     db.commit()
     db.refresh(row)
@@ -135,6 +158,8 @@ def update_policy(
             "execution_quota_per_hour": policy.execution_quota_per_hour,
             "max_snapshots": policy.max_snapshots,
             "mcp_pool_size": policy.mcp_pool_size,
+            "rate_limit_requests_per_window": policy.rate_limit_requests_per_window,
+            "rate_limit_window_seconds": policy.rate_limit_window_seconds,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row.updated_at else None,

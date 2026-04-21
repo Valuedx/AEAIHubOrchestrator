@@ -478,11 +478,16 @@ export interface TenantPolicyOut {
     execution_quota_per_hour: number;
     max_snapshots: number;
     mcp_pool_size: number;
+    // ADMIN-02
+    rate_limit_requests_per_window: number;
+    rate_limit_window_seconds: number;
   };
   source: {
     execution_quota_per_hour: TenantPolicySource;
     max_snapshots: TenantPolicySource;
     mcp_pool_size: TenantPolicySource;
+    rate_limit_requests_per_window: TenantPolicySource;
+    rate_limit_window_seconds: TenantPolicySource;
   };
   updated_at: string | null;
 }
@@ -495,6 +500,8 @@ export interface TenantPolicyUpdate {
   execution_quota_per_hour?: number | null;
   max_snapshots?: number | null;
   mcp_pool_size?: number | null;
+  rate_limit_requests_per_window?: number | null;
+  rate_limit_window_seconds?: number | null;
 }
 
 export interface KBChunkOut {

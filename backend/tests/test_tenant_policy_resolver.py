@@ -25,7 +25,9 @@ def patched_settings():
 
     with patch.object(settings, "execution_quota_per_hour", 50), \
          patch.object(settings, "max_snapshots", 20), \
-         patch.object(settings, "mcp_pool_size", 4):
+         patch.object(settings, "mcp_pool_size", 4), \
+         patch.object(settings, "rate_limit_requests", 100), \
+         patch.object(settings, "rate_limit_window_seconds", 60):
         yield settings
 
 
@@ -33,11 +35,15 @@ def _row(
     execution_quota_per_hour: int | None = None,
     max_snapshots: int | None = None,
     mcp_pool_size: int | None = None,
+    rate_limit_requests_per_window: int | None = None,
+    rate_limit_window_seconds: int | None = None,
 ):
     row = MagicMock()
     row.execution_quota_per_hour = execution_quota_per_hour
     row.max_snapshots = max_snapshots
     row.mcp_pool_size = mcp_pool_size
+    row.rate_limit_requests_per_window = rate_limit_requests_per_window
+    row.rate_limit_window_seconds = rate_limit_window_seconds
     return row
 
 
@@ -56,10 +62,14 @@ class TestEnvFallback:
         assert policy.execution_quota_per_hour == 50
         assert policy.max_snapshots == 20
         assert policy.mcp_pool_size == 4
+        assert policy.rate_limit_requests_per_window == 100
+        assert policy.rate_limit_window_seconds == 60
         assert policy.source == {
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
             "mcp_pool_size": "env_default",
+            "rate_limit_requests_per_window": "env_default",
+            "rate_limit_window_seconds": "env_default",
         }
 
     def test_no_row_for_tenant_returns_env_defaults(self, patched_settings):
@@ -94,6 +104,8 @@ class TestRowOverrides:
             execution_quota_per_hour=200,
             max_snapshots=5,
             mcp_pool_size=8,
+            rate_limit_requests_per_window=500,
+            rate_limit_window_seconds=30,
         )
         with patch("app.database.SessionLocal", return_value=_session_returning(row)), \
              patch("app.database.set_tenant_context"):
@@ -102,10 +114,14 @@ class TestRowOverrides:
         assert policy.execution_quota_per_hour == 200
         assert policy.max_snapshots == 5
         assert policy.mcp_pool_size == 8
+        assert policy.rate_limit_requests_per_window == 500
+        assert policy.rate_limit_window_seconds == 30
         assert policy.source == {
             "execution_quota_per_hour": "tenant_policy",
             "max_snapshots": "tenant_policy",
             "mcp_pool_size": "tenant_policy",
+            "rate_limit_requests_per_window": "tenant_policy",
+            "rate_limit_window_seconds": "tenant_policy",
         }
 
     def test_partial_override_inherits_missing_fields_from_env(self, patched_settings):

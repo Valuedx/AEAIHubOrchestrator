@@ -46,7 +46,12 @@ interface Props {
   onOpenChange: (open: boolean) => void;
 }
 
-type FieldKey = "execution_quota_per_hour" | "max_snapshots" | "mcp_pool_size";
+type FieldKey =
+  | "execution_quota_per_hour"
+  | "max_snapshots"
+  | "mcp_pool_size"
+  | "rate_limit_requests_per_window"
+  | "rate_limit_window_seconds";
 
 interface FieldMeta {
   key: FieldKey;
@@ -81,6 +86,22 @@ const FIELDS: FieldMeta[] = [
       "Warm MCP client sessions this tenant can hold per server. Changes apply when pools are (re)constructed — typically next app restart. Env default: ORCHESTRATOR_MCP_POOL_SIZE.",
     minEffective: 1,
   },
+  {
+    key: "rate_limit_requests_per_window",
+    label: "API rate limit — requests",
+    unit: "requests / window",
+    description:
+      "Max API requests per window for this tenant. Returns 429 with Retry-After beyond this. Env default: ORCHESTRATOR_RATE_LIMIT_REQUESTS.",
+    minEffective: 1,
+  },
+  {
+    key: "rate_limit_window_seconds",
+    label: "API rate limit — window",
+    unit: "seconds (60 = 1 min, 3600 = 1 hour)",
+    description:
+      "Sliding-window duration for the rate limit. Env default: ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS.",
+    minEffective: 1,
+  },
 ];
 
 
@@ -91,6 +112,8 @@ function emptyPending(): Record<FieldKey, Pending> {
     execution_quota_per_hour: { mode: "unchanged" },
     max_snapshots: { mode: "unchanged" },
     mcp_pool_size: { mode: "unchanged" },
+    rate_limit_requests_per_window: { mode: "unchanged" },
+    rate_limit_window_seconds: { mode: "unchanged" },
   };
 }
 
