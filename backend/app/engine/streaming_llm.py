@@ -219,16 +219,20 @@ def stream_openai(
     instance_id: str,
     node_id: str,
     messages: list[dict[str, Any]] | None = None,
-    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Stream OpenAI, publishing tokens to Redis."""
-    from app.config import settings
-    if not settings.openai_api_key:
-        raise ValueError("ORCHESTRATOR_OPENAI_API_KEY is not configured")
-
+    # ADMIN-03 — per-tenant OpenAI key via tenant_secrets with env fallback.
+    from app.engine.llm_credentials_resolver import (
+        get_openai_api_key,
+        get_openai_base_url,
+    )
     from openai import OpenAI
 
-    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+    client = OpenAI(
+        api_key=get_openai_api_key(tenant_id),
+        base_url=get_openai_base_url(tenant_id),
+    )
 
     payload_messages = messages or (
         ([{"role": "system", "content": system_prompt}] if system_prompt else [])
@@ -275,16 +279,14 @@ def stream_anthropic(
     instance_id: str,
     node_id: str,
     messages: list[dict[str, Any]] | None = None,
-    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Stream Anthropic, publishing tokens to Redis."""
-    from app.config import settings
-    if not settings.anthropic_api_key:
-        raise ValueError("ORCHESTRATOR_ANTHROPIC_API_KEY is not configured")
-
+    # ADMIN-03 — per-tenant Anthropic key via tenant_secrets.
+    from app.engine.llm_credentials_resolver import get_anthropic_api_key
     from anthropic import Anthropic
 
-    client = Anthropic(api_key=settings.anthropic_api_key)
+    client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
     normalized = messages or (
         ([{"role": "system", "content": system_prompt}] if system_prompt else [])
         + [{"role": "user", "content": user_message}]

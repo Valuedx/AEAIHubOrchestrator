@@ -23,6 +23,7 @@ from app.api.async_jobs import router as async_jobs_router
 from app.api.tenant_integrations import router as tenant_integrations_router
 from app.api.tenant_mcp_servers import router as tenant_mcp_servers_router
 from app.api.tenant_policies import router as tenant_policies_router
+from app.api.llm_credentials import router as llm_credentials_router
 from app.security.rate_limiter import limiter
 from app.security.tenant_rate_limit import TenantRateLimitMiddleware
 
@@ -111,6 +112,11 @@ app.include_router(
     tenant_policies_router,
     prefix="/api/v1/tenant-policy",
     tags=["tenant-policy"],
+)
+app.include_router(
+    llm_credentials_router,
+    prefix="/api/v1/llm-credentials",
+    tags=["llm-credentials"],
 )
 
 if settings.oidc_enabled:

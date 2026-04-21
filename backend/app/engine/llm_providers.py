@@ -217,9 +217,12 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
             location=location,
         )
     if backend == "genai":
-        if not settings.google_api_key:
-            raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
-        return genai.Client(api_key=settings.google_api_key)
+        # ADMIN-03 — per-tenant Google AI Studio key via the LLM
+        # credentials resolver (tenant_secrets → env fallback). Raises
+        # a remediation-bearing ValueError if neither is set.
+        from app.engine.llm_credentials_resolver import get_google_api_key
+
+        return genai.Client(api_key=get_google_api_key(tenant_id))
     raise ValueError(f"Unknown google backend: {backend!r}")
 
 
@@ -340,16 +343,20 @@ def _call_openai(
     temperature: float,
     max_tokens: int,
     messages: list[dict[str, Any]] | None = None,
-    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
-    if not settings.openai_api_key:
-        raise ValueError("ORCHESTRATOR_OPENAI_API_KEY is not configured")
-
+    # ADMIN-03 — per-tenant OpenAI key via tenant_secrets (LLM_OPENAI_*)
+    # with env fallback. Raises a remediation-bearing ValueError if
+    # neither tenant nor env has a key.
+    from app.engine.llm_credentials_resolver import (
+        get_openai_api_key,
+        get_openai_base_url,
+    )
     from openai import OpenAI
 
     client = OpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        api_key=get_openai_api_key(tenant_id),
+        base_url=get_openai_base_url(tenant_id),
     )
 
     payload_messages = _coerce_messages(system_prompt, user_message, messages)
@@ -381,14 +388,13 @@ def _call_anthropic(
     temperature: float,
     max_tokens: int,
     messages: list[dict[str, Any]] | None = None,
-    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
-    if not settings.anthropic_api_key:
-        raise ValueError("ORCHESTRATOR_ANTHROPIC_API_KEY is not configured")
-
+    # ADMIN-03 — per-tenant Anthropic key via tenant_secrets.
+    from app.engine.llm_credentials_resolver import get_anthropic_api_key
     from anthropic import Anthropic
 
-    client = Anthropic(api_key=settings.anthropic_api_key)
+    client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
 
     normalized = _coerce_messages(system_prompt, user_message, messages)
     system_parts = [str(msg.get("content", "")) for msg in normalized if msg.get("role") == "system"]

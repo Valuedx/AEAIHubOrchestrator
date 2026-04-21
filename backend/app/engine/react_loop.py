@@ -201,10 +201,19 @@ def _openai_init(messages: list[dict]) -> list[dict]:
 def _openai_call(
     model: str, messages: list[dict], tools: list[dict],
     temperature: float, max_tokens: int,
-    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
+    # ADMIN-03 — per-tenant OpenAI key via tenant_secrets.
+    from app.engine.llm_credentials_resolver import (
+        get_openai_api_key,
+        get_openai_base_url,
+    )
     from openai import OpenAI
-    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+
+    client = OpenAI(
+        api_key=get_openai_api_key(tenant_id),
+        base_url=get_openai_base_url(tenant_id),
+    )
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -279,10 +288,13 @@ def _anthropic_init(messages: list[dict]) -> dict:
 def _anthropic_call(
     model: str, state: dict, tools: list[dict],
     temperature: float, max_tokens: int,
-    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
+    # ADMIN-03 — per-tenant Anthropic key via tenant_secrets.
+    from app.engine.llm_credentials_resolver import get_anthropic_api_key
     from anthropic import Anthropic
-    client = Anthropic(api_key=settings.anthropic_api_key)
+
+    client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
 
     anthropic_tools = [
         {
