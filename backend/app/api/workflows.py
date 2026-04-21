@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.database import SessionLocal, get_db, set_tenant_context
+from app.database import SessionLocal, get_db, get_tenant_db, set_tenant_context
 from app.security.tenant import get_tenant_id
 from app.models.workflow import AsyncJob, WorkflowDefinition, WorkflowInstance, WorkflowSnapshot, ExecutionLog, InstanceCheckpoint
 from app.api.schemas import (
@@ -90,7 +90,7 @@ def _resolve_graph_json_for_version(
 def create_workflow(
     body: WorkflowCreate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     import logging
     _log = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ def create_workflow(
 @router.get("", response_model=list[WorkflowOut])
 def list_workflows(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     return (
         db.query(WorkflowDefinition)
@@ -134,7 +134,7 @@ def list_workflows(
 def get_workflow(
     workflow_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     wf = (
         db.query(WorkflowDefinition)
@@ -151,7 +151,7 @@ def update_workflow(
     workflow_id: uuid.UUID,
     body: WorkflowUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     wf = (
         db.query(WorkflowDefinition)
@@ -237,7 +237,7 @@ def _next_copy_name(db: Session, tenant_id: str, base_name: str) -> str:
 def duplicate_workflow(
     workflow_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Clone a workflow definition.
 
@@ -324,7 +324,7 @@ def pin_node_output(
     node_id: str,
     body: PinNodeRequest,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Pin the given output on a node so subsequent runs short-circuit
     dispatch_node and return the pin without re-executing.
@@ -358,7 +358,7 @@ def unpin_node_output(
     workflow_id: uuid.UUID,
     node_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Clear a node's pinned output so the next run executes the handler."""
     wf = (
@@ -409,7 +409,7 @@ def test_node(
     node_id: str,
     body: TestNodeRequest,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Execute a single node in isolation against upstream pinned outputs.
 
@@ -430,7 +430,8 @@ def test_node(
     from app.engine.exceptions import NodeSuspendedAsync
     from app.engine.node_handlers import dispatch_node
 
-    set_tenant_context(db, tenant_id)
+    # RLS-01: tenant context is already set by the get_tenant_db
+    # dependency; no manual call needed on the request session.
 
     wf = (
         db.query(WorkflowDefinition)
@@ -505,7 +506,7 @@ def test_node(
 def delete_workflow(
     workflow_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     wf = (
         db.query(WorkflowDefinition)
@@ -527,7 +528,7 @@ async def execute_workflow(
     workflow_id: uuid.UUID,
     body: ExecuteRequest,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     from app.security.rate_limiter import check_execution_quota
     check_execution_quota(db, tenant_id)
@@ -622,7 +623,7 @@ def callback_workflow(
     instance_id: uuid.UUID,
     body: CallbackRequest,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     instance = (
         db.query(WorkflowInstance)
@@ -647,7 +648,7 @@ def retry_workflow(
     instance_id: uuid.UUID,
     body: RetryRequest = RetryRequest(),
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Retry a failed workflow instance from the point of failure.
 
@@ -681,7 +682,7 @@ def pause_workflow(
     workflow_id: uuid.UUID,
     instance_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Request cooperative pause: the runner stops after the current node finishes."""
     instance = (
@@ -712,7 +713,7 @@ def resume_paused_workflow(
     instance_id: uuid.UUID,
     body: ResumePausedRequest = ResumePausedRequest(),
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Resume a workflow that was paused between nodes (not HITL ``suspended``)."""
     instance = (
@@ -746,7 +747,7 @@ def cancel_workflow(
     workflow_id: uuid.UUID,
     instance_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Request cooperative cancellation: the runner stops after the current node finishes.
 
@@ -790,7 +791,7 @@ def cancel_workflow(
 def list_instances(
     workflow_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     return (
         db.query(WorkflowInstance)
@@ -809,7 +810,7 @@ def list_instance_async_jobs(
     workflow_id: uuid.UUID,
     instance_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """List async-external jobs (AutomationEdge, future Jenkins, ...) for
     an instance.
@@ -840,7 +841,7 @@ def list_instance_async_jobs(
 def list_versions(
     workflow_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """List all saved snapshots for a workflow (excludes graph_json for performance)."""
     wf = (
@@ -868,7 +869,7 @@ def get_graph_at_definition_version(
     workflow_id: uuid.UUID,
     version: int,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Return the workflow graph as it existed at a given definition version.
 
@@ -899,7 +900,7 @@ def rollback_version(
     workflow_id: uuid.UUID,
     version: int,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Restore a workflow to a previously saved snapshot version.
 
@@ -944,7 +945,7 @@ def get_instance_context(
     workflow_id: uuid.UUID,
     instance_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Return the current execution context snapshot for HITL review.
 
@@ -1001,7 +1002,7 @@ def list_checkpoints(
     workflow_id: uuid.UUID,
     instance_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """List all per-node checkpoints for an execution instance.
 
@@ -1035,7 +1036,7 @@ def get_checkpoint_detail(
     instance_id: uuid.UUID,
     checkpoint_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Return a specific checkpoint with its full context snapshot.
 
@@ -1073,7 +1074,7 @@ def get_instance_detail(
     workflow_id: uuid.UUID,
     instance_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     instance = (
         db.query(WorkflowInstance)

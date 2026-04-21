@@ -69,11 +69,15 @@ All database queries include a `tenant_id` filter. The `get_tenant_id` dependenc
 
 ### Database layer (Row Level Security)
 
-PostgreSQL Row Level Security (RLS) policies provide defense-in-depth. The backend sets a session-level variable before each query:
+PostgreSQL Row Level Security (RLS) policies provide defense-in-depth. Every request handler that reads or writes tenant-scoped tables takes its SQLAlchemy session via the `get_tenant_db` FastAPI dependency (defined in `backend/app/database.py`). That dependency resolves the tenant from the `X-Tenant-Id` header (or JWT claim) and calls `set_tenant_context(db, tenant_id)` on the session before yielding it, so the `app.tenant_id` GUC is in place before any query runs:
 
 ```sql
-SET LOCAL app.tenant_id = '<tenant_id>';
+SELECT set_tenant_id('<tenant_id>');  -- session-scoped, survives commits
 ```
+
+Handlers that don't identify the tenant via the `X-Tenant-Id` header — notably the path-scoped A2A surface (`/tenants/{tenant_id}/...`) and the Celery worker's own `SessionLocal()` — keep using the plain `get_db` dependency but call `set_tenant_context(db, path_tenant_id)` themselves before any query.
+
+> **Why this matters — incident 2026-04-21:** A normal `POST /api/v1/workflows` started failing with `InsufficientPrivilege: new row violates row-level security policy for table "workflow_definitions"` the day a tenant switched the application DB user from a Postgres superuser to a normal role. The code had been running for months with nearly every tenant-scoped endpoint using the tenant-unaware `get_db` dependency — which yields a session **without** setting `app.tenant_id`. Superusers silently bypass all RLS policies, so queries had appeared to "work" even though the GUC was never set. Ticket RLS-01 swept `Depends(get_db)` → `Depends(get_tenant_db)` across every header-based tenant endpoint, added explicit `set_tenant_context` calls on the remaining path-based A2A endpoints, and added `tests/test_rls_dependency_wired.py` as a regression guard that asserts the RLS GUC is set on each request. The STARTUP-01 `rls_posture` check now `warn`s when it sees a superuser role in use.
 
 RLS policies on all tables enforce:
 

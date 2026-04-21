@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.models.workflow import TenantIntegration
 
@@ -115,7 +115,7 @@ class TenantIntegrationOut(BaseModel):
 def create_integration(
     body: TenantIntegrationCreate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     if body.system not in _SUPPORTED_SYSTEMS:
         raise HTTPException(
@@ -155,7 +155,7 @@ def create_integration(
 @router.get("", response_model=list[TenantIntegrationOut])
 def list_integrations(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     system: str | None = Query(
         default=None,
         description="Filter by integration system (e.g. 'automationedge').",
@@ -172,7 +172,7 @@ def list_integrations(
 def get_integration(
     integration_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     return _to_out(_get_or_404(db, tenant_id, integration_id))
 
@@ -182,7 +182,7 @@ def update_integration(
     integration_id: str,
     body: TenantIntegrationUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     row = _get_or_404(db, tenant_id, integration_id)
 
@@ -218,7 +218,7 @@ def update_integration(
 def delete_integration(
     integration_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     row = _get_or_404(db, tenant_id, integration_id)
     db.delete(row)

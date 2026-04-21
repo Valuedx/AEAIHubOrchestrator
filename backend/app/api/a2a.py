@@ -52,7 +52,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal, get_db, set_tenant_context
+from app.database import SessionLocal, get_db, get_tenant_db, set_tenant_context
 from app.models.workflow import (
     A2AApiKey,
     WorkflowDefinition,
@@ -106,9 +106,15 @@ def _get_a2a_tenant(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> str:
-    """Validate the Bearer token against a2a_api_keys for the path tenant_id."""
+    """Validate the Bearer token against a2a_api_keys for the path tenant_id.
+
+    The A2A surface identifies the tenant via URL path rather than the
+    ``X-Tenant-Id`` header, so ``get_tenant_db`` (which keys on the
+    header) can't be used. Set the RLS context explicitly instead.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "A2A request requires a Bearer token")
+    set_tenant_context(db, tenant_id)
     raw_key = authorization.removeprefix("Bearer ").strip()
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     row = (
@@ -189,7 +195,10 @@ def agent_card(
 
     Lists all workflows the tenant has marked as is_published=True.
     No authentication required — agent cards are public discovery documents.
+    The tenant is taken from the URL path, not the ``X-Tenant-Id`` header,
+    so the RLS context is set inline rather than via ``get_tenant_db``.
     """
+    set_tenant_context(db, tenant_id)
     workflows = (
         db.query(WorkflowDefinition)
         .filter_by(tenant_id=tenant_id, is_published=True)
@@ -482,7 +491,7 @@ _keys_router = APIRouter(prefix="/api/v1/a2a/keys", tags=["a2a-keys"])
 def create_api_key(
     body: A2AApiKeyCreate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Generate a new A2A inbound key.
 
@@ -518,7 +527,7 @@ def create_api_key(
 @_keys_router.get("", response_model=list[A2AApiKeyOut])
 def list_api_keys(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """List all A2A keys for the tenant (no key material returned)."""
     return (
@@ -533,7 +542,7 @@ def list_api_keys(
 def revoke_api_key(
     key_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Revoke an A2A key. External agents using this key will immediately get 401."""
     row = db.query(A2AApiKey).filter_by(id=key_id, tenant_id=tenant_id).first()
@@ -556,7 +565,7 @@ def publish_workflow(
     workflow_id: uuid.UUID,
     body: WorkflowPublishRequest,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Set or clear the is_published flag on a workflow.
 

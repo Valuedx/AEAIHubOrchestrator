@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import get_db
+from app.database import get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.engine.embedding_provider import (
     get_embedding_dimension,
@@ -170,7 +170,7 @@ def get_vector_stores():
 @router.post("", response_model=KBOut, status_code=201)
 def create_knowledge_base(
     body: KBCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KnowledgeBase
@@ -202,7 +202,7 @@ def create_knowledge_base(
 
 @router.get("", response_model=list[KBOut])
 def list_knowledge_bases(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KnowledgeBase
@@ -219,7 +219,7 @@ def list_knowledge_bases(
 @router.get("/{kb_id}", response_model=KBOut)
 def get_knowledge_base(
     kb_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KnowledgeBase
@@ -234,7 +234,7 @@ def get_knowledge_base(
 def update_knowledge_base(
     kb_id: str,
     body: KBUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KnowledgeBase
@@ -256,7 +256,7 @@ def update_knowledge_base(
 @router.delete("/{kb_id}", status_code=204)
 def delete_knowledge_base(
     kb_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KnowledgeBase
@@ -285,7 +285,7 @@ def delete_knowledge_base(
 async def upload_document(
     kb_id: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KnowledgeBase, KBDocument
@@ -328,7 +328,7 @@ async def upload_document(
 @router.get("/{kb_id}/documents", response_model=list[DocumentOut])
 def list_documents(
     kb_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KBDocument
@@ -346,7 +346,7 @@ def list_documents(
 def delete_document(
     kb_id: str,
     doc_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.models.knowledge import KnowledgeBase, KBDocument
@@ -382,7 +382,7 @@ def delete_document(
 def search_knowledge_base(
     kb_id: str,
     body: SearchRequest,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     tenant_id: str = Depends(get_tenant_id),
 ):
     from app.engine.retriever import retrieve_chunks

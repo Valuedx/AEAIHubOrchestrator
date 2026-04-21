@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.security.vault import TenantSecret, encrypt_secret
 
@@ -49,7 +49,7 @@ class SecretOut(BaseModel):
 def create_secret(
     body: SecretCreate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     if not _KEY_NAME_RE.match(body.key_name):
         raise HTTPException(
@@ -80,7 +80,7 @@ def create_secret(
 @router.get("", response_model=list[SecretOut])
 def list_secrets(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     rows = (
         db.query(TenantSecret)
@@ -95,7 +95,7 @@ def list_secrets(
 def get_secret(
     secret_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     row = _get_or_404(db, tenant_id, secret_id)
     return _to_out(row)
@@ -106,7 +106,7 @@ def update_secret(
     secret_id: str,
     body: SecretUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     row = _get_or_404(db, tenant_id, secret_id)
     row.encrypted_value = encrypt_secret(body.value)
@@ -119,7 +119,7 @@ def update_secret(
 def delete_secret(
     secret_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     row = _get_or_404(db, tenant_id, secret_id)
     db.delete(row)

@@ -18,7 +18,7 @@ from app.api.schemas import (
     ConversationSessionOut,
     ConversationSessionSummary,
 )
-from app.database import get_db
+from app.database import get_tenant_db
 from app.engine.memory_service import archive_active_episode, get_or_create_session
 from app.models.memory import ConversationEpisode, ConversationMessage
 from app.models.workflow import ConversationSession
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 @router.get("", response_model=list[ConversationSessionSummary])
 def list_sessions(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """List all conversation sessions for the tenant (summary only, no messages)."""
     sessions = (
@@ -55,7 +55,7 @@ def list_sessions(
 def get_session(
     session_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Retrieve the full message history for a conversation session."""
     session = (
@@ -93,7 +93,7 @@ def get_session(
 def delete_session(
     session_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Clear all message history for a conversation session.
 
@@ -115,7 +115,7 @@ def delete_session(
 def list_session_episodes(
     session_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     session = (
         db.query(ConversationSession)
@@ -157,7 +157,7 @@ def archive_session_episode(
     session_id: str,
     body: ArchiveConversationEpisodeRequest,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     session = get_or_create_session(
         db,
