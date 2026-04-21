@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     execution_quota_per_hour: int = 50
 
+    # STARTUP-01 — silence the preflight-check pass during tests that
+    # spin up a FastAPI app but don't need real DB/Redis/Celery IO.
+    skip_startup_checks: bool = False
+
     # OIDC federation (optional — set oidc_enabled=true to activate)
     oidc_enabled: bool = False
     oidc_issuer: str = ""                          # e.g. https://accounts.google.com

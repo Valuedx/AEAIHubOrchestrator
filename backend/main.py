@@ -2,6 +2,7 @@
 
 import atexit
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,10 +31,45 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """STARTUP-01 — run preflight checks once on boot.
+
+    Each check catches its own exceptions so a misbehaving check can't
+    abort startup. Results are logged at INFO/WARNING/ERROR levels so
+    operators see failures in the regular uvicorn stream. The
+    ``/health/ready`` endpoint re-runs the same checks live for
+    readiness probes.
+
+    Disabled when ``ORCHESTRATOR_SKIP_STARTUP_CHECKS=true`` — tests
+    that spin up TestClient(app) without real IO set that to keep
+    per-test logs quiet.
+    """
+    if not settings.skip_startup_checks:
+        from app.startup_checks import run_all_checks, log_results, overall_status
+
+        results = run_all_checks()
+        log_results(results)
+        agg = overall_status(results)
+        if agg == "fail":
+            logging.getLogger(__name__).error(
+                "Startup checks report FAIL — /health/ready will 503 until remedied.",
+            )
+        elif agg == "warn":
+            logging.getLogger(__name__).warning(
+                "Startup checks report WARN — app will serve traffic; see remediation messages above.",
+            )
+        else:
+            logging.getLogger(__name__).info("All startup checks passed.")
+    yield
+
+
 app = FastAPI(
     title="AE AI Hub - Orchestrator",
     description="Agentic workflow orchestration engine with visual DAG builder",
     version="0.9.2",
+    lifespan=lifespan,
 )
 
 app.state.limiter = limiter
@@ -88,7 +124,29 @@ atexit.register(_shutdown_langfuse)
 
 @app.get("/health")
 def health():
+    """Liveness probe — unconditional 200 as long as the process is up.
+
+    Does NOT verify any external dependency. Use ``/health/ready`` for
+    readiness (DB, Redis, Celery workers, RLS posture, etc.).
+    """
     return {"status": "ok", "service": "ae-ai-hub-orchestrator"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness probe (STARTUP-01).
+
+    Runs every preflight check live and returns a structured report.
+    HTTP 503 when any check is ``fail``; HTTP 200 otherwise (warns
+    included). k8s readiness probes should pair with this; liveness
+    probes should keep using ``/health``.
+    """
+    from app.startup_checks import overall_status, results_as_dict, run_all_checks
+
+    results = run_all_checks()
+    body = results_as_dict(results)
+    status_code = 503 if overall_status(results) == "fail" else 200
+    return JSONResponse(status_code=status_code, content=body)
 
 
 @app.get("/auth/token")
