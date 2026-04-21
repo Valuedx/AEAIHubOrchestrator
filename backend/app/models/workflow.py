@@ -338,6 +338,30 @@ class AsyncJob(Base):
     )
 
 
+class TenantPolicy(Base):
+    """ADMIN-01 — per-tenant overrides for operational knobs.
+
+    Exactly one row per tenant. Every override is nullable — a null
+    means "use the env-default value" (resolved at read time by
+    ``engine/tenant_policy_resolver.get_effective_policy``). Callers
+    that need an effective value must go through the resolver, never
+    read columns off this model directly.
+
+    Scope: ``execution_quota_per_hour``, ``max_snapshots``,
+    ``mcp_pool_size``. Other env knobs (rate limits, LLM keys, ADC)
+    are intentionally not on this table — see ADMIN-02 / ADMIN-03.
+    """
+
+    __tablename__ = "tenant_policies"
+
+    tenant_id = Column(String(64), primary_key=True)
+    execution_quota_per_hour = Column(Integer, nullable=True)
+    max_snapshots = Column(Integer, nullable=True)
+    mcp_pool_size = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class TenantMcpServer(Base):
     """MCP-02 — per-tenant MCP server registration.
 

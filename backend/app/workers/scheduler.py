@@ -360,21 +360,45 @@ def prune_old_snapshots():
     """Delete old workflow snapshots beyond the configured max_snapshots limit.
 
     Keeps the most recent N snapshots per workflow and deletes the rest.
+
+    ADMIN-01: ``max_snapshots`` is looked up per-tenant via
+    ``tenant_policy_resolver``. A tenant-level override = 0 means
+    "unlimited" for that tenant's workflows. Policies are resolved
+    once per tenant per run (not per workflow) to avoid redundant
+    DB hits.
     """
-    from app.config import settings
-    max_keep = settings.max_snapshots
-    if max_keep <= 0:
-        return  # 0 = unlimited, no pruning
+    from app.engine.tenant_policy_resolver import get_effective_policy
 
     db = SessionLocal()
     try:
-        workflow_ids = [
-            row[0] for row in
-            db.query(WorkflowSnapshot.workflow_def_id).distinct().all()
-        ]
+        # Join workflow_snapshots → workflow_definitions to pull the
+        # tenant_id alongside each workflow_def_id. This is a daily
+        # task, not a hot path — one join beats N tenant lookups.
+        from sqlalchemy import distinct
 
+        rows = (
+            db.query(
+                distinct(WorkflowSnapshot.workflow_def_id),
+                WorkflowDefinition.tenant_id,
+            )
+            .join(
+                WorkflowDefinition,
+                WorkflowDefinition.id == WorkflowSnapshot.workflow_def_id,
+            )
+            .all()
+        )
+
+        # Resolve each tenant's policy once; reuse for every workflow
+        # owned by that tenant.
+        tenant_max_keep: dict[str, int] = {}
         total_pruned = 0
-        for wf_id in workflow_ids:
+        for wf_id, tenant_id in rows:
+            if tenant_id not in tenant_max_keep:
+                tenant_max_keep[tenant_id] = get_effective_policy(tenant_id).max_snapshots
+            max_keep = tenant_max_keep[tenant_id]
+            if max_keep <= 0:
+                continue  # 0 = unlimited for this tenant
+
             snapshots = (
                 db.query(WorkflowSnapshot)
                 .filter_by(workflow_def_id=wf_id)
@@ -392,7 +416,10 @@ def prune_old_snapshots():
 
         if total_pruned:
             db.commit()
-            logger.info("Pruned %d old snapshots across %d workflows", total_pruned, len(workflow_ids))
+            logger.info(
+                "Pruned %d old snapshots across %d workflows (per-tenant policies)",
+                total_pruned, len(rows),
+            )
     except Exception:
         logger.exception("Error in snapshot pruning")
         db.rollback()

@@ -86,7 +86,12 @@ def _check_via_redis(
     A pipeline makes INCR + EXPIRE a single round-trip — even with many
     concurrent callers, exactly one per quota slot is allowed to "win"
     the last token.
+
+    ADMIN-01: quota read from ``tenant_policies.execution_quota_per_hour``
+    when overridden, else the env default.
     """
+    from app.engine.tenant_policy_resolver import get_effective_policy
+
     client = client_factory()
     key = _redis_quota_key(tenant_id)
     pipe = client.pipeline()
@@ -94,21 +99,27 @@ def _check_via_redis(
     pipe.expire(key, _QUOTA_BUCKET_TTL_SECONDS)
     result = pipe.execute()
     count = int(result[0])
-    if count > settings.execution_quota_per_hour:
+    quota = get_effective_policy(tenant_id).execution_quota_per_hour
+    if count > quota:
         logger.warning(
             "Tenant %s exceeded execution quota (%d/%d per hour, Redis)",
-            tenant_id, count, settings.execution_quota_per_hour,
+            tenant_id, count, quota,
         )
         raise HTTPException(
             status_code=429,
-            detail=f"Execution quota exceeded: {count}/{settings.execution_quota_per_hour} per hour",
+            detail=f"Execution quota exceeded: {count}/{quota} per hour",
         )
     return count
 
 
 def _check_via_db(db: Session, tenant_id: str) -> int:
     """Fallback path when Redis is unavailable. Counts recent instances —
-    not atomic, but correct under single-writer load."""
+    not atomic, but correct under single-writer load.
+
+    ADMIN-01: quota read per-tenant via ``tenant_policy_resolver``.
+    """
+    from app.engine.tenant_policy_resolver import get_effective_policy
+
     one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
     recent_count = (
         db.query(WorkflowInstance)
@@ -118,14 +129,15 @@ def _check_via_db(db: Session, tenant_id: str) -> int:
         )
         .count()
     )
-    if recent_count >= settings.execution_quota_per_hour:
+    quota = get_effective_policy(tenant_id).execution_quota_per_hour
+    if recent_count >= quota:
         logger.warning(
             "Tenant %s exceeded execution quota (%d/%d per hour, DB fallback)",
-            tenant_id, recent_count, settings.execution_quota_per_hour,
+            tenant_id, recent_count, quota,
         )
         raise HTTPException(
             status_code=429,
-            detail=f"Execution quota exceeded: {recent_count}/{settings.execution_quota_per_hour} per hour",
+            detail=f"Execution quota exceeded: {recent_count}/{quota} per hour",
         )
     return recent_count
 

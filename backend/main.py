@@ -21,6 +21,7 @@ from app.api.secrets import router as secrets_router
 from app.api.async_jobs import router as async_jobs_router
 from app.api.tenant_integrations import router as tenant_integrations_router
 from app.api.tenant_mcp_servers import router as tenant_mcp_servers_router
+from app.api.tenant_policies import router as tenant_policies_router
 from app.security.rate_limiter import limiter
 
 logging.basicConfig(
@@ -63,6 +64,11 @@ app.include_router(
     tenant_mcp_servers_router,
     prefix="/api/v1/tenant-mcp-servers",
     tags=["tenant-mcp-servers"],
+)
+app.include_router(
+    tenant_policies_router,
+    prefix="/api/v1/tenant-policy",
+    tags=["tenant-policy"],
 )
 
 if settings.oidc_enabled:

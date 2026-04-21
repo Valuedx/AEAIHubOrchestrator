@@ -113,12 +113,22 @@ _pools: dict[tuple[str, str], _MCPSessionPool] = {}
 
 
 def _pool_for(target: ResolvedMcpServer, tenant_id: str | None) -> _MCPSessionPool:
-    from app.config import settings
+    """Return the warm-session pool for this ``(tenant, server)`` slot.
 
+    ADMIN-01: pool size reads from ``tenant_policies.mcp_pool_size``
+    when overridden, else the env default. Resolver is called lazily
+    only when a new pool is constructed — existing pools keep their
+    original size (a changed tenant policy takes effect the next time
+    the orchestrator process rebuilds a pool, typically after a
+    restart or shutdown_pool).
+    """
     key = (tenant_id or "__env__", target.pool_key)
     pool = _pools.get(key)
     if pool is None:
-        pool = _MCPSessionPool(target, max_size=settings.mcp_pool_size)
+        from app.engine.tenant_policy_resolver import get_effective_policy
+
+        pool_size = get_effective_policy(tenant_id).mcp_pool_size
+        pool = _MCPSessionPool(target, max_size=pool_size)
         _pools[key] = pool
     return pool
 
