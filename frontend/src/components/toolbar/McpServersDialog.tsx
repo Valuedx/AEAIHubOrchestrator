@@ -215,7 +215,7 @@ export function McpServersDialog({ open, onOpenChange }: Props) {
                 </p>
               </div>
             ) : (
-              <ScrollArea className="max-h-[400px]">
+              <ScrollArea className="flex-1 min-h-0">
                 <div className="space-y-1 p-1">
                   {rows.map((row) => (
                     <div
@@ -274,7 +274,7 @@ export function McpServersDialog({ open, onOpenChange }: Props) {
         )}
 
         {view === "form" && (
-          <ScrollArea className="max-h-[500px]">
+          <ScrollArea className="flex-1 min-h-0">
             <div className="space-y-3 p-1">
               <div className="space-y-1.5">
                 <Label htmlFor="mcp-label">Label</Label>

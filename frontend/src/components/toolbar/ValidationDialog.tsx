@@ -49,7 +49,7 @@ export function ValidationDialog({
           </DialogTitle>
         </DialogHeader>
 
-        <ScrollArea className="max-h-72 pr-1">
+        <ScrollArea className="flex-1 min-h-0 pr-1">
           <div className="space-y-2">
             {hardErrors.map((err, i) => (
               <div
