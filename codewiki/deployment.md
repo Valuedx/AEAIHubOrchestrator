@@ -114,8 +114,8 @@ All backend settings use the `ORCHESTRATOR_` prefix via Pydantic Settings. They 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHESTRATOR_MCP_SERVER_URL` | `http://localhost:8000/mcp` | MCP server URL |
-| `ORCHESTRATOR_MCP_POOL_SIZE` | `4` | Connection pool size |
+| `ORCHESTRATOR_MCP_SERVER_URL` | `http://localhost:8000/mcp` | **Fallback** MCP server URL. Used only when a tenant has no `tenant_mcp_servers` row (the MCP-02 per-tenant registry takes precedence — operators register servers via the toolbar Globe icon). See `codewiki/mcp-audit.md`. |
+| `ORCHESTRATOR_MCP_POOL_SIZE` | `4` | Warm sessions per `(tenant, server)` pool. Multiple tenants / multiple servers each get their own pool keyed by `(tenant_id, pool_key)`. |
 
 ### Knowledge Base / RAG
 

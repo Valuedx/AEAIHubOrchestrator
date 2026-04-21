@@ -6,7 +6,7 @@ Portable visual workflow orchestration service built as:
 - `backend/`: FastAPI execution engine + optional Celery workers
 - `shared/`: node registry consumed by both frontend and backend
 
-Key capabilities: multi-provider LLM agents, ReAct tool-calling loops, advanced memory management (normalized conversation storage, rolling summaries, semantic/episodic/entity memory, memory profiles, and inspection APIs), RAG knowledge bases, NLP nodes (Intent Classifier with hybrid scoring, Entity Extractor with rule-based + LLM fallback), sub-workflows / nested workflow execution, A2A protocol, HITL approval gates, operator pause/resume/cancel, version history with rollback, 8-channel notifications, MCP tool integration, and visual debug replay.
+Key capabilities: multi-provider LLM agents, ReAct tool-calling loops, advanced memory management (normalized conversation storage, rolling summaries, semantic/episodic/entity memory, memory profiles, and inspection APIs), RAG knowledge bases, NLP nodes (Intent Classifier with hybrid scoring, Entity Extractor with rule-based + LLM fallback), sub-workflows / nested workflow execution, A2A protocol, HITL approval gates, operator pause/resume/cancel, version history with rollback, 8-channel notifications, **per-tenant MCP server registry** (MCP-02), **AutomationEdge async-external integration** (Pattern A webhook + Pattern C Beat poll, Diverted pause-the-clock), **Sprint 2A developer velocity** (data pinning, test single node, sticky notes, 45 expression helpers, duplicate workflow, hotkey cheatsheet, active/inactive toggle), and visual debug replay.
 
 This subtree is designed to be lift-and-shift into its own repository. It does not import code from any parent application. External integrations are runtime contracts only:
 
@@ -71,4 +71,6 @@ celery -A app.worker worker --loglevel=info
 - `DEVELOPER_GUIDE.md`
 - `codewiki/memory-management.md`
 - `codewiki/automationedge.md` — AutomationEdge async-external node (Pattern C / Pattern A, Diverted handling, operator setup)
-- `codewiki/dev-workflow.md` — Sprint 2A developer-velocity features (data pinning and more as they land)
+- `codewiki/dev-workflow.md` — Sprint 2A developer-velocity features (DV-01 pinning, DV-02 test-single-node, DV-03 sticky notes, DV-04 expression helpers, DV-05 duplicate workflow, DV-06 hotkey cheatsheet, DV-07 active/inactive toggle)
+- `codewiki/mcp-audit.md` — Sprint 2B MCP maturity (MCP-01 audit against the 2025-06-18 spec + MCP-02 per-tenant MCP server registry; MCP-03..MCP-10 backlog)
+- `codewiki/feature-roadmap.md` — Gap analysis vs. LangGraph / Dify / n8n / Flowise / CrewAI / Rivet with 25 ranked items

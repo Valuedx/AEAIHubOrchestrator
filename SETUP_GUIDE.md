@@ -1,3 +1,9 @@
+> - **Sprint 2B MCP Maturity (2026-04-21)**: MCP-01 audit of the client against the 2025-06-18 spec landed in `codewiki/mcp-audit.md` with a ranked gap list. MCP-02 per-tenant MCP server registry — new table `tenant_mcp_servers` (Alembic `0019`), `auth_mode` discriminator (`none` / `static_headers` / `oauth_2_1`), `{{ env.KEY }}` header placeholders resolved through the Secrets vault. Session pool + `list_tools` cache are re-keyed by `(tenant_id, server)` so tenants never share warm connections. Toolbar **Globe** icon → `McpServersDialog`. MCP Tool + ReAct Agent nodes accept an optional `mcpServerLabel` config field; blank → tenant default → legacy `MCP_SERVER_URL` env-var fallback. MCP-03..MCP-10 backlog tracked in `codewiki/feature-roadmap.md`. See `codewiki/mcp-audit.md`.
+>
+> - **Sprint 2A Developer Velocity (2026-04-20)**: DV-01..DV-07 shipped as seven incremental commits. **DV-01** data pinning — short-circuits `dispatch_node` on a pinned node output (pins live in `graph_json.nodes[*].data.pinnedOutput`, do NOT bump version). **DV-02** test single node — `POST …/nodes/{id}/test` runs one handler in isolation using upstream pins as synthetic context. **DV-03** sticky notes — non-executable canvas annotations filtered at `parse_graph`, `validateWorkflow`, and `computeNodeStatuses`. **DV-04** 45 expression helpers added to `safe_eval` (string / math / array / object / date / utility) plus `**` and `//` binary ops. **DV-05** duplicate workflow — deep-copies graph incl. pins with collision-safe `(copy N)` naming. **DV-06** hotkey cheatsheet — `?` opens modal; `Shift+S` / `1` / `Tab` registered with shared input-focus guard. **DV-07** active/inactive toggle — `workflow_definitions.is_active` (Alembic `0018`) filters Schedule Triggers; manual Run / PATCH / duplicate all still work. See `codewiki/dev-workflow.md`.
+>
+> - **AutomationEdge + async externals (2026-04-19)**: async-external node pattern with Beat-poll (Pattern C default) and webhook (Pattern A opt-in) completion, both resuming through `finalize_terminal`. New tables `async_jobs`, `tenant_integrations`, `scheduled_triggers` (Alembic `0015`, `0017`). `workflow_instances.suspended_reason` column distinguishes HITL-suspended (NULL) from async-external (`'async_external'`). Diverted pause-the-clock timeout model. See `codewiki/automationedge.md`.
+>
 > - **V0.9.13 Tier 1 UX (2026-04-10)**: Template gallery, sync execute (`§7.1.2`), debug replay in the Hub UI — no new migrations. See `TECHNICAL_BLUEPRINT.md` V0.9.13 and `HOW_IT_WORKS.md` Step 6.
 >
 > - **V0.9.11 Operator execution control (2026-03-22)**: `workflow_instances` gains `cancel_requested` and `pause_requested` (Alembic `0005`, `0006`). Run `alembic upgrade head` after pull. API: `POST …/pause`, `POST …/resume-paused`, `POST …/cancel` — see `TECHNICAL_BLUEPRINT.md` §6.11.
@@ -11,8 +17,8 @@
 
 **Advanced Memory note:** Advanced Memory v1 adds normalized conversation storage, memory profiles, semantic or episodic memory, relational entity facts, and new memory APIs. Fresh installs should simply run `alembic upgrade head`, which includes migration `0012`.
 
-**Version:** 0.9.16
-**Last updated:** 2026-04-15
+**Version:** 0.9.18 (Sprint 2A + 2B)
+**Last updated:** 2026-04-21
 
 ---
 
@@ -47,7 +53,8 @@
 
 The orchestrator can run on its own. The only external runtime contracts are:
 
-- **MCP Server** (optional): The orchestrator connects via MCP SDK over Streamable HTTP transport. Point `ORCHESTRATOR_MCP_SERVER_URL` at any compatible Streamable HTTP MCP endpoint. If unavailable, the tools endpoint returns an empty list and the frontend uses its built-in palette. The ReAct agent will have no tools to call.
+- **MCP Server(s)** (optional): Operators register zero or more per-tenant MCP servers in the `tenant_mcp_servers` table via the **Globe** icon in the toolbar (MCP-02). Each entry captures a Streamable-HTTP MCP URL + optional auth headers (static, with `{{ env.KEY }}` indirection through the Secrets vault). Nodes pick a server by its `mcpServerLabel` config field; blank → tenant `is_default` row → the legacy `ORCHESTRATOR_MCP_SERVER_URL` env-var fallback so pre-MCP-02 tenants keep working untouched. See `codewiki/mcp-audit.md`.
+- **AutomationEdge / other async-external systems** (optional): Any node type that submits work to an external RPA / job-queue system (AutomationEdge today) uses the `async_jobs` table + `suspended_reason='async_external'` pattern. Beat polls terminal status by default; optional webhook callback via `POST /api/v1/async-jobs/{job_id}/complete`. See `codewiki/automationedge.md`.
 
 ### 1.3 Network Ports
 
@@ -92,39 +99,55 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │           │   ├── NodePalette.tsx         # Draggable node list
 │           │   ├── PropertyInspector.tsx   # Selected-node config panel
 │           │   └── DynamicConfigForm.tsx   # Schema-driven form renderer
+│           ├── nodes/
+│           │   ├── AgenticNode.tsx         # Polymorphic executable node
+│           │   └── StickyNote.tsx          # DV-03 non-executable annotation node
 │           ├── toolbar/
-│           │   ├── Toolbar.tsx             # Save/Run/History buttons
-│           │   ├── WorkflowListDialog.tsx  # Saved workflows browser
+│           │   ├── Toolbar.tsx             # Save/Run/History/Active-toggle + dialog openers
+│           │   ├── WorkflowListDialog.tsx  # Saved workflows — duplicate (DV-05) + inactive pills
 │           │   ├── VersionHistoryDialog.tsx # Snapshot history + rollback
-│           │   └── ExecutionPanel.tsx      # SSE execution log viewer
+│           │   ├── ExecutionPanel.tsx      # SSE execution log viewer
+│           │   ├── HotkeyCheatsheet.tsx    # DV-06 "?" modal
+│           │   ├── IntegrationsDialog.tsx  # AutomationEdge tenant_integrations CRUD
+│           │   ├── McpServersDialog.tsx    # MCP-02 tenant_mcp_servers CRUD
+│           │   └── SecretsDialog.tsx       # {{ env.KEY }} vault CRUD
 │           └── ui/                         # shadcn/ui components
 │
 ├── backend/                        # FastAPI execution engine
 │   ├── main.py                     # App entry point (v0.8.0)
 │   ├── requirements.txt            # Python dependencies
 │   ├── alembic.ini                 # Migration config
-│   ├── alembic/versions/           # 0001 … 0012 — see §5.2
+│   ├── alembic/versions/           # 0001 … 0019 — see §5.2
 │   └── app/
 │       ├── config.py               # Settings from env (incl. OIDC)
 │       ├── database.py             # SQLAlchemy setup
 │       ├── observability.py        # Langfuse tracing
 │       ├── api/
-│       │   ├── workflows.py        # CRUD + execute + pause/resume/cancel + versions
-│       │   ├── tools.py            # MCP palette + cache invalidation
+│       │   ├── workflows.py        # CRUD + execute + pause/resume/cancel + versions + DV-01/02/05/07
+│       │   ├── tools.py            # MCP palette + cache invalidation (tenant-scoped MCP-02)
+│       │   ├── tenant_integrations.py  # AutomationEdge connection defaults
+│       │   ├── tenant_mcp_servers.py   # MCP-02 per-tenant MCP server registry
+│       │   ├── async_jobs.py       # Pattern A webhook callback (AE + future systems)
 │       │   ├── sse.py              # Server-Sent Events stream
 │       │   ├── schemas.py          # Pydantic request/response models
 │       │   ├── conversations.py    # Conversation session inspection
 │       │   ├── memory.py           # Memory profile CRUD + memory inspection
 │       │   └── auth.py             # OIDC Authorization Code + PKCE flow
 │       ├── engine/
-│       │   ├── dag_runner.py       # Ready-queue DAG executor
-│       │   ├── node_handlers.py    # Per-type dispatch
+│       │   ├── dag_runner.py       # Ready-queue DAG executor (sticky-note filter in parse_graph)
+│       │   ├── node_handlers.py    # Per-type dispatch (pin short-circuit, mcpServerLabel)
 │       │   ├── memory_service.py   # Advanced memory policy, summaries, retrieval, promotion
 │       │   ├── llm_providers.py    # Google/OpenAI/Anthropic abstraction
 │       │   ├── react_loop.py       # ReAct tool-calling loop
-│       │   ├── mcp_client.py       # MCP SDK client (TTL cache)
+│       │   ├── mcp_client.py       # MCP SDK client, session pool keyed by (tenant, server)
+│       │   ├── mcp_server_resolver.py  # MCP-02 label → URL + headers + auth-mode dispatch
+│       │   ├── automationedge_client.py  # AE REST client (session-token + bearer modes)
+│       │   ├── async_job_poller.py      # Diverted pause-the-clock timeout helpers
+│       │   ├── async_job_finalizer.py   # Shared terminal-resume path (Pattern A + C)
+│       │   ├── integration_resolver.py  # tenant_integrations label resolver (AE)
 │       │   ├── prompt_template.py  # Jinja2 prompt templating
-│       │   ├── safe_eval.py        # AST-based expression evaluator (whitelisted functions V0.9)
+│       │   ├── safe_eval.py        # AST-based expression evaluator
+│       │   ├── expression_helpers.py    # DV-04 — 45 safe_eval functions
 │       │   └── config_validator.py # Graph config validation
 │       ├── models/
 │       │   ├── workflow.py         # WorkflowDefinition, Instance, Snapshot, Log
@@ -275,6 +298,9 @@ This applies all revisions under `alembic/versions/`, including (among others):
 - **0014** — RLS policies on the memory, conversation, A2A-key, and workflow-snapshot tables (closes the gap left by 0001)
 - **0015** — `scheduled_triggers` table for atomic Beat schedule-fire dedupe (replaces the 55-second wall-clock guard)
 - **0016** — pin pgvector embedding columns to `vector(1536)` and rebuild HNSW indexes — matches `text-embedding-3-small`; operators on a different embedding model must adjust before running
+- **0017** — `async_jobs` (AutomationEdge poll queue with Diverted pause-the-clock accounting) + `tenant_integrations` (per-tenant external-system connection defaults) + `workflow_instances.suspended_reason` column
+- **0018** — **DV-07** — `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE`. Existing rows backfill to active; Schedule Triggers skip `is_active=false` workflows (manual Run / PATCH / duplicate still work)
+- **0019** — **MCP-02** — `tenant_mcp_servers` (per-tenant MCP registry with `auth_mode` discriminator + partial unique index enforcing one default per tenant) + empty `tenant_mcp_server_tool_fingerprints` side table forward-declared for MCP-06 drift detection
 
 Use `alembic current` to verify the DB revision after upgrading.
 
@@ -368,6 +394,23 @@ tenant_tool_overrides            tenant_secrets
   tool_name                      key_name
   enabled                        encrypted_value
   config_json (JSONB)
+
+scheduled_triggers               async_jobs                   tenant_integrations
+  id (PK, UUID)                  id (PK, UUID)                id (PK, UUID)
+  workflow_def_id (FK)           instance_id (FK)             tenant_id
+  scheduled_for (minute-aligned) system, external_job_id      system, label
+  instance_id (FK, nullable)     status, metadata_json        config_json (JSONB)
+  created_at                     diverted_since, total_ms     is_default (partial unique)
+                                 next_poll_at
+
+tenant_mcp_servers               tenant_mcp_server_tool_fingerprints  (MCP-06; empty at MCP-02)
+  id (PK, UUID)                  id (PK, UUID)
+  tenant_id                      server_id (FK)
+  label (unique per tenant)      tool_name
+  url                            fingerprint_sha256
+  auth_mode                      last_seen_at
+  config_json (JSONB)
+  is_default (partial unique)
 ```
 
 ---
@@ -449,7 +492,7 @@ Backend settings use the `ORCHESTRATOR_` prefix; frontend uses `VITE_` variables
 |----------|----------|---------|-------------|
 | `ORCHESTRATOR_DATABASE_URL` | Yes | `postgresql://postgres:postgres@localhost:5432/ae_orchestrator` | PostgreSQL connection string |
 | `ORCHESTRATOR_REDIS_URL` | Yes | `redis://localhost:6379/0` | Redis for Celery + OIDC PKCE state |
-| `ORCHESTRATOR_MCP_SERVER_URL` | No | `http://localhost:8000/mcp` | MCP server Streamable HTTP endpoint |
+| `ORCHESTRATOR_MCP_SERVER_URL` | No | `http://localhost:8000/mcp` | Fallback MCP endpoint used only when a tenant has no `tenant_mcp_servers` row (per-tenant registry from MCP-02 takes precedence). |
 | `ORCHESTRATOR_SECRET_KEY` | Yes | `change-me-in-production` | JWT signing key |
 | `ORCHESTRATOR_CORS_ORIGINS` | No | `["http://localhost:8080"]` | Allowed CORS origins (JSON array) |
 | `ORCHESTRATOR_GOOGLE_API_KEY` | No | `""` | Google AI API key for Gemini models |
@@ -667,6 +710,40 @@ curl http://localhost:8001/api/v1/workflows/{workflow_id}/versions \
 # Invalidate the MCP tool cache (after deploying new MCP tools)
 curl -X POST http://localhost:8001/api/v1/tools/invalidate-cache \
   -H "X-Tenant-Id: test-tenant"
+
+# DV-05 — duplicate a workflow (creates a "(copy)"-suffixed clone)
+curl -X POST http://localhost:8001/api/v1/workflows/$WORKFLOW_ID/duplicate \
+  -H "X-Tenant-Id: test-tenant"
+
+# DV-07 — toggle a workflow inactive (Schedule Triggers will stop firing)
+curl -X PATCH http://localhost:8001/api/v1/workflows/$WORKFLOW_ID \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: test-tenant" \
+  -d '{"is_active": false}'
+
+# DV-01 — pin a node output
+curl -X POST "http://localhost:8001/api/v1/workflows/$WORKFLOW_ID/nodes/node_2/pin" \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: test-tenant" \
+  -d '{"output": {"response": "canned", "usage": {"tokens": 5}}}'
+
+# DV-02 — probe a single node's handler in isolation
+curl -X POST "http://localhost:8001/api/v1/workflows/$WORKFLOW_ID/nodes/node_2/test" \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: test-tenant" \
+  -d '{"trigger_payload": {"message": "hi"}}'
+
+# MCP-02 — register a per-tenant MCP server (static-headers auth with vault indirection)
+curl -X POST http://localhost:8001/api/v1/tenant-mcp-servers \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: test-tenant" \
+  -d '{
+    "label": "github",
+    "url": "https://mcp.github.com/mcp",
+    "auth_mode": "static_headers",
+    "config_json": {"headers": {"Authorization": "Bearer {{ env.GH_TOKEN }}"}},
+    "is_default": true
+  }'
 ```
 
 ### 8.4 OIDC Login (when enabled)
@@ -746,9 +823,14 @@ Only works when `ORCHESTRATOR_AUTH_MODE=dev`. Use the token as `Authorization: B
 | Retry returns 404 | Instance not in `failed` status | Only failed instances can be retried. Check `GET /instances/{id}` status |
 | ForEach does nothing | `arrayExpression` resolves to empty | Ensure the upstream node outputs an array at the expected path |
 | Snapshot pruning not running | Celery Beat not started | Start Celery Beat: `celery -A app.workers.celery_app beat --loglevel=info` |
-| `{{ env.SECRET }}` not resolved | Secret not in vault | Add the secret via the vault API first |
+| `{{ env.SECRET }}` not resolved | Secret not in vault | Add the secret via the Secrets dialog or `POST /api/v1/secrets` first |
+| MCP Tool node returns `error: "No MCP server named '<label>' for tenant ..."` | Registry row missing or wrong label | Open the Globe dialog and register a server with that label, or clear `mcpServerLabel` to use the tenant default |
+| MCP calls fail with `auth_mode=oauth_2_1 not yet implemented` | Registry row was created with an auth mode the runtime doesn't support yet | OAuth is tracked as MCP-03. Change the row to `none` or `static_headers`, or wait for MCP-03 |
+| Schedule Trigger not firing after a cron change | Workflow is `is_active=false` | Toolbar → Active/Inactive toggle (next to the version badge); Beat filter skips inactive workflows (DV-07) |
+| Sticky note is treated as a real node and fails validation | Old client cached | Reload the page — the canvas uses a `stickyNote` React Flow type introduced in DV-03 |
+| `POST …/nodes/{id}/test` returns `Node suspended on external system 'automationedge'` | AE-style node was probed — `async_jobs` row written as a side effect | Expected for DV-02 probes of async-external nodes. Beat's poller will resume or abandon the orphan row through normal channels; no cleanup needed |
 
 ---
 
-**Document version:** 0.9.16
-**Last updated:** 2026-04-15
+**Document version:** 0.9.18 (Sprint 2A + 2B)
+**Last updated:** 2026-04-21

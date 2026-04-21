@@ -85,25 +85,33 @@ CREATE POLICY tenant_isolation ON <table>
 
 This means even if application-level filtering has a bug, the database prevents cross-tenant data access. RLS is applied to all tables:
 
-- `workflow_definitions`
+- `workflow_definitions` (adds `is_active` column in migration `0018` — DV-07; does not affect RLS policy)
 - `workflow_instances`
 - `workflow_snapshots`
 - `execution_logs`
 - `instance_checkpoints`
 - `conversation_sessions`
 - `conversation_messages`
+- `conversation_episodes` (migration `0013`)
 - `memory_profiles`
 - `memory_records`
 - `entity_facts`
 - `a2a_api_keys`
 - `tenant_tool_overrides`
 - `tenant_secrets`
+- `tenant_integrations` (migration `0017`; AE + future external-system connection defaults)
+- `tenant_mcp_servers` (migration `0019`; MCP-02 per-tenant MCP server registry)
 - `knowledge_bases`
 - `kb_documents`
 - `kb_chunks`
 - `embedding_cache`
 
-RLS is enabled across the original tables and extended again as new tenant-scoped tables were added, including the advanced-memory tables introduced in migration `0012`.
+Two tables are intentionally **not** tenant-scoped via RLS because they are cross-tenant operator infrastructure:
+
+- `scheduled_triggers` (migration `0015`) — Beat's atomic claim rows for schedule-fire dedupe. Beat is inherently cross-tenant and runs under a `BYPASSRLS` role (see `SETUP_GUIDE.md §5.2a`).
+- `async_jobs` and `tenant_mcp_server_tool_fingerprints` — FK-scoped to rows that are themselves tenant-scoped; the parent's RLS policy transitively protects them.
+
+RLS is enabled across the original tables and extended again as new tenant-scoped tables were added (migrations `0014` + `0017` + `0019`).
 
 The memory inspection endpoint (`GET /api/v1/memory/instances/{instance_id}/resolved`) also tenant-filters the resolved `conversation_messages`, `memory_records`, and `entity_facts` rows before returning them, so execution-log metadata cannot be used to bypass tenant isolation.
 
@@ -156,6 +164,10 @@ The toolbar has a **Secrets** button (key icon) that opens the `SecretsDialog`. 
 Node configs can reference vault secrets using `{{ env.KEY_NAME }}` syntax. At execution time, `resolve_config_env_vars` (in `engine/prompt_template.py`) calls `get_tenant_secret(tenant_id, key_name)` to look up and decrypt the matching `TenantSecret`.
 
 This keeps sensitive values (API keys, passwords) out of the `graph_json` while making them available at runtime.
+
+### Vault indirection from registry tables
+
+Both `tenant_integrations` (AutomationEdge connection defaults) and `tenant_mcp_servers` (MCP-02) store `{{ env.KEY }}` placeholders in their `config_json` rather than raw secrets. `engine/integration_resolver.py` (for AE) and `engine/mcp_server_resolver.py` (for MCP) substitute them against `get_tenant_secret` at call time. A missing referenced secret raises loudly — the caller fails rather than sending an unauth'd request a compliant server would 401 anyway.
 
 ---
 
