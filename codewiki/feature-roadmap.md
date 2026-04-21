@@ -31,6 +31,15 @@ See [Developer Workflow](dev-workflow.md) for each feature's UI flow, storage se
 
 See [MCP Audit](mcp-audit.md) for findings and the per-tenant registry design.
 
+### Sprint 2C in flight — Delivery + GCP parity
+
+| # | Feature | Status |
+|---|---------|--------|
+| API-18A | In-app API Playground (JSON payload editor + sync/async + Copy-as-curl + last-10-runs) | **Done** — `f2103c4` |
+| VERTEX-01 | First-class Vertex AI support for Gemini chat/ReAct/streaming nodes | **Done** — see below |
+
+VERTEX-01 adds `vertex` to every LLM node's `provider` enum, reusing the unified `google-genai` SDK via `Client(vertexai=True, project, location)`. Zero new dependencies. ADC auth (`GOOGLE_APPLICATION_CREDENTIALS` or workload identity). Previously Vertex was embeddings-only; the gap felt awkward for any tenant already on GCP. Per-tenant Vertex project override (so tenants bill to their own GCP projects) tracked as **VERTEX-02**.
+
 ---
 
 ## Pending backlog

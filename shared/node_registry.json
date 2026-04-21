@@ -82,7 +82,7 @@
         "provider": {
           "type": "string",
           "default": "google",
-          "enum": ["google", "openai", "anthropic"],
+          "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider to use for this agent"
         },
         "model": {
@@ -156,7 +156,7 @@
         "provider": {
           "type": "string",
           "default": "google",
-          "enum": ["google", "openai", "anthropic"],
+          "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider powering the ReAct reasoning loop"
         },
         "model": {
@@ -532,7 +532,7 @@
         "provider": {
           "type": "string",
           "default": "google",
-          "enum": ["google", "openai", "anthropic"],
+          "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider used to classify the user intent"
         },
         "model": {
@@ -569,7 +569,7 @@
         "provider": {
           "type": "string",
           "default": "google",
-          "enum": ["google", "openai", "anthropic"],
+          "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider used for the reflection call"
         },
         "model": {
@@ -1006,7 +1006,7 @@
         "provider": {
           "type": "string",
           "default": "google",
-          "enum": ["google", "openai", "anthropic"],
+          "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider for classification (used in hybrid and llm_only modes)",
           "visibleWhen": { "field": "mode", "values": ["hybrid", "llm_only"] }
         },
@@ -1098,7 +1098,7 @@
         "provider": {
           "type": "string",
           "default": "google",
-          "enum": ["google", "openai", "anthropic"],
+          "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider for fallback extraction",
           "visibleWhen": { "field": "llmFallback", "values": [true] }
         },

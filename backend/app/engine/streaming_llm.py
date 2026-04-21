@@ -82,7 +82,9 @@ def publish_stream_end(instance_id: str, node_id: str) -> None:
 # Per-provider streaming implementations
 # ---------------------------------------------------------------------------
 
-def stream_google(
+def _stream_google_backend(
+    *,
+    backend: str,
     model: str,
     system_prompt: str,
     user_message: str,
@@ -90,18 +92,16 @@ def stream_google(
     max_tokens: int,
     instance_id: str,
     node_id: str,
-    messages: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Stream Google Gemini, publishing tokens to Redis.  Returns the same
-    dict format as ``_call_google`` in llm_providers.py."""
-    from app.config import settings
-    if not settings.google_api_key:
-        raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
-
-    from google import genai
+    """Shared streaming Gemini request path used by both AI Studio and
+    Vertex backends. Client construction is delegated to
+    ``llm_providers._google_client`` so env-var validation stays in one
+    place."""
+    from app.engine.llm_providers import _google_client
     from google.genai import types
 
-    client = genai.Client(api_key=settings.google_api_key)
+    client = _google_client(backend)
     normalized = messages or (
         ([{"role": "system", "content": system_prompt}] if system_prompt else [])
         + [{"role": "user", "content": user_message}]
@@ -148,8 +148,60 @@ def stream_google(
             "output_tokens": usage_meta.candidates_token_count if usage_meta else 0,
         },
         "model": model,
-        "provider": "google",
+        "provider": "vertex" if backend == "vertex" else "google",
     }
+
+
+def stream_google(
+    model: str,
+    system_prompt: str,
+    user_message: str,
+    temperature: float,
+    max_tokens: int,
+    instance_id: str,
+    node_id: str,
+    messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Stream Google Gemini via AI Studio, publishing tokens to Redis.
+
+    Returns the same dict format as ``llm_providers._call_google``.
+    """
+    return _stream_google_backend(
+        backend="genai",
+        model=model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        instance_id=instance_id,
+        node_id=node_id,
+        messages=messages,
+    )
+
+
+def stream_vertex(
+    model: str,
+    system_prompt: str,
+    user_message: str,
+    temperature: float,
+    max_tokens: int,
+    instance_id: str,
+    node_id: str,
+    messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Stream Gemini via Vertex AI — wire format identical to
+    ``stream_google``, only the client's auth + endpoint differ."""
+    return _stream_google_backend(
+        backend="vertex",
+        model=model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        instance_id=instance_id,
+        node_id=node_id,
+        messages=messages,
+    )
 
 
 def stream_openai(

@@ -1,3 +1,5 @@
+> - **VERTEX-01 Vertex AI support for LLM nodes (2026-04-21)**: Gemini models can now run through **Google Cloud Vertex AI** in addition to AI Studio. Adds ``vertex`` to the ``provider`` enum on LLM Agent, ReAct Agent, LLM Router, Reflection, and Intent Classifier nodes. Zero new dependencies — reuses the unified ``google-genai`` SDK via ``Client(vertexai=True, project, location)``. Auth uses Application Default Credentials (``GOOGLE_APPLICATION_CREDENTIALS`` env var pointing at a service-account JSON, or workload identity on GKE / Cloud Run). Reuses the existing ``ORCHESTRATOR_VERTEX_PROJECT`` + ``ORCHESTRATOR_VERTEX_LOCATION`` settings that were previously embeddings-only. See §7.1 below. Per-tenant Vertex project override tracked as VERTEX-02.
+>
 > - **API-18A In-app API Playground (2026-04-21)**: Toolbar **FlaskConical** button opens `ApiPlaygroundDialog` — JSON trigger-payload editor with inline parse errors, sync / async toggle, sync-timeout + deterministic-mode controls, live "Copy as curl" snippet that honours `VITE_API_URL` / `VITE_TENANT_ID` / `VITE_AUTH_MODE`, and a per-workflow last-10-runs history persisted to localStorage. Uses the existing `POST /api/v1/workflows/{id}/execute` endpoint end-to-end — no new backend surface. Disabled until a workflow is saved (needs a stored id). Pure helpers `lib/playgroundCurl.ts` (bash-safe curl generator) and `lib/playgroundHistory.ts` (localStorage ring buffer) have 18 vitest cases. Feature-roadmap item #18 → Partial; 18B embed widget deferred pending a written security design. See `codewiki/feature-roadmap.md` §18.
 >
 > - **Sprint 2B MCP Maturity (2026-04-21)**: MCP-01 audit of the client against the 2025-06-18 spec landed in `codewiki/mcp-audit.md` with a ranked gap list. MCP-02 per-tenant MCP server registry — new table `tenant_mcp_servers` (Alembic `0019`), `auth_mode` discriminator (`none` / `static_headers` / `oauth_2_1`), `{{ env.KEY }}` header placeholders resolved through the Secrets vault. Session pool + `list_tools` cache are re-keyed by `(tenant_id, server)` so tenants never share warm connections. Toolbar **Globe** icon → `McpServersDialog`. MCP Tool + ReAct Agent nodes accept an optional `mcpServerLabel` config field; blank → tenant default → legacy `MCP_SERVER_URL` env-var fallback. MCP-03..MCP-10 backlog tracked in `codewiki/feature-roadmap.md`. See `codewiki/mcp-audit.md`.
@@ -497,9 +499,11 @@ Backend settings use the `ORCHESTRATOR_` prefix; frontend uses `VITE_` variables
 | `ORCHESTRATOR_MCP_SERVER_URL` | No | `http://localhost:8000/mcp` | Fallback MCP endpoint used only when a tenant has no `tenant_mcp_servers` row (per-tenant registry from MCP-02 takes precedence). |
 | `ORCHESTRATOR_SECRET_KEY` | Yes | `change-me-in-production` | JWT signing key |
 | `ORCHESTRATOR_CORS_ORIGINS` | No | `["http://localhost:8080"]` | Allowed CORS origins (JSON array) |
-| `ORCHESTRATOR_GOOGLE_API_KEY` | No | `""` | Google AI API key for Gemini models |
-| `ORCHESTRATOR_GOOGLE_PROJECT` | No | `""` | GCP project ID (optional for Vertex AI) |
-| `ORCHESTRATOR_GOOGLE_LOCATION` | No | `us-central1` | GCP region |
+| `ORCHESTRATOR_GOOGLE_API_KEY` | No | `""` | Google AI Studio API key for Gemini (used when a node's `provider: "google"`) |
+| `ORCHESTRATOR_GOOGLE_PROJECT` | No | `""` | GCP project ID (legacy — not used by the Gemini path today) |
+| `ORCHESTRATOR_GOOGLE_LOCATION` | No | `us-central1` | GCP region (legacy) |
+| `ORCHESTRATOR_VERTEX_PROJECT` | When using `provider: "vertex"` on any LLM node or Vertex embedding provider | `""` | GCP project for Vertex AI (Gemini + embeddings). Set ADC via `GOOGLE_APPLICATION_CREDENTIALS` or workload identity — no API key. |
+| `ORCHESTRATOR_VERTEX_LOCATION` | No | `us-central1` | Vertex AI region |
 | `ORCHESTRATOR_OPENAI_API_KEY` | No | `""` | OpenAI API key for GPT models |
 | `ORCHESTRATOR_OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | OpenAI-compatible base URL |
 | `ORCHESTRATOR_ANTHROPIC_API_KEY` | No | `""` | Anthropic API key for Claude models |

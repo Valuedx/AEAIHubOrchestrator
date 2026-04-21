@@ -29,9 +29,16 @@ def call_llm(
     max_tokens: int = 4096,
     messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Route to the appropriate provider and return a standardized response."""
+    """Route to the appropriate provider and return a standardized response.
+
+    The ``vertex`` provider shares the same request/response code as
+    ``google`` — both hit the unified ``google-genai`` SDK; only the
+    ``Client`` constructor differs (AI Studio api-key vs. Vertex
+    project + location). See ``_call_google``.
+    """
     providers = {
         "google": _call_google,
+        "vertex": _call_vertex,
         "openai": _call_openai,
         "anthropic": _call_anthropic,
     }
@@ -81,10 +88,16 @@ def call_llm_streaming(
             messages=messages,
         )
 
-    from app.engine.streaming_llm import stream_google, stream_openai, stream_anthropic
+    from app.engine.streaming_llm import (
+        stream_anthropic,
+        stream_google,
+        stream_openai,
+        stream_vertex,
+    )
 
     streaming_providers = {
         "google": stream_google,
+        "vertex": stream_vertex,
         "openai": stream_openai,
         "anthropic": stream_anthropic,
     }
@@ -118,21 +131,57 @@ def _coerce_messages(
     return out
 
 
-def _call_google(
+def _google_client(backend: str):  # noqa: ANN202 — return type is SDK-internal
+    """Build a ``google.genai.Client`` for either AI Studio or Vertex AI.
+
+    Factored out so the request / response code in ``_call_google`` +
+    ``_call_vertex`` (and the streaming variants) stays identical — only
+    the client constructor differs:
+
+      * ``backend='genai'`` — AI Studio via ``api_key``
+      * ``backend='vertex'`` — Vertex AI via ``vertexai=True`` +
+        project + location, authenticated through Application Default
+        Credentials (ADC).
+
+    Raises ``ValueError`` with a specific env-var name so operators
+    know exactly which setting to populate.
+    """
+    from google import genai
+
+    if backend == "vertex":
+        if not settings.vertex_project:
+            raise ValueError("ORCHESTRATOR_VERTEX_PROJECT is not configured")
+        return genai.Client(
+            vertexai=True,
+            project=settings.vertex_project,
+            location=settings.vertex_location,
+        )
+    if backend == "genai":
+        if not settings.google_api_key:
+            raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
+        return genai.Client(api_key=settings.google_api_key)
+    raise ValueError(f"Unknown google backend: {backend!r}")
+
+
+def _call_google_backend(
+    *,
+    backend: str,
     model: str,
     system_prompt: str,
     user_message: str,
     temperature: float,
     max_tokens: int,
-    messages: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    if not settings.google_api_key:
-        raise ValueError("ORCHESTRATOR_GOOGLE_API_KEY is not configured")
+    """Shared Gemini request path used by both AI Studio and Vertex.
 
-    from google import genai
+    The ``provider`` field on the returned dict mirrors ``backend`` so
+    downstream code and Langfuse traces can still distinguish the two
+    backends even though the wire format is identical.
+    """
     from google.genai import types
 
-    client = genai.Client(api_key=settings.google_api_key)
+    client = _google_client(backend)
     normalized = _coerce_messages(system_prompt, user_message, messages)
     system_parts = [str(msg.get("content", "")) for msg in normalized if msg.get("role") == "system"]
     contents: list[Any] = []
@@ -166,8 +215,55 @@ def _call_google(
             "output_tokens": usage.candidates_token_count if usage else 0,
         },
         "model": model,
-        "provider": "google",
+        "provider": "vertex" if backend == "vertex" else "google",
     }
+
+
+def _call_google(
+    model: str,
+    system_prompt: str,
+    user_message: str,
+    temperature: float,
+    max_tokens: int,
+    messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return _call_google_backend(
+        backend="genai",
+        model=model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        messages=messages,
+    )
+
+
+def _call_vertex(
+    model: str,
+    system_prompt: str,
+    user_message: str,
+    temperature: float,
+    max_tokens: int,
+    messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Call Gemini via Vertex AI (enterprise Google Cloud endpoint).
+
+    Same wire format as ``_call_google`` since both use the unified
+    ``google-genai`` SDK. Auth is Application Default Credentials —
+    typically a service-account JSON path in
+    ``GOOGLE_APPLICATION_CREDENTIALS`` or, on GKE / Cloud Run,
+    workload identity. Region + project come from
+    ``ORCHESTRATOR_VERTEX_PROJECT`` / ``ORCHESTRATOR_VERTEX_LOCATION``.
+    """
+    return _call_google_backend(
+        backend="vertex",
+        model=model,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        messages=messages,
+    )
 
 
 def _call_openai(

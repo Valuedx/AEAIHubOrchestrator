@@ -76,7 +76,7 @@ AE AI Hub Orchestrator is a **no-code visual DAG workflow builder** for agentic 
 | **Intent Classifier** | `engine/intent_classifier.py` | Hybrid intent scoring (lexical + embedding + optional LLM fallback) |
 | **Entity Extractor** | `engine/entity_extractor.py` | Rule-based entity extraction (regex, enum, number, date, free_text) with LLM fallback |
 | **Embedding cache** | `engine/embedding_cache_helper.py` | DB-backed embedding cache with save-time precompute for intent vectors |
-| **LLM providers** | `engine/llm_providers.py` | OpenAI, Anthropic, Google GenAI abstraction |
+| **LLM providers** | `engine/llm_providers.py` | OpenAI, Anthropic, Google AI Studio (`google`), and Google Vertex AI (`vertex`) abstraction. Google backends share a `_google_client` factory + `_call_google_backend` request path; only the `Client` constructor differs (api-key vs. Vertex project+location). |
 | **MCP client** | `engine/mcp_client.py` | Streamable HTTP MCP SDK client. Session pool + list-tools cache keyed by `(tenant_id, server)` so tenants can't share warm connections. |
 | **MCP server resolver** | `engine/mcp_server_resolver.py` | **MCP-02** — picks the URL + headers for a tool call. Precedence: explicit `server_label` → tenant `is_default` row → `settings.mcp_server_url` env fallback. Resolves `{{ env.KEY }}` placeholders against the Secrets vault. |
 | **RAG engine** | `engine/chunker.py`, `embedding_provider.py`, `ingestor.py`, `retriever.py` | Document ingestion and retrieval pipelines |

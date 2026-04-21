@@ -126,6 +126,19 @@ Calls an LLM with a summary of the workflow's execution history and returns a st
 
 ---
 
+### LLM providers — choosing between `google` and `vertex`
+
+Every LLM-calling node (LLM Agent, ReAct Agent, LLM Router, Reflection, Intent Classifier) has a `provider` enum with four values:
+
+| Provider | Backend | Auth | When to pick |
+|---|---|---|---|
+| `google` | Google AI Studio | `ORCHESTRATOR_GOOGLE_API_KEY` | Fastest to set up, good for prototyping and solo developers. |
+| `vertex` | Google Cloud Vertex AI | Application Default Credentials — `GOOGLE_APPLICATION_CREDENTIALS` points at a service-account JSON, or workload identity on GKE / Cloud Run. Requires `ORCHESTRATOR_VERTEX_PROJECT` + `ORCHESTRATOR_VERTEX_LOCATION`. | Enterprise / regulated deployments: VPC-SC, CMEK, regional data residency, billing + quota consolidated with other GCP usage, no API keys in the vault. |
+| `openai` | OpenAI (or compatible via `ORCHESTRATOR_OPENAI_BASE_URL`) | `ORCHESTRATOR_OPENAI_API_KEY` | GPT-4o / 4o-mini models. |
+| `anthropic` | Anthropic direct | `ORCHESTRATOR_ANTHROPIC_API_KEY` | Claude Sonnet / Haiku. |
+
+The same Gemini model names (`gemini-2.5-flash`, `gemini-2.5-pro`) work under both `google` and `vertex` — only the endpoint and auth differ. Switching a workflow from AI Studio to Vertex is a one-field PATCH.
+
 ## Available LLM models
 
 | Provider | Model |

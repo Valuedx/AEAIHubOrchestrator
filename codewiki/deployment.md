@@ -128,8 +128,8 @@ All backend settings use the `ORCHESTRATOR_` prefix via Pydantic Settings. They 
 | `ORCHESTRATOR_KB_DEFAULT_VECTOR_STORE` | `pgvector` | Default vector store |
 | `ORCHESTRATOR_KB_DEFAULT_CHUNKING_STRATEGY` | `recursive` | Default chunking strategy |
 | `ORCHESTRATOR_FAISS_INDEX_DIR` | `./faiss_indexes` | FAISS index file directory |
-| `ORCHESTRATOR_VERTEX_PROJECT` | `""` | Vertex AI project |
-| `ORCHESTRATOR_VERTEX_LOCATION` | `us-central1` | Vertex AI region |
+| `ORCHESTRATOR_VERTEX_PROJECT` | `""` | GCP project for Vertex AI. Used by **both** Gemini chat/agent nodes (when `provider: "vertex"`) and Vertex-backed embedding providers. Auth is ADC — point `GOOGLE_APPLICATION_CREDENTIALS` at a service-account JSON, or use workload identity on GKE / Cloud Run. |
+| `ORCHESTRATOR_VERTEX_LOCATION` | `us-central1` | Vertex AI region — applies to both chat and embeddings |
 
 ### Security
 

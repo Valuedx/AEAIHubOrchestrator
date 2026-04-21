@@ -169,6 +169,21 @@ This keeps sensitive values (API keys, passwords) out of the `graph_json` while 
 
 Both `tenant_integrations` (AutomationEdge connection defaults) and `tenant_mcp_servers` (MCP-02) store `{{ env.KEY }}` placeholders in their `config_json` rather than raw secrets. `engine/integration_resolver.py` (for AE) and `engine/mcp_server_resolver.py` (for MCP) substitute them against `get_tenant_secret` at call time. A missing referenced secret raises loudly — the caller fails rather than sending an unauth'd request a compliant server would 401 anyway.
 
+### Google Cloud auth — Vertex AI (VERTEX-01)
+
+When a node uses `provider: "vertex"`, the runtime authenticates via **Application Default Credentials**, not a vault secret. ADC is resolved in this order:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` env var pointing at a service-account JSON file.
+2. Workload identity on GKE / Cloud Run / Cloud Functions (no JSON file — the runtime mints tokens from the attached service account).
+3. `gcloud auth application-default login` (developer laptops only).
+
+**Operational implications:**
+
+* The service account needs the `aiplatform.user` role (or narrower: `aiplatform.endpoints.predict` plus read on the region's model garden).
+* No Vertex credential ever lives in `tenant_secrets` or `graph_json`. Rotating the service-account key means replacing the JSON file referenced by the env var — no app restart if ADC re-reads.
+* Today `ORCHESTRATOR_VERTEX_PROJECT` is process-global. Per-tenant project override (so tenant A bills to project A and tenant B bills to project B) is tracked as **VERTEX-02** and would live in `tenant_integrations` with `system='vertex'`.
+* Vertex embeddings (pre-existing) and Vertex chat (VERTEX-01) both share the same project + location + ADC — one config surface, two code paths.
+
 ---
 
 ## Rate limiting

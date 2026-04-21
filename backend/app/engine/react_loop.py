@@ -366,14 +366,19 @@ def _google_init(messages: list[dict]) -> dict:
     }
 
 
-def _google_call(
+def _google_call_backend(
+    backend: str,
     model: str, state: dict, tools: list[dict],
     temperature: float, max_tokens: int,
 ) -> dict[str, Any]:
-    from google import genai
+    """Shared ReAct tool-calling loop for both AI Studio and Vertex —
+    same wire format through the unified ``google-genai`` SDK. Client
+    construction + env-var validation lives in ``llm_providers._google_client``.
+    """
+    from app.engine.llm_providers import _google_client
     from google.genai import types
 
-    client = genai.Client(api_key=settings.google_api_key)
+    client = _google_client(backend)
 
     google_tools = None
     if tools:
@@ -427,6 +432,20 @@ def _google_call(
     }
 
 
+def _google_call(
+    model: str, state: dict, tools: list[dict],
+    temperature: float, max_tokens: int,
+) -> dict[str, Any]:
+    return _google_call_backend("genai", model, state, tools, temperature, max_tokens)
+
+
+def _vertex_call(
+    model: str, state: dict, tools: list[dict],
+    temperature: float, max_tokens: int,
+) -> dict[str, Any]:
+    return _google_call_backend("vertex", model, state, tools, temperature, max_tokens)
+
+
 def _google_append(state: dict, response: dict, tool_results: list[dict]) -> dict:
     from google.genai import types
 
@@ -471,6 +490,13 @@ _PROVIDERS: dict[str, dict[str, Any]] = {
     "google": {
         "init": _google_init,
         "call": _google_call,
+        "append_tool_results": _google_append,
+    },
+    "vertex": {
+        # Vertex reuses the genai-backed init + append helpers; only
+        # ``call`` differs (different Client constructor).
+        "init": _google_init,
+        "call": _vertex_call,
         "append_tool_results": _google_append,
     },
 }
