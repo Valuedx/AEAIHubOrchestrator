@@ -208,6 +208,7 @@ def _handle_agent(
         instance_id=instance_id,
         node_id=node_id,
         messages=prompt_messages,
+        tenant_id=tenant_id,
     )
     result["memory_debug"] = memory_debug
 
@@ -819,6 +820,7 @@ def _handle_llm_router(
         user_message=user_prompt,
         temperature=0.1,
         max_tokens=64,
+        tenant_id=tenant_id,
     )
 
     raw_response = result.get("response", "").strip()

@@ -28,6 +28,7 @@ def call_llm(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Route to the appropriate provider and return a standardized response.
 
@@ -35,6 +36,11 @@ def call_llm(
     ``google`` — both hit the unified ``google-genai`` SDK; only the
     ``Client`` constructor differs (AI Studio api-key vs. Vertex
     project + location). See ``_call_google``.
+
+    ``tenant_id`` is threaded through to the Vertex client factory so
+    VERTEX-02's per-tenant project override resolves. OpenAI /
+    Anthropic paths accept the kwarg and ignore it — the handler
+    signatures stay uniform.
     """
     providers = {
         "google": _call_google,
@@ -53,6 +59,7 @@ def call_llm(
         temperature=temperature,
         max_tokens=max_tokens,
         messages=messages,
+        tenant_id=tenant_id,
     )
 
 
@@ -66,6 +73,7 @@ def call_llm_streaming(
     instance_id: str = "",
     node_id: str = "",
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Stream a response from the provider, publishing tokens to Redis as they arrive.
 
@@ -86,6 +94,7 @@ def call_llm_streaming(
             temperature,
             max_tokens,
             messages=messages,
+            tenant_id=tenant_id,
         )
 
     from app.engine.streaming_llm import (
@@ -114,6 +123,7 @@ def call_llm_streaming(
         instance_id=instance_id,
         node_id=node_id,
         messages=messages,
+        tenant_id=tenant_id,
     )
 
 
@@ -131,7 +141,52 @@ def _coerce_messages(
     return out
 
 
-def _google_client(backend: str):  # noqa: ANN202 — return type is SDK-internal
+def _resolve_vertex_target(tenant_id: str | None) -> tuple[str, str]:
+    """Resolve the (project, location) Vertex AI target for a caller.
+
+    VERTEX-02 precedence, highest first:
+
+      1. ``tenant_integrations`` row with ``system='vertex'`` and
+         ``is_default=True`` for this tenant. Its ``config_json`` may
+         override ``project`` and/or ``location`` (missing keys fall
+         through to the env defaults).
+      2. ``settings.vertex_project`` + ``settings.vertex_location``.
+
+    Passing ``tenant_id=None`` is the "internal / cross-tenant" path —
+    schema priming, CLI scripts, etc. — which always uses the env
+    defaults so an unconfigured caller can't accidentally read another
+    tenant's routing.
+
+    Missing project at the end of resolution is not an error here; the
+    caller (``_google_client``) raises a specific ValueError so the
+    error message points at ``ORCHESTRATOR_VERTEX_PROJECT``.
+    """
+    if tenant_id is None:
+        return settings.vertex_project, settings.vertex_location
+
+    from app.database import SessionLocal, set_tenant_context
+    from app.models.workflow import TenantIntegration
+
+    db = SessionLocal()
+    try:
+        set_tenant_context(db, tenant_id)
+        row = (
+            db.query(TenantIntegration)
+            .filter_by(tenant_id=tenant_id, system="vertex", is_default=True)
+            .first()
+        )
+        if row is None:
+            return settings.vertex_project, settings.vertex_location
+        cfg = row.config_json or {}
+        return (
+            cfg.get("project") or settings.vertex_project,
+            cfg.get("location") or settings.vertex_location,
+        )
+    finally:
+        db.close()
+
+
+def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 — return type is SDK-internal
     """Build a ``google.genai.Client`` for either AI Studio or Vertex AI.
 
     Factored out so the request / response code in ``_call_google`` +
@@ -143,18 +198,23 @@ def _google_client(backend: str):  # noqa: ANN202 — return type is SDK-interna
         project + location, authenticated through Application Default
         Credentials (ADC).
 
+    For ``backend='vertex'``, ``tenant_id`` (when provided) resolves the
+    project/location through the per-tenant registry (VERTEX-02). Pass
+    ``None`` for the process-global env-var fallback.
+
     Raises ``ValueError`` with a specific env-var name so operators
     know exactly which setting to populate.
     """
     from google import genai
 
     if backend == "vertex":
-        if not settings.vertex_project:
+        project, location = _resolve_vertex_target(tenant_id)
+        if not project:
             raise ValueError("ORCHESTRATOR_VERTEX_PROJECT is not configured")
         return genai.Client(
             vertexai=True,
-            project=settings.vertex_project,
-            location=settings.vertex_location,
+            project=project,
+            location=location,
         )
     if backend == "genai":
         if not settings.google_api_key:
@@ -172,16 +232,19 @@ def _call_google_backend(
     temperature: float,
     max_tokens: int,
     messages: list[dict[str, Any]] | None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Shared Gemini request path used by both AI Studio and Vertex.
 
     The ``provider`` field on the returned dict mirrors ``backend`` so
     downstream code and Langfuse traces can still distinguish the two
-    backends even though the wire format is identical.
+    backends even though the wire format is identical. ``tenant_id``
+    only affects the Vertex branch — it picks the per-tenant project
+    (VERTEX-02). AI Studio ignores it.
     """
     from google.genai import types
 
-    client = _google_client(backend)
+    client = _google_client(backend, tenant_id=tenant_id)
     normalized = _coerce_messages(system_prompt, user_message, messages)
     system_parts = [str(msg.get("content", "")) for msg in normalized if msg.get("role") == "system"]
     contents: list[Any] = []
@@ -226,6 +289,7 @@ def _call_google(
     temperature: float,
     max_tokens: int,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     return _call_google_backend(
         backend="genai",
@@ -235,6 +299,7 @@ def _call_google(
         temperature=temperature,
         max_tokens=max_tokens,
         messages=messages,
+        tenant_id=tenant_id,
     )
 
 
@@ -245,6 +310,7 @@ def _call_vertex(
     temperature: float,
     max_tokens: int,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Call Gemini via Vertex AI (enterprise Google Cloud endpoint).
 
@@ -263,6 +329,7 @@ def _call_vertex(
         temperature=temperature,
         max_tokens=max_tokens,
         messages=messages,
+        tenant_id=tenant_id,
     )
 
 
@@ -273,6 +340,7 @@ def _call_openai(
     temperature: float,
     max_tokens: int,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
 ) -> dict[str, Any]:
     if not settings.openai_api_key:
         raise ValueError("ORCHESTRATOR_OPENAI_API_KEY is not configured")
@@ -313,6 +381,7 @@ def _call_anthropic(
     temperature: float,
     max_tokens: int,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
 ) -> dict[str, Any]:
     if not settings.anthropic_api_key:
         raise ValueError("ORCHESTRATOR_ANTHROPIC_API_KEY is not configured")

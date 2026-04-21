@@ -218,6 +218,144 @@ class TestStreamVertex:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# VERTEX-02 — per-tenant project override via tenant_integrations
+# ---------------------------------------------------------------------------
+
+
+class TestPerTenantVertexTarget:
+    """``_resolve_vertex_target`` consults the tenant_integrations
+    registry (system='vertex', is_default=True) and falls back to env
+    settings when no row exists. ``_google_client`` threads tenant_id
+    through so the right project flows all the way to the Client
+    constructor.
+    """
+
+    def test_resolve_without_tenant_uses_env(self):
+        from app.config import settings
+        from app.engine.llm_providers import _resolve_vertex_target
+
+        with patch.object(settings, "vertex_project", "env-proj"), \
+             patch.object(settings, "vertex_location", "us-west1"):
+            project, location = _resolve_vertex_target(None)
+
+        assert project == "env-proj"
+        assert location == "us-west1"
+
+    def test_resolve_tenant_with_registry_row_overrides_env(self):
+        """A tenant with a registry row bills to *that* project, not
+        the shared env one."""
+        from app.config import settings
+        from app.engine.llm_providers import _resolve_vertex_target
+
+        session = MagicMock()
+        row = MagicMock()
+        row.config_json = {"project": "tenant-a-proj", "location": "europe-west4"}
+        session.query.return_value.filter_by.return_value.first.return_value = row
+
+        with patch.object(settings, "vertex_project", "env-proj"), \
+             patch.object(settings, "vertex_location", "us-central1"), \
+             patch("app.database.SessionLocal", return_value=session), \
+             patch("app.database.set_tenant_context"):
+            project, location = _resolve_vertex_target("tenant-a")
+
+        assert project == "tenant-a-proj"
+        assert location == "europe-west4"
+
+    def test_resolve_tenant_without_row_falls_back_to_env(self):
+        from app.config import settings
+        from app.engine.llm_providers import _resolve_vertex_target
+
+        session = MagicMock()
+        session.query.return_value.filter_by.return_value.first.return_value = None
+
+        with patch.object(settings, "vertex_project", "env-proj"), \
+             patch.object(settings, "vertex_location", "us-central1"), \
+             patch("app.database.SessionLocal", return_value=session), \
+             patch("app.database.set_tenant_context"):
+            project, location = _resolve_vertex_target("tenant-b")
+
+        assert project == "env-proj"
+        assert location == "us-central1"
+
+    def test_resolve_tenant_row_with_partial_config_fills_missing_from_env(self):
+        """A registry row that only overrides one field (say, location)
+        should inherit the other from env — operators shouldn't have
+        to copy the whole config just to change one knob."""
+        from app.config import settings
+        from app.engine.llm_providers import _resolve_vertex_target
+
+        session = MagicMock()
+        row = MagicMock()
+        row.config_json = {"location": "asia-east1"}  # project omitted
+        session.query.return_value.filter_by.return_value.first.return_value = row
+
+        with patch.object(settings, "vertex_project", "shared-proj"), \
+             patch.object(settings, "vertex_location", "us-central1"), \
+             patch("app.database.SessionLocal", return_value=session), \
+             patch("app.database.set_tenant_context"):
+            project, location = _resolve_vertex_target("tenant-c")
+
+        assert project == "shared-proj"
+        assert location == "asia-east1"
+
+    def test_google_client_threads_tenant_project_into_constructor(self):
+        from app.config import settings
+        from app.engine.llm_providers import _google_client
+
+        session = MagicMock()
+        row = MagicMock()
+        row.config_json = {"project": "tenant-x-proj", "location": "europe-west4"}
+        session.query.return_value.filter_by.return_value.first.return_value = row
+
+        with patch.object(settings, "vertex_project", "env-proj"), \
+             patch("google.genai.Client", _FakeGenaiClient), \
+             patch("app.database.SessionLocal", return_value=session), \
+             patch("app.database.set_tenant_context"):
+            client = _google_client("vertex", tenant_id="tenant-x")
+
+        # The tenant row beat the env default — this is the whole point.
+        assert client.init_kwargs == {
+            "vertexai": True,
+            "project": "tenant-x-proj",
+            "location": "europe-west4",
+        }
+
+    def test_call_llm_passes_tenant_to_vertex_client(self):
+        """End-to-end through the public dispatch — call_llm(...,
+        tenant_id=...) routes through to the Vertex client with the
+        tenant-specific project."""
+        from app.config import settings
+        from app.engine.llm_providers import call_llm
+
+        captured: dict = {}
+
+        class Recording(_FakeGenaiClient):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                captured.update(kwargs)
+
+        session = MagicMock()
+        row = MagicMock()
+        row.config_json = {"project": "acme-llm", "location": "us-central1"}
+        session.query.return_value.filter_by.return_value.first.return_value = row
+
+        with patch.object(settings, "vertex_project", "env-proj"), \
+             patch("google.genai.Client", Recording), \
+             patch("app.database.SessionLocal", return_value=session), \
+             patch("app.database.set_tenant_context"):
+            result = call_llm(
+                provider="vertex",
+                model="gemini-2.5-flash",
+                system_prompt="",
+                user_message="hi",
+                tenant_id="acme",
+            )
+
+        assert captured.get("project") == "acme-llm"
+        assert result["provider"] == "vertex"
+
+
 class TestReactLoopVertex:
     def test_providers_dict_has_vertex_entry(self):
         from app.engine.react_loop import _PROVIDERS

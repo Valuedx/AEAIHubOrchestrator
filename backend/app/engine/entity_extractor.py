@@ -146,6 +146,7 @@ def _handle_entity_extractor(
     if llm_fallback and missing_required:
         llm_entities = _llm_extract(
             source_text, scoped, missing_required, provider, model, context,
+            tenant_id=tenant_id,
         )
         for k, v in llm_entities.items():
             if k not in extracted:
@@ -176,6 +177,7 @@ def _llm_extract(
     provider: str,
     model: str,
     context: dict[str, Any],
+    tenant_id: str | None = None,
 ) -> dict[str, str]:
     """Use an LLM to extract entities that rule-based extraction missed."""
     from app.engine.llm_providers import call_llm
@@ -204,6 +206,7 @@ def _llm_extract(
         user_message=user_prompt,
         temperature=0.1,
         max_tokens=256,
+        tenant_id=tenant_id,
     )
 
     raw_response = result.get("response", "").strip()

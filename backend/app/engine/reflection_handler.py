@@ -167,6 +167,7 @@ def _handle_reflection(
         user_message=user_message,
         temperature=temperature,
         max_tokens=max_tokens,
+        tenant_id=tenant_id,
     )
 
     raw_response = result.get("response", "").strip()

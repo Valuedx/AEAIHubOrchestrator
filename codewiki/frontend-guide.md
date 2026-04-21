@@ -92,6 +92,7 @@ The frontend is a React 19 single-page application built with Vite, React Flow, 
 | `SecretsDialog.tsx` | Tenant secrets (Fernet-encrypted vault) — referenced as `{{ env.KEY }}` in node configs, integration configs, and MCP headers. |
 | `IntegrationsDialog.tsx` | AutomationEdge tenant_integrations CRUD — connection defaults per tenant (baseUrl, orgCode, auth mode, credentials secret prefix). |
 | `McpServersDialog.tsx` | **MCP-02** — per-tenant MCP server registry CRUD. Adds label + URL + auth mode (`none` / `static_headers`; `oauth_2_1` option disabled pending MCP-03) + `Name: value` header editor + default toggle. |
+| `VertexProjectsDialog.tsx` | **VERTEX-02** — per-tenant Vertex AI project registry. Rows live in `tenant_integrations` with `system='vertex'`. Fields: label + GCP project ID + region + default toggle. Surfaces the "ADC still process-global" caveat inline so operators don't expect per-tenant auth. |
 | `ApiPlaygroundDialog.tsx` | **API-18A** — in-app test console for the currently-loaded workflow. JSON payload editor (parse errors surface inline), sync / async toggle, sync-timeout + deterministic-mode controls, live Copy-as-curl snippet, per-workflow last-10-runs history persisted to localStorage. Goes through `api.executeWorkflow` — no new backend. Disabled until `currentWorkflow` is set. |
 | `HotkeyCheatsheet.tsx` | **DV-06** — `?` modal listing every canvas shortcut (Shift+S sticky, 1 fit view, Tab palette, Ctrl+Z/Y undo/redo, Del/Backspace delete). |
 | `HITLResumeDialog.tsx` | Human-in-the-loop resume dialog with context display |

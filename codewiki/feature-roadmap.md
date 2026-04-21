@@ -36,9 +36,12 @@ See [MCP Audit](mcp-audit.md) for findings and the per-tenant registry design.
 | # | Feature | Status |
 |---|---------|--------|
 | API-18A | In-app API Playground (JSON payload editor + sync/async + Copy-as-curl + last-10-runs) | **Done** — `f2103c4` |
-| VERTEX-01 | First-class Vertex AI support for Gemini chat/ReAct/streaming nodes | **Done** — see below |
+| VERTEX-01 | First-class Vertex AI support for Gemini chat/ReAct/streaming nodes | **Done** — `c663450` |
+| VERTEX-02 | Per-tenant Vertex project override via `tenant_integrations(system='vertex')` | **Done** — see below |
 
-VERTEX-01 adds `vertex` to every LLM node's `provider` enum, reusing the unified `google-genai` SDK via `Client(vertexai=True, project, location)`. Zero new dependencies. ADC auth (`GOOGLE_APPLICATION_CREDENTIALS` or workload identity). Previously Vertex was embeddings-only; the gap felt awkward for any tenant already on GCP. Per-tenant Vertex project override (so tenants bill to their own GCP projects) tracked as **VERTEX-02**.
+VERTEX-01 adds `vertex` to every LLM node's `provider` enum, reusing the unified `google-genai` SDK via `Client(vertexai=True, project, location)`. Zero new dependencies. ADC auth (`GOOGLE_APPLICATION_CREDENTIALS` or workload identity). Previously Vertex was embeddings-only; the gap felt awkward for any tenant already on GCP.
+
+VERTEX-02 moves the Vertex project + location off the process-global env vars onto per-tenant rows in `tenant_integrations` (`system='vertex'`). Each tenant can bill to their own GCP project. No migration — rides the existing table. New `VertexProjectsDialog` behind the toolbar Cloud icon. ADC stays process-global (service-account identity can't be tenant-scoped without runtime ADC swapping + tenant_secrets storage — a separate, larger feature).
 
 ---
 

@@ -503,6 +503,7 @@ def _llm_checkpoint_summary(
     provider: str,
     model: str,
     mode: str,
+    tenant_id: str | None = None,
 ) -> str:
     message_lines = [
         f"{msg.role.upper()}: {' '.join((msg.content or '').split())}"
@@ -541,6 +542,7 @@ def _llm_checkpoint_summary(
             user_message=user_message,
             temperature=0.0,
             max_tokens=max_tokens,
+            tenant_id=tenant_id,
         )
         text = str(result.get("response", "") or "").strip()
         if text:
@@ -590,6 +592,7 @@ def refresh_rolling_summary(
         provider=policy.summary_provider,
         model=policy.summary_model,
         mode="checkpoint",
+        tenant_id=session.tenant_id,
     )
     episode.summary_updated_at = _utcnow()
     episode.summary_through_turn = target_turn
@@ -1344,6 +1347,7 @@ def archive_active_episode(
         provider=policy.episode_archive_provider,
         model=policy.episode_archive_model,
         mode="archive",
+        tenant_id=tenant_id,
     )
     title = provided_title.strip() or episode.title or _derive_episode_title(
         summary_text=final_summary,

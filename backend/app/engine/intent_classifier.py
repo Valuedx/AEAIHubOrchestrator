@@ -269,6 +269,7 @@ def _llm_classify(
         user_message=user_prompt,
         temperature=0.1,
         max_tokens=128,
+        tenant_id=tenant_id,
     )
 
     raw_response = result.get("response", "").strip()

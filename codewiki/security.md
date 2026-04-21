@@ -181,7 +181,8 @@ When a node uses `provider: "vertex"`, the runtime authenticates via **Applicati
 
 * The service account needs the `aiplatform.user` role (or narrower: `aiplatform.endpoints.predict` plus read on the region's model garden).
 * No Vertex credential ever lives in `tenant_secrets` or `graph_json`. Rotating the service-account key means replacing the JSON file referenced by the env var — no app restart if ADC re-reads.
-* Today `ORCHESTRATOR_VERTEX_PROJECT` is process-global. Per-tenant project override (so tenant A bills to project A and tenant B bills to project B) is tracked as **VERTEX-02** and would live in `tenant_integrations` with `system='vertex'`.
+* **Per-tenant project routing (VERTEX-02)** — operators register per-tenant GCP projects via the toolbar **Cloud** icon. Rows live in `tenant_integrations` with `system='vertex'` and `config_json={project, location}`. At most one row per tenant is `is_default=true`. Missing row → `ORCHESTRATOR_VERTEX_PROJECT` env fallback. Each tenant's Vertex calls bill to their own project.
+* **ADC stays process-global** even after VERTEX-02. `GOOGLE_APPLICATION_CREDENTIALS` and workload identity are per-process, not per-tenant. The orchestrator's service account needs `aiplatform.user` (or narrower) on every GCP project listed in every tenant's registry. If you need per-tenant *identities* — where tenant A's traffic authenticates as SA-A and tenant B's as SA-B — that's a separate feature requiring runtime ADC swapping + `tenant_secrets`-style storage of service-account JSON (not scoped yet).
 * Vertex embeddings (pre-existing) and Vertex chat (VERTEX-01) both share the same project + location + ADC — one config surface, two code paths.
 
 ---

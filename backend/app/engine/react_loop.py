@@ -76,7 +76,10 @@ def run_react_loop(
     for i in range(max_iterations):
         logger.info("ReAct [%s/%s] iteration %d/%d", provider, model, i + 1, max_iterations)
 
-        response = handler["call"](model, messages, tool_defs, temperature, max_tokens)
+        response = handler["call"](
+            model, messages, tool_defs, temperature, max_tokens,
+            tenant_id=tenant_id,
+        )
         total_usage["input_tokens"] += response["usage"]["input_tokens"]
         total_usage["output_tokens"] += response["usage"]["output_tokens"]
 
@@ -198,6 +201,7 @@ def _openai_init(messages: list[dict]) -> list[dict]:
 def _openai_call(
     model: str, messages: list[dict], tools: list[dict],
     temperature: float, max_tokens: int,
+    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
 ) -> dict[str, Any]:
     from openai import OpenAI
     client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
@@ -275,6 +279,7 @@ def _anthropic_init(messages: list[dict]) -> dict:
 def _anthropic_call(
     model: str, state: dict, tools: list[dict],
     temperature: float, max_tokens: int,
+    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
 ) -> dict[str, Any]:
     from anthropic import Anthropic
     client = Anthropic(api_key=settings.anthropic_api_key)
@@ -370,15 +375,18 @@ def _google_call_backend(
     backend: str,
     model: str, state: dict, tools: list[dict],
     temperature: float, max_tokens: int,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Shared ReAct tool-calling loop for both AI Studio and Vertex —
     same wire format through the unified ``google-genai`` SDK. Client
     construction + env-var validation lives in ``llm_providers._google_client``.
+    ``tenant_id`` routes through so VERTEX-02's per-tenant project
+    override resolves for the Vertex branch.
     """
     from app.engine.llm_providers import _google_client
     from google.genai import types
 
-    client = _google_client(backend)
+    client = _google_client(backend, tenant_id=tenant_id)
 
     google_tools = None
     if tools:
@@ -435,15 +443,23 @@ def _google_call_backend(
 def _google_call(
     model: str, state: dict, tools: list[dict],
     temperature: float, max_tokens: int,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
-    return _google_call_backend("genai", model, state, tools, temperature, max_tokens)
+    return _google_call_backend(
+        "genai", model, state, tools, temperature, max_tokens,
+        tenant_id=tenant_id,
+    )
 
 
 def _vertex_call(
     model: str, state: dict, tools: list[dict],
     temperature: float, max_tokens: int,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
-    return _google_call_backend("vertex", model, state, tools, temperature, max_tokens)
+    return _google_call_backend(
+        "vertex", model, state, tools, temperature, max_tokens,
+        tenant_id=tenant_id,
+    )
 
 
 def _google_append(state: dict, response: dict, tool_results: list[dict]) -> dict:

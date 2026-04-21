@@ -43,7 +43,14 @@ router = APIRouter()
 
 # Systems we currently support. The API accepts new entries without code
 # changes, but keep this list for validation + the UI dropdown.
-_SUPPORTED_SYSTEMS = {"automationedge"}
+#
+# ``automationedge`` — RPA job submission + async resume (Pattern A/C).
+# ``vertex`` — per-tenant Google Cloud Vertex AI project routing (VERTEX-02).
+#   config_json shape: ``{"project": "<gcp-project-id>", "location": "<region>"}``.
+#   Raw credentials are NOT stored — ADC (GOOGLE_APPLICATION_CREDENTIALS or
+#   workload identity) is still process-global, so a single service-account
+#   identity needs aiplatform.user across every target project.
+_SUPPORTED_SYSTEMS = {"automationedge", "vertex"}
 
 
 # ---------------------------------------------------------------------------

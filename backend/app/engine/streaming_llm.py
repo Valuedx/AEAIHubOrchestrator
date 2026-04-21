@@ -93,15 +93,17 @@ def _stream_google_backend(
     instance_id: str,
     node_id: str,
     messages: list[dict[str, Any]] | None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Shared streaming Gemini request path used by both AI Studio and
     Vertex backends. Client construction is delegated to
     ``llm_providers._google_client`` so env-var validation stays in one
-    place."""
+    place. ``tenant_id`` routes through to the Vertex-per-tenant
+    project resolver (VERTEX-02)."""
     from app.engine.llm_providers import _google_client
     from google.genai import types
 
-    client = _google_client(backend)
+    client = _google_client(backend, tenant_id=tenant_id)
     normalized = messages or (
         ([{"role": "system", "content": system_prompt}] if system_prompt else [])
         + [{"role": "user", "content": user_message}]
@@ -161,6 +163,7 @@ def stream_google(
     instance_id: str,
     node_id: str,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Stream Google Gemini via AI Studio, publishing tokens to Redis.
 
@@ -176,6 +179,7 @@ def stream_google(
         instance_id=instance_id,
         node_id=node_id,
         messages=messages,
+        tenant_id=tenant_id,
     )
 
 
@@ -188,6 +192,7 @@ def stream_vertex(
     instance_id: str,
     node_id: str,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Stream Gemini via Vertex AI — wire format identical to
     ``stream_google``, only the client's auth + endpoint differ."""
@@ -201,6 +206,7 @@ def stream_vertex(
         instance_id=instance_id,
         node_id=node_id,
         messages=messages,
+        tenant_id=tenant_id,
     )
 
 
@@ -213,6 +219,7 @@ def stream_openai(
     instance_id: str,
     node_id: str,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
 ) -> dict[str, Any]:
     """Stream OpenAI, publishing tokens to Redis."""
     from app.config import settings
@@ -268,6 +275,7 @@ def stream_anthropic(
     instance_id: str,
     node_id: str,
     messages: list[dict[str, Any]] | None = None,
+    tenant_id: str | None = None,  # noqa: ARG001 — accepted for dispatch uniformity
 ) -> dict[str, Any]:
     """Stream Anthropic, publishing tokens to Redis."""
     from app.config import settings
