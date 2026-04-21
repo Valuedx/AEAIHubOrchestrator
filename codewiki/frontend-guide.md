@@ -91,6 +91,7 @@ The frontend is a React 19 single-page application built with Vite, React Flow, 
 | `TemplateGalleryDialog.tsx` | Template browser with import/export JSON |
 | `KnowledgeBaseDialog.tsx` | KB management — create, edit, delete, upload documents, view status |
 | `SecretsDialog.tsx` | Tenant secrets (Fernet-encrypted vault) — referenced as `{{ env.KEY }}` in node configs, integration configs, and MCP headers. |
+| `LlmCredentialsDialog.tsx` | **ADMIN-03** — specialised view over the secrets vault for the four LLM provider keys (Google AI Studio / OpenAI / Anthropic / OpenAI base URL). Labelled fields instead of raw key names. Per-field source pills (`tenant override` / `env default` / `not configured`). Tri-action pending state (unchanged / set / clear). Password masks with show/hide toggles. |
 | `IntegrationsDialog.tsx` | AutomationEdge tenant_integrations CRUD — connection defaults per tenant (baseUrl, orgCode, auth mode, credentials secret prefix). |
 | `McpServersDialog.tsx` | **MCP-02** — per-tenant MCP server registry CRUD. Adds label + URL + auth mode (`none` / `static_headers`; `oauth_2_1` option disabled pending MCP-03) + `Name: value` header editor + default toggle. |
 | `VertexProjectsDialog.tsx` | **VERTEX-02** — per-tenant Vertex AI project registry. Rows live in `tenant_integrations` with `system='vertex'`. Fields: label + GCP project ID + region + default toggle. Surfaces the "ADC still process-global" caveat inline so operators don't expect per-tenant auth. |

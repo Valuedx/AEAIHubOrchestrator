@@ -136,7 +136,7 @@ The "bring `.env` configs to the admin UI" question in general is a minefield of
 | Env vars | Why separate / status |
 |---|---|
 | `ORCHESTRATOR_RATE_LIMIT_REQUESTS` / `_WINDOW_SECONDS` | **Shipped as ADMIN-02.** Original deferral was because `slowapi` read its limit string at import time. Investigation showed slowapi was never actually wired into a middleware — the env vars had no runtime effect. ADMIN-02 dropped the slowapi path entirely in favour of a tiny custom `TenantRateLimitMiddleware` that does Redis INCR+EXPIRE per-tenant. |
-| Provider API keys (`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) | Per-tenant keys = per-tenant billing. Requires tenant_secrets-style storage + threading tenant_id into the six `_call_*` / `stream_*` functions (mirrors VERTEX-02's shape). Tracked as **ADMIN-03**. |
+| Provider API keys (`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_BASE_URL`) | **Shipped as ADMIN-03.** Stored in the existing Fernet-encrypted `tenant_secrets` vault under well-known names (`LLM_GOOGLE_API_KEY`, `LLM_OPENAI_API_KEY`, `LLM_OPENAI_BASE_URL`, `LLM_ANTHROPIC_API_KEY`). `engine/llm_credentials_resolver` threads tenant_id into seven call sites (`_call_google/_call_openai/_call_anthropic` + three stream variants + two ReAct handlers). Dialog lives behind the toolbar Key icon. Embedding paths (`_embed_google`, `_embed_openai`) still use the shared env keys — threading tenant_id through ingestor/retriever is a separate refactor; follow-up if needed. |
 
 ### 4d. Already solved via dedicated tables
 
