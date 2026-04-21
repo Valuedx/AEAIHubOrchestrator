@@ -92,6 +92,7 @@ The frontend is a React 19 single-page application built with Vite, React Flow, 
 | `SecretsDialog.tsx` | Tenant secrets (Fernet-encrypted vault) — referenced as `{{ env.KEY }}` in node configs, integration configs, and MCP headers. |
 | `IntegrationsDialog.tsx` | AutomationEdge tenant_integrations CRUD — connection defaults per tenant (baseUrl, orgCode, auth mode, credentials secret prefix). |
 | `McpServersDialog.tsx` | **MCP-02** — per-tenant MCP server registry CRUD. Adds label + URL + auth mode (`none` / `static_headers`; `oauth_2_1` option disabled pending MCP-03) + `Name: value` header editor + default toggle. |
+| `ApiPlaygroundDialog.tsx` | **API-18A** — in-app test console for the currently-loaded workflow. JSON payload editor (parse errors surface inline), sync / async toggle, sync-timeout + deterministic-mode controls, live Copy-as-curl snippet, per-workflow last-10-runs history persisted to localStorage. Goes through `api.executeWorkflow` — no new backend. Disabled until `currentWorkflow` is set. |
 | `HotkeyCheatsheet.tsx` | **DV-06** — `?` modal listing every canvas shortcut (Shift+S sticky, 1 fit view, Tab palette, Ctrl+Z/Y undo/redo, Del/Backspace delete). |
 | `HITLResumeDialog.tsx` | Human-in-the-loop resume dialog with context display |
 | `DebugReplayBar.tsx` | Checkpoint step-through UI for debug mode |
@@ -262,5 +263,7 @@ Manages the saved workflow, execution state, SSE streaming, and debug replay.
 | `src/lib/executionStatus.ts` | Pure helpers for canvas status overlay — `computeNodeStatuses`, `shouldApplyTransition`, `statusForSingleLog` (excludes stickies) |
 | `src/lib/expression_helpers` ref | DV-04 helpers live **backend-side** in `engine/expression_helpers.py`; the frontend's expression autocomplete picks them up via `ExpressionInput`'s hints list |
 | `src/lib/keyboardUtils.ts` | **DV-06** — `isTextEditingTarget` shared guard for single-key shortcuts |
+| `src/lib/playgroundCurl.ts` | **API-18A** — pure bash-safe curl generator consumed by `ApiPlaygroundDialog`. Honours `VITE_API_URL` / `VITE_TENANT_ID` / `VITE_AUTH_MODE`. |
+| `src/lib/playgroundHistory.ts` | **API-18A** — localStorage ring buffer keyed by `aeai:playground:{workflow_id}:history`, capped at 10 entries, schema-safe loader. |
 | `src/store/flowStore.ts` | Graph state (nodes, edges, selection, undo, `addStickyNote`) |
 | `src/store/workflowStore.ts` | Workflow metadata, execution, SSE, debug, DV-01 pins, DV-05 duplicate, DV-07 setActive |

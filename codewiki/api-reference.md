@@ -76,6 +76,8 @@ See [Developer Workflow](dev-workflow.md) for the full UX + edge cases.
 |--------|------|--------|-------------|
 | `POST` | `/api/v1/workflows/{workflow_id}/execute` | 202 / 200 / 504 | Execute a workflow |
 
+> **UI shortcut (API-18A):** the toolbar **FlaskConical** icon opens an **API Playground** dialog that hits this endpoint with an arbitrary JSON payload (sync or async), shows the result inline, and offers a one-click "Copy as curl" for the exact request. No new API surface — it's purely a UI over this endpoint.
+
 **ExecuteRequest** (request body):
 
 | Field | Type | Default | Notes |
