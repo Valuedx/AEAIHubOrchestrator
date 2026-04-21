@@ -77,7 +77,7 @@ Deferred: sampling (MCP-11), resources / prompts primitives (MCP-12). See [mcp-a
 | **P2** | 15 | Marketplace / Community Nodes | n8n, Flowise | Planned |
 | **P2** | 16 | Multi-Way Branching (Switch Node) | n8n, Dify | Planned |
 | **P3** | 17 | Canvas UX (auto-layout, groups, comments) | Rivet, n8n | **Partial** |
-| **P3** | 18 | API Playground / Embed Widgets | Dify, Flowise | Planned |
+| **P3** | 18 | API Playground / Embed Widgets | Dify, Flowise | **Partial** |
 | **P3** | 19 | Environment / Variable Management UI | n8n, Dify | **Partial** |
 | **P3** | 20 | Execution Analytics Dashboard | n8n, Dify | Planned |
 | **P3** | 23 | Real-time Collaboration (presence, comments) | Dify, Figma-class | Planned |
@@ -243,11 +243,13 @@ Only binary true/false Condition nodes exist. No multi-way switch/case routing. 
 - Copy-paste of node groups across workflows (today: save as template, load as starter)
 - Multi-select + bulk-edit on the canvas
 
-#### 18. API Playground / Chatbot Embed — Planned
+#### 18. API Playground / Chatbot Embed — Partial
 
 > Dify provides a built-in API playground for testing, plus embeddable chatbot widgets. Flowise offers one-click API deployment + embed widgets.
 
-No equivalent exists beyond the bridge/client pattern. A test console in the UI for sending payloads and viewing responses, plus embeddable chat widgets, would improve developer experience.
+**API-18A — In-app API Playground — Shipped.** Toolbar **FlaskConical** icon → `ApiPlaygroundDialog.tsx`. JSON payload editor, sync / async toggle, sync-timeout input, deterministic-mode checkbox, one-click Run, live "Copy as curl" snippet that updates as the user types, and a per-workflow last-10-runs history persisted to `localStorage`. No new backend surface — the dialog goes through the existing `POST /api/v1/workflows/{id}/execute` endpoint so all existing auth, tenant scoping, and rate limits apply. Sync runs show the `SyncExecuteOut.output` context pretty-printed; async runs show the `InstanceOut` and point the operator at the main Execution Panel for streaming logs. Lives in the toolbar between the active-toggle and the Sync-run checkbox; disabled until a workflow is saved (needs a stored workflow id). See `src/lib/playgroundCurl.ts` (pure curl generator, 9 tests) and `src/lib/playgroundHistory.ts` (localStorage ring buffer, 9 tests).
+
+**API-18B — Chatbot Embed Widget — Planned.** Security-sensitive follow-up: needs an unauthenticated-but-scoped access model (new `workflow_embeds` table with origin allowlist, signed short-lived tokens, per-embed rate limits), a public `/api/v1/embed/{id}/chat` endpoint with strict CORS / CSP, and a standalone Preact widget bundle so parent apps don't inherit the main React 19 bundle. Scoped separately from 18A because it's a brand-new attack surface — will need a written security design before code.
 
 #### 19. Environment / Variable Management UI — Partial
 

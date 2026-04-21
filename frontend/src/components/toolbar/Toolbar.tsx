@@ -24,6 +24,7 @@ import {
   Power,
   PowerOff,
   Globe,
+  FlaskConical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +42,7 @@ import { SecretsDialog } from "@/components/toolbar/SecretsDialog";
 import { IntegrationsDialog } from "@/components/toolbar/IntegrationsDialog";
 import { McpServersDialog } from "@/components/toolbar/McpServersDialog";
 import { HotkeyCheatsheet } from "@/components/toolbar/HotkeyCheatsheet";
+import { ApiPlaygroundDialog } from "@/components/toolbar/ApiPlaygroundDialog";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
 
@@ -68,6 +70,7 @@ export function Toolbar() {
   const [integrationsOpen, setIntegrationsOpen] = useState(false);
   const [mcpServersOpen, setMcpServersOpen] = useState(false);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+  const [playgroundOpen, setPlaygroundOpen] = useState(false);
 
   // DV-06 — ? opens the hotkey cheatsheet from anywhere on the page.
   // Guard against input/textarea focus so typing "?" into a field
@@ -354,6 +357,20 @@ export function Toolbar() {
 
         <Separator orientation="vertical" className="h-6" />
 
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setPlaygroundOpen(true)}
+          disabled={!currentWorkflow}
+          title={
+            !currentWorkflow
+              ? "Save the workflow first — the Playground needs a stored workflow id"
+              : "API Playground — test this workflow with an arbitrary payload"
+          }
+        >
+          <FlaskConical className="h-4 w-4" />
+        </Button>
+
         <label className="hidden md:flex items-center gap-2 mr-1 text-[11px] text-muted-foreground cursor-pointer whitespace-nowrap">
           <input
             type="checkbox"
@@ -400,6 +417,11 @@ export function Toolbar() {
         onRunAnyway={handleRunAnyway}
       />
       <HotkeyCheatsheet open={cheatsheetOpen} onOpenChange={setCheatsheetOpen} />
+      <ApiPlaygroundDialog
+        open={playgroundOpen}
+        onOpenChange={setPlaygroundOpen}
+        workflow={currentWorkflow}
+      />
     </>
   );
 }
