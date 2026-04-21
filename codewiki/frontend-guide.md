@@ -52,6 +52,7 @@ The frontend is a React 19 single-page application built with Vite, React Flow, 
 | File | Description |
 |------|-------------|
 | `WorkflowBanner.tsx` | Dismissible error (red) or notice (blue) strip, driven by `workflowStore` |
+| `StartupHealthBanner.tsx` | **STARTUP-01** — fetches `/health/ready` on mount. Red `role="alert"` strip (non-dismissible) on any check `fail`; amber dismissible strip on any `warn` with a 1-hour `localStorage` sticky. Collapsed by default; expands to show per-check `message` + `remediation`. |
 
 ### `components/canvas/`
 

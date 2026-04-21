@@ -7,6 +7,7 @@ import { PropertyInspector } from "@/components/sidebar/PropertyInspector";
 import { Toolbar } from "@/components/toolbar/Toolbar";
 import { ExecutionPanel } from "@/components/toolbar/ExecutionPanel";
 import { WorkflowBanner } from "@/components/banner/WorkflowBanner";
+import { StartupHealthBanner } from "@/components/banner/StartupHealthBanner";
 import { LoginPage } from "@/components/auth/LoginPage";
 import { getAuthToken } from "@/lib/api";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
@@ -42,6 +43,10 @@ export default function App() {
       <ReactFlowProvider>
         <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
           <Toolbar />
+          {/* STARTUP-01 banner sits above the workflow banner so a
+              failed readiness check is the first thing an operator
+              sees when they open the UI. */}
+          <StartupHealthBanner />
           <WorkflowBanner />
           <div className="flex flex-1 min-h-0">
             <NodePalette

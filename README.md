@@ -72,7 +72,8 @@ celery -A app.worker worker --loglevel=info
 - `codewiki/memory-management.md`
 - `codewiki/automationedge.md` — AutomationEdge async-external node (Pattern C / Pattern A, Diverted handling, operator setup)
 - `codewiki/vertex.md` — Google Cloud Vertex AI integration end-to-end. ADC setup, per-tenant project routing (VERTEX-02), and the **scope caveat** around per-tenant *identity* (which VERTEX-02 does NOT provide). Read before multi-tenant compliance decisions.
-- `codewiki/tenant-policies.md` — ADMIN-01 per-tenant overrides for execution quota, snapshot retention, and MCP pool size. §4 enumerates every other `ORCHESTRATOR_*` env var and why it's moveable / deferred / permanently not.
+- `codewiki/tenant-policies.md` — ADMIN-01 + ADMIN-02 per-tenant overrides for execution quota, snapshot retention, MCP pool size, API rate limits. §4 enumerates every other `ORCHESTRATOR_*` env var and why it's moveable / deferred / permanently not.
+- `codewiki/startup-checks.md` — STARTUP-01 preflight checks and the `/health/ready` endpoint. The red/amber UI banner, per-check remediation messages, and k8s probe configuration. Read first when debugging "my workflow sat at queued forever."
 - `codewiki/dev-workflow.md` — Sprint 2A developer-velocity features (DV-01 pinning, DV-02 test-single-node, DV-03 sticky notes, DV-04 expression helpers, DV-05 duplicate workflow, DV-06 hotkey cheatsheet, DV-07 active/inactive toggle)
 - `codewiki/mcp-audit.md` — Sprint 2B MCP maturity (MCP-01 audit against the 2025-06-18 spec + MCP-02 per-tenant MCP server registry; MCP-03..MCP-10 backlog)
 - `codewiki/feature-roadmap.md` — Gap analysis vs. LangGraph / Dify / n8n / Flowise / CrewAI / Rivet with 25 ranked items

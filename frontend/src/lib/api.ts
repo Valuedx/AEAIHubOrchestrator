@@ -492,6 +492,23 @@ export interface TenantPolicyOut {
   updated_at: string | null;
 }
 
+// STARTUP-01 — preflight readiness probe.
+export type StartupCheckStatus = "pass" | "warn" | "fail";
+
+export interface StartupCheck {
+  name: string;
+  status: StartupCheckStatus;
+  message: string;
+  remediation: string;
+  details?: Record<string, unknown>;
+}
+
+export interface HealthReadyOut {
+  // Aggregate: "fail" if any check failed, "warn" if any warned, else "pass".
+  status: StartupCheckStatus;
+  checks: StartupCheck[];
+}
+
 // PATCH body: each field is optional.
 // * ``undefined`` (field omitted)  → leave prior override alone
 // * ``null``                       → clear override, fall through to env default
@@ -1096,5 +1113,20 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     });
+  },
+
+  // ---------------------------------------------------------------------------
+  // STARTUP-01 — readiness probe
+  // ---------------------------------------------------------------------------
+
+  async getHealthReady(): Promise<HealthReadyOut> {
+    // /health/ready returns 503 when checks fail but the body is
+    // still structured JSON — callers want to render per-check
+    // remediation in both states. Bypass the request() helper which
+    // would throw on non-2xx.
+    const res = await fetch(`${API_BASE}/health/ready`, {
+      headers: { ...getAuthHeaders() },
+    });
+    return (await res.json()) as HealthReadyOut;
   },
 };
