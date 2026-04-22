@@ -98,12 +98,15 @@ See [Developer Workflow](dev-workflow.md) for the full UX + edge cases.
 | Method | Path | Status | Description |
 |--------|------|--------|-------------|
 | `POST` | `.../{instance_id}/callback` | 200 | Resume a suspended (HITL) instance |
+| `GET`  | `.../{instance_id}/approvals` | 200 | **HITL-01.a** — list the approval_audit_log rows for this instance (compliance export) |
 | `POST` | `.../{instance_id}/retry` | 200 | Retry a failed instance, optionally from a specific node |
 | `POST` | `.../{instance_id}/pause` | 200 | Pause a running/queued instance |
 | `POST` | `.../{instance_id}/resume-paused` | 200 | Resume a paused instance |
 | `POST` | `.../{instance_id}/cancel` | 200 | Cancel an instance |
 
-**CallbackRequest:** `approval_payload` (object), `context_patch` (optional object).
+**CallbackRequest** (HITL-01.a): `approval_payload` (object), `context_patch` (optional object), `approver` (optional string, ≤256 chars — claimed identity), `decision` (optional `"approved"` or `"rejected"` — default approved for back-compat; `rejected` closes the instance as `failed`+`suspended_reason="rejected"` which maps to the A2A v1.0 `rejected` state), `reason` (optional string, ≤2000 chars — stored on the audit row). Every call writes exactly one row to `approval_audit_log` regardless of whether it resumes or rejects. See [hitl.md](hitl.md) for the full lifecycle.
+
+**Approvals list response:** array of `ApprovalAuditOut` rows — `{id, instance_id, node_id, parent_instance_id, approver, decision, reason, context_before_json, context_after_json, approvers_allowlist_matched, created_at}`, ordered oldest-first.
 
 **RetryRequest:** `from_node_id` (optional string).
 

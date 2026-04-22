@@ -181,6 +181,60 @@ class InstanceCheckpoint(Base):
     )
 
 
+class ApprovalAuditLog(Base):
+    """HITL-01.a — one row per human-in-the-loop approval event.
+
+    Every resume of a suspended workflow instance writes one row.
+    That includes explicit rejects (``decision="rejected"``),
+    timeout rejections fired by the HITL-01.c scheduler
+    (``decision="timeout_rejected"``), and escalations
+    (``decision="timeout_escalated"``). The table answers three
+    questions the old ``context["approval"]`` blob couldn't:
+
+      1. **Who** approved/rejected? (``approver`` — claimed
+         identity, protected today only by tenant-scoped bearer
+         auth. A future ``verified_by`` column can track
+         cryptographic binding once IAM lands.)
+      2. **What did they see?** (``context_before_json`` —
+         snapshotted at resume time before the operator's patch
+         merges, so the diff against ``context_after_json`` shows
+         exactly the mutation the approver introduced.)
+      3. **Was the approver permitted?** (``approvers_allowlist_matched`` —
+         reserved for HITL-01.d; ``None`` on v0 rows.)
+
+    ``parent_instance_id`` is reserved for HITL-01.f (bubble
+    sub-workflow HITL up to the parent); ``None`` on every v0 row.
+
+    Tenant-scoped RLS keyed on ``tenant_id``. Rows cascade-delete
+    with the owning ``WorkflowInstance`` — retention policy is
+    naturally tied to the workflow history.
+    """
+
+    __tablename__ = "approval_audit_log"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    instance_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_instances.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id = Column(String(128), nullable=False)
+    parent_instance_id = Column(UUID(as_uuid=True), nullable=True)
+    approver = Column(String(256), nullable=False)
+    decision = Column(String(32), nullable=False)
+    reason = Column(Text, nullable=True)
+    context_before_json = Column(JSONB, nullable=True)
+    context_after_json = Column(JSONB, nullable=True)
+    approvers_allowlist_matched = Column(Boolean, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_approval_audit_tenant_created", "tenant_id", "created_at"),
+        Index("ix_approval_audit_instance", "instance_id", "created_at"),
+    )
+
+
 class ConversationSession(Base):
     """Persistent multi-turn conversation history for the Stateful Re-Trigger Pattern.
 

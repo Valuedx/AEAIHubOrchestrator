@@ -14,7 +14,15 @@ from starlette.concurrency import run_in_threadpool
 
 from app.database import SessionLocal, get_db, get_tenant_db, set_tenant_context
 from app.security.tenant import get_tenant_id
-from app.models.workflow import AsyncJob, WorkflowDefinition, WorkflowInstance, WorkflowSnapshot, ExecutionLog, InstanceCheckpoint
+from app.models.workflow import (
+    ApprovalAuditLog,
+    AsyncJob,
+    ExecutionLog,
+    InstanceCheckpoint,
+    WorkflowDefinition,
+    WorkflowInstance,
+    WorkflowSnapshot,
+)
 from app.api.schemas import (
     WorkflowCreate,
     WorkflowUpdate,
@@ -34,6 +42,7 @@ from app.api.schemas import (
     CheckpointDetailOut,
     ChildInstanceSummary,
     AsyncJobOut,
+    ApprovalAuditOut,
 )
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
@@ -629,6 +638,15 @@ def callback_workflow(
     tenant_id: str = Depends(get_tenant_id),
     db: Session = Depends(get_tenant_db),
 ):
+    """HITL resume endpoint. Writes a row to ``approval_audit_log``
+    on every call — approve, reject, or v0-legacy shape — so the
+    compliance story stays complete.
+
+    Back-compat: callers that omit ``decision`` are treated as
+    ``"approved"`` (the v0 path). The audit row still captures the
+    approver (defaults to ``"anonymous"`` when the caller didn't
+    claim an identity) and the context snapshots.
+    """
     instance = (
         db.query(WorkflowInstance)
         .filter_by(id=instance_id, workflow_def_id=workflow_id, tenant_id=tenant_id, status="suspended")
@@ -637,6 +655,66 @@ def callback_workflow(
     if not instance:
         raise HTTPException(404, f"Suspended instance {instance_id} not found for this workflow")
 
+    # Normalise + validate the decision. Explicit reject is a
+    # terminal state; approve (or omitted, treated as approve)
+    # queues the resume.
+    decision_raw = (body.decision or "approved").strip().lower()
+    if decision_raw not in {"approved", "rejected"}:
+        raise HTTPException(
+            422,
+            f"decision must be 'approved' or 'rejected', got {body.decision!r}",
+        )
+
+    # Claimed identity — stored as-is. The audit row lets an
+    # operator grep "who approved X 3 weeks ago" without having
+    # to reconstruct it from context_json.
+    approver = (body.approver or "anonymous").strip() or "anonymous"
+    if len(approver) > 256:
+        raise HTTPException(422, "approver must be 256 characters or fewer")
+
+    # Snapshot the context BEFORE merging the patch so a reviewer
+    # can see exactly what the approver was looking at. `dict(...)`
+    # because the JSONB column returns a SQLAlchemy-managed dict
+    # that we don't want to mutate.
+    context_before = dict(instance.context_json or {})
+
+    # Build the post-merge snapshot in-memory so the audit row is
+    # correct even though the actual merge happens in the Celery
+    # task. Mirrors dag_runner.resume_graph's ordering.
+    context_after = dict(context_before)
+    context_after["approval"] = body.approval_payload or {}
+    if body.context_patch:
+        context_after.update(body.context_patch)
+
+    audit = ApprovalAuditLog(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        instance_id=instance.id,
+        node_id=instance.current_node_id or "",
+        approver=approver,
+        decision=decision_raw,
+        reason=(body.reason or None),
+        context_before_json=context_before,
+        context_after_json=context_after,
+        # approvers_allowlist_matched stays NULL until HITL-01.d
+        # wires enforcement; absence of the column marker is
+        # unambiguous for back-compat.
+        approvers_allowlist_matched=None,
+    )
+    db.add(audit)
+
+    if decision_raw == "rejected":
+        # Terminal reject — close the instance as failed with the
+        # reserved suspend-reason string that maps to A2A's
+        # `rejected` state (A2A-01.b). No Celery resume; no
+        # downstream execution.
+        instance.status = "failed"
+        instance.suspended_reason = "rejected"
+        instance.completed_at = _utcnow()
+        db.commit()
+        db.refresh(instance)
+        return instance
+
     from app.workers.tasks import resume_workflow_task
     resume_workflow_task.delay(tenant_id, str(instance.id), body.approval_payload, body.context_patch)
 
@@ -644,6 +722,38 @@ def callback_workflow(
     db.commit()
     db.refresh(instance)
     return instance
+
+
+@router.get(
+    "/{workflow_id}/instances/{instance_id}/approvals",
+    response_model=list[ApprovalAuditOut],
+)
+def list_instance_approvals(
+    workflow_id: uuid.UUID,
+    instance_id: uuid.UUID,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_tenant_db),
+):
+    """HITL-01.a compliance export. Returns every approval event
+    on this instance ordered oldest-first — useful for answering
+    "walk me through what happened" audits and for the future
+    HITL-01.b dashboard's drill-in.
+    """
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_id, workflow_def_id=workflow_id, tenant_id=tenant_id)
+        .first()
+    )
+    if not instance:
+        raise HTTPException(404, f"Instance {instance_id} not found for this workflow")
+
+    rows = (
+        db.query(ApprovalAuditLog)
+        .filter_by(tenant_id=tenant_id, instance_id=instance.id)
+        .order_by(ApprovalAuditLog.created_at)
+        .all()
+    )
+    return [ApprovalAuditOut.model_validate(r) for r in rows]
 
 
 @router.post("/{workflow_id}/instances/{instance_id}/retry", response_model=InstanceOut)

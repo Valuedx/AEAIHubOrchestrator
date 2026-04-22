@@ -121,12 +121,20 @@ interface WorkflowState {
   retryInstance: (workflowId: string, instanceId: string, fromNodeId?: string) => Promise<void>;
   /** Fetch and cache the context snapshot for a suspended instance. */
   fetchInstanceContext: (workflowId: string, instanceId: string) => Promise<void>;
-  /** Resume a suspended instance with optional approval payload and context patch. */
+  /** Resume a suspended instance with optional approval payload and context patch.
+   *  HITL-01.a — callers pass `options.approver`/`decision`/`reason` so the
+   *  audit log captures who approved / rejected and why. Omitting them is
+   *  back-compat with the v0 shape but produces an "anonymous" audit row. */
   resumeInstance: (
     workflowId: string,
     instanceId: string,
     approvalPayload: Record<string, unknown>,
     contextPatch?: Record<string, unknown>,
+    options?: {
+      approver?: string;
+      decision?: "approved" | "rejected";
+      reason?: string;
+    },
   ) => Promise<void>;
   pollInstance: (workflowId: string, instanceId: string) => Promise<void>;
   streamInstance: (workflowId: string, instanceId: string) => void;
@@ -842,15 +850,22 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     }
   },
 
-  resumeInstance: async (workflowId, instanceId, approvalPayload, contextPatch) => {
+  resumeInstance: async (workflowId, instanceId, approvalPayload, contextPatch, options) => {
     set({ isExecuting: true, error: null, instanceContext: null });
     try {
-      const instance = await api.callbackWorkflow(workflowId, instanceId, approvalPayload, contextPatch);
+      const instance = await api.callbackWorkflow(
+        workflowId, instanceId, approvalPayload, contextPatch, options,
+      );
       set({
         activeInstance: { ...instance, logs: get().activeInstance?.logs ?? [] },
-        isExecuting: true,
+        // HITL-01.a — a rejected resume closes the instance
+        // immediately (status=failed); don't keep the executing
+        // banner spinning forever in that case.
+        isExecuting: options?.decision !== "rejected",
       });
-      get().streamInstance(workflowId, instance.id);
+      if (options?.decision !== "rejected") {
+        get().streamInstance(workflowId, instance.id);
+      }
     } catch (e) {
       set({ error: String(e), isExecuting: false });
     }

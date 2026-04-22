@@ -77,6 +77,17 @@ ADMIN-01 adds the `tenant_policies` table (migration `0020`) + the resolver + AP
 
 ADMIN-02 extends `tenant_policies` with two rate-limit columns (migration `0021`) and adds a `TenantRateLimitMiddleware`. **Notably, this is the first real API rate-limit enforcement in the orchestrator** — the previous `slowapi.Limiter` was instantiated but never wired into a middleware, so the pre-ADMIN-02 `RATE_LIMIT_*` env vars were inert. The new middleware does Redis INCR+EXPIRE per `(tenant, time-bucket)` with graceful fail-open on Redis errors. See [tenant-policies.md §4](tenant-policies.md) for the full env-var-by-env-var rationale.
 
+### Sprint 2F in flight — Enterprise-grade HITL
+
+| # | Feature | Status |
+|---|---------|--------|
+| HITL-01.a | Approval audit log (migration 0030) + claimed-identity capture on resume + `GET /approvals` list + redesigned dialog with approver/reason/advanced-patch | **Done** — see [hitl.md](hitl.md) |
+| HITL-01.b | Pending-approvals toolbar badge + aggregated dropdown so operators don't have to open each suspended instance to find pending work | Planned |
+| HITL-01.c | Timeout enforcement via Beat sweep — `timeoutAction: "reject" \| "escalate" \| "none"` per HITL node; stale suspensions don't pile up | Planned |
+| HITL-01.d | Per-node approvers allowlist — `approvers: {emails, allowlist}`; 403 on non-allowlisted attempts; audit still captures the attempt for bypass-detection | Planned |
+| HITL-01.e | Notification channels (Slack / email / webhook) on suspend — reuses Notification node transport where possible; webhook HMAC-signed | Planned |
+| HITL-01.f | Bubble child sub-workflow HITL up to parent — unblocks composable workflows; replaces the `node_handlers.py:2150` hard block with cascade semantics | Planned |
+
 ---
 
 ## Pending backlog

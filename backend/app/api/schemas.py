@@ -88,6 +88,15 @@ class SyncExecuteOut(BaseModel):
 
 
 class CallbackRequest(BaseModel):
+    """HITL resume body.
+
+    Existing fields (``approval_payload`` + ``context_patch``) stay
+    semantically unchanged for back-compat — any caller on the v0
+    API shape gets an audit row automatically via the audit-log
+    defaults (decision defaults to "approved", approver defaults
+    to "anonymous"). New HITL-01.a fields make the decision
+    explicit and the approver traceable.
+    """
     approval_payload: dict[str, Any] = Field(default_factory=dict)
     context_patch: dict[str, Any] | None = Field(
         None,
@@ -98,6 +107,58 @@ class CallbackRequest(BaseModel):
             "output) without rerunning the entire workflow from scratch."
         ),
     )
+    # HITL-01.a — claimed identity + decision. Optional so the old
+    # v0 shape keeps working, but the frontend always sends them.
+    approver: str | None = Field(
+        default=None,
+        max_length=256,
+        description=(
+            "Claimed identity of the human approving/rejecting. Protected "
+            "today only by tenant-scoped bearer auth — treat as attested, "
+            "not verified, until OIDC integration lands. Stored in the "
+            "approval_audit_log row. Defaults to 'anonymous' on the audit "
+            "side if omitted."
+        ),
+    )
+    decision: str | None = Field(
+        default=None,
+        description=(
+            "Explicit approve / reject. Accepts 'approved' or 'rejected'. "
+            "When omitted we infer 'approved' for back-compat with v0 "
+            "callers that only resumed (never rejected). 'rejected' "
+            "closes the instance with status=failed, suspended_reason="
+            "'rejected' — this maps to the A2A v1.0 'rejected' terminal "
+            "state via the resolver from A2A-01.b."
+        ),
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=2000,
+        description=(
+            "Optional free-form note — why was this approved/rejected? "
+            "Lands in the audit log and is read-only thereafter."
+        ),
+    )
+
+
+class ApprovalAuditOut(BaseModel):
+    """One approval_audit_log row. Returned by
+    ``GET /workflows/{workflow_id}/instances/{instance_id}/approvals``
+    for compliance exports + the future HITL-01.b dashboard drill-in.
+    """
+    id: uuid.UUID
+    instance_id: uuid.UUID
+    node_id: str
+    parent_instance_id: uuid.UUID | None
+    approver: str
+    decision: str
+    reason: str | None
+    context_before_json: dict[str, Any] | None
+    context_after_json: dict[str, Any] | None
+    approvers_allowlist_matched: bool | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class InstanceContextOut(BaseModel):

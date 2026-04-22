@@ -321,6 +321,39 @@ export interface InstanceContextOut {
   context_json: Record<string, unknown>;
 }
 
+// HITL-01.a — one row from the approval_audit_log table, exposed
+// via GET /workflows/{id}/instances/{id}/approvals. Each row
+// captures one approve / reject / timeout_rejected / timeout_escalated
+// event for compliance export + future dashboard drill-in.
+export type ApprovalDecision =
+  | "approved"
+  | "rejected"
+  | "timeout_rejected"
+  | "timeout_escalated";
+
+export interface ApprovalAuditEntry {
+  id: string;
+  instance_id: string;
+  node_id: string;
+  /** Reserved for HITL-01.f bubble-up — null on all v0.a rows. */
+  parent_instance_id: string | null;
+  /** Claimed identity. Protected today only by tenant-scoped
+   *  bearer auth. Treat as attested, not cryptographically
+   *  verified, until OIDC integration lands. */
+  approver: string;
+  decision: ApprovalDecision;
+  reason: string | null;
+  /** Context snapshot immediately before the patch merge — what
+   *  the approver was looking at when they decided. */
+  context_before_json: Record<string, unknown> | null;
+  /** Post-merge snapshot — includes approval_payload under
+   *  "approval" + any keys from context_patch. */
+  context_after_json: Record<string, unknown> | null;
+  /** Reserved for HITL-01.d allowlist enforcement — null on v0.a rows. */
+  approvers_allowlist_matched: boolean | null;
+  created_at: string;
+}
+
 // Knowledge Base types
 export interface KBOut {
   id: string;
@@ -873,14 +906,34 @@ export const api = {
     instanceId: string,
     approvalPayload: Record<string, unknown> = {},
     contextPatch?: Record<string, unknown>,
+    options?: {
+      approver?: string;
+      decision?: "approved" | "rejected";
+      reason?: string;
+    },
   ): Promise<InstanceOut> {
     return request(`/api/v1/workflows/${workflowId}/instances/${instanceId}/callback`, {
       method: "POST",
       body: JSON.stringify({
         approval_payload: approvalPayload,
         context_patch: contextPatch ?? null,
+        // HITL-01.a — claimed identity + decision + reason. All
+        // optional on the backend for v0 back-compat, but the
+        // dialog always sends them so the audit log has real data.
+        approver: options?.approver ?? null,
+        decision: options?.decision ?? null,
+        reason: options?.reason ?? null,
       }),
     });
+  },
+
+  listInstanceApprovals(
+    workflowId: string,
+    instanceId: string,
+  ): Promise<ApprovalAuditEntry[]> {
+    return request(
+      `/api/v1/workflows/${workflowId}/instances/${instanceId}/approvals`,
+    );
   },
 
   getInstanceContext(

@@ -37,6 +37,7 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `copilot_turns` | Ordered user / assistant / tool messages replayed on reopen (0022) | Yes |
 | `copilot_accepted_patterns` | SMART-02 — snapshot of every promoted draft (graph + NL intent + tags) so the agent can retrieve nearest prior patterns as few-shot (0026) | Yes |
 | `copilot_test_scenarios` | COPILOT-03.a — persisted regression scenarios the agent saves and re-runs; bound to either `draft_id` or `workflow_id` via an XOR check constraint (0027) | Yes |
+| `approval_audit_log` | HITL-01.a — one row per approve / reject / timeout_rejected / timeout_escalated event; captures approver, reason, and before/after context snapshots (0030) | Yes |
 
 **DV-07 (migration 0018):** `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` — when false, Schedule Triggers skip the workflow. Manual Run, PATCH, and duplicate all stay active.
 
@@ -511,6 +512,7 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0027 | `0027_copilot_test_scenarios.py` | **COPILOT-03.a** — `copilot_test_scenarios` table (draft-or-workflow-scoped regression scenarios with `payload_json`, optional `pins_json`, optional `expected_output_contains_json`; XOR check constraint `ck_scenario_draft_xor_workflow`; two partial unique indexes for per-draft and per-workflow name uniqueness; tenant-scoped RLS) |
 | 0028 | `0028_tenant_policies_smart_01.py` | **SMART-01** — add `smart_01_scenario_memory_enabled BOOLEAN NOT NULL DEFAULT FALSE` and `smart_01_strict_promote_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE` to `tenant_policies`. Both default false (opt-in) because both behaviours spend engine tokens at run-time / promote-time. |
 | 0029 | `0029_tenant_policies_smart_05.py` | **SMART-05** — add `smart_05_vector_docs_enabled BOOLEAN NOT NULL DEFAULT FALSE` to `tenant_policies`. Opt-in because embedding calls cost tokens; word-overlap search (01b.iii) stays the fallback + auto-degrade path when the embedding provider is unreachable. |
+| 0030 | `0030_approval_audit_log.py` | **HITL-01.a** — create `approval_audit_log` (tenant-scoped RLS): one row per approve / reject / timeout_rejected / timeout_escalated event with `approver, decision, reason, context_before_json, context_after_json`. Indexes on `(tenant_id, created_at)` and `(instance_id, created_at)`. `parent_instance_id` and `approvers_allowlist_matched` are reserved for HITL-01.f and HITL-01.d respectively — NULL on all v0 rows. |
 
 ### Running migrations
 
