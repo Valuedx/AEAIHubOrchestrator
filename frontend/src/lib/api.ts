@@ -572,7 +572,15 @@ export type CopilotToolName =
   // "add an automationedge node here" vs. "jump to AE Copilot to
   // design the RPA first". UI can render the copilot_url in the
   // tool_result event as a clickable deep-link.
-  | "get_automationedge_handoff_info";
+  | "get_automationedge_handoff_info"
+  // Trial-run the draft end-to-end; returns {instance_id, status,
+  // output, elapsed_ms} or {instance_id, status: "timeout", hint}.
+  // Creates an ephemeral workflow_definitions row under the hood.
+  | "execute_draft"
+  // Fetch per-node logs for a prior execute_draft instance.
+  // Scoped to copilot-initiated (is_ephemeral=true) runs so the
+  // agent can't read production logs.
+  | "get_execution_logs";
 
 export interface CopilotDraftValidation {
   errors: string[];

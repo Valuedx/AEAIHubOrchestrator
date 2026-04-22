@@ -122,9 +122,13 @@ def list_workflows(
     tenant_id: str = Depends(get_tenant_id),
     db: Session = Depends(get_tenant_db),
 ):
+    # Ephemeral rows are created by the copilot's execute_draft runner
+    # tool to back trial-run WorkflowInstance rows. They never represent
+    # a user-authored workflow, so the saved-workflows dialog must not
+    # surface them. See codewiki/copilot.md §3 and migration 0023.
     return (
         db.query(WorkflowDefinition)
-        .filter_by(tenant_id=tenant_id)
+        .filter_by(tenant_id=tenant_id, is_ephemeral=False)
         .order_by(WorkflowDefinition.updated_at.desc())
         .all()
     )

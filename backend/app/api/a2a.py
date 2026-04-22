@@ -199,9 +199,14 @@ def agent_card(
     so the RLS context is set inline rather than via ``get_tenant_db``.
     """
     set_tenant_context(db, tenant_id)
+    # Ephemeral rows default is_published=False so the filter below
+    # already excludes them, but pin the invariant explicitly — a
+    # future bug that flips is_published on an ephemeral shouldn't
+    # leak the copilot's throwaway workflow into a tenant's public
+    # agent card.
     workflows = (
         db.query(WorkflowDefinition)
-        .filter_by(tenant_id=tenant_id, is_published=True)
+        .filter_by(tenant_id=tenant_id, is_published=True, is_ephemeral=False)
         .order_by(WorkflowDefinition.name)
         .all()
     )

@@ -291,11 +291,389 @@ def get_automationedge_handoff_info(
 
 
 # ---------------------------------------------------------------------------
+# execute_draft — trial-run the draft graph end-to-end
+# ---------------------------------------------------------------------------
+#
+# Flow
+# ----
+#
+# 1. Validate the draft's graph via ``tool_layer.validate_graph``. If
+#    there are hard errors, bail with a useful message — no point
+#    wasting an engine run on a known-broken graph.
+# 2. Materialise a throwaway ``WorkflowDefinition`` with
+#    ``is_ephemeral=True``, a name prefix that makes it obvious in
+#    the DB (``__copilot_draft_<id>_<ts>__``), ``is_active=False``
+#    (defensive — the scheduler filter also excludes it).
+# 3. Create a ``WorkflowInstance`` pointing at the ephemeral WD.
+# 4. Run ``execute_graph`` in a background thread with a caller-
+#    supplied timeout, following the same pattern the live
+#    ``POST /api/v1/workflows/{id}/execute?sync=true`` endpoint uses.
+# 5. On success: return the instance id, terminal status, and the
+#    non-internal keys from ``context_json`` as ``output``.
+#    On timeout: return status=``timeout`` + a hint that the run may
+#    still be completing — the agent can follow up with
+#    ``get_execution_logs``.
+#    On engine exception: return status=``failed`` with the error
+#    message.
+#
+# The ephemeral WorkflowDefinition and its instance + execution_logs
+# stay around after the call so ``get_execution_logs`` works. Cleanup
+# is operator-scheduled via ``cleanup_ephemeral_workflows`` (a Beat
+# task is a follow-up).
+
+
+def execute_draft_sync(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Trial-run the draft's graph via the engine. Blocks up to
+    ``args.timeout_seconds`` (default 30) before returning a
+    timeout result.
+
+    Args
+    ----
+    ``args`` shape::
+
+        {
+          "payload": {...},             # trigger_payload; default {}
+          "deterministic_mode": bool,   # default False
+          "timeout_seconds": int,       # default 30, max 300
+        }
+
+    Result shapes
+    -------------
+
+    Success::
+
+        {"instance_id": "...", "status": "completed"|"failed"|...,
+         "elapsed_ms": N, "output": {...}, "started_at": "...",
+         "completed_at": "..."}
+
+    Timeout::
+
+        {"instance_id": "...", "status": "timeout", "elapsed_ms": N,
+         "hint": "..."}
+
+    Pre-run validation failure::
+
+        {"error": "Draft validation failed: [...]"}
+    """
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FuturesTimeout
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.copilot import tool_layer
+    from app.database import SessionLocal, set_tenant_context
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance
+
+    payload = args.get("payload") or {}
+    if not isinstance(payload, dict):
+        return {"error": "execute_draft 'payload' must be an object"}
+
+    deterministic = bool(args.get("deterministic_mode", False))
+    raw_timeout = args.get("timeout_seconds", 30)
+    try:
+        timeout = int(raw_timeout)
+    except (TypeError, ValueError):
+        return {"error": "execute_draft 'timeout_seconds' must be an integer"}
+    # Cap at 5 minutes — agent turns shouldn't block longer than that,
+    # and runaway runs should keep going in the background (poll via
+    # get_execution_logs).
+    timeout = max(1, min(timeout, 300))
+
+    validation = tool_layer.validate_graph(draft.graph_json or {})
+    if validation.get("errors"):
+        return {
+            "error": (
+                "Draft validation failed before execution; fix the "
+                f"errors and retry: {validation['errors']}"
+            ),
+            "validation": validation,
+        }
+
+    graph = draft.graph_json or {"nodes": [], "edges": []}
+    short_id = str(draft.id).split("-", 1)[0]
+    temp_name = f"__copilot_draft_{short_id}_{int(_time.time())}__"
+
+    temp_wf = WorkflowDefinition(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        name=temp_name,
+        description=f"Ephemeral copilot trial run for draft {draft.id}",
+        graph_json=graph,
+        version=1,
+        is_ephemeral=True,
+        is_active=False,  # defensive; scheduler also filters on is_ephemeral
+    )
+    db.add(temp_wf)
+    db.flush()  # allocate temp_wf.id so the instance can FK to it
+
+    instance = WorkflowInstance(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        workflow_def_id=temp_wf.id,
+        trigger_payload=payload,
+        status="queued",
+        definition_version_at_start=1,
+    )
+    db.add(instance)
+    # Commit before running — the engine spawns its own SessionLocal
+    # in the worker thread and needs to see these rows.
+    db.commit()
+
+    instance_id = str(instance.id)
+    started_mono = _time.monotonic()
+
+    def _run() -> dict[str, Any]:
+        from app.engine.dag_runner import execute_graph
+
+        session = SessionLocal()
+        try:
+            set_tenant_context(session, tenant_id)
+            execute_graph(session, instance_id, deterministic)
+            inst = (
+                session.query(WorkflowInstance)
+                .filter_by(id=instance.id)
+                .first()
+            )
+            if inst is None:
+                return {"status": "missing", "context_json": {}}
+            return {
+                "status": inst.status,
+                "context_json": dict(inst.context_json or {}),
+                "started_at": inst.started_at.isoformat() if inst.started_at else None,
+                "completed_at": inst.completed_at.isoformat() if inst.completed_at else None,
+            }
+        finally:
+            session.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_run)
+            try:
+                run_result = future.result(timeout=timeout)
+            except FuturesTimeout:
+                # The engine keeps running in the background thread.
+                # We don't cancel — there's no safe way in Python — but
+                # we surface the timeout to the agent so it can poll.
+                elapsed_ms = int((_time.monotonic() - started_mono) * 1000)
+                return {
+                    "instance_id": instance_id,
+                    "status": "timeout",
+                    "elapsed_ms": elapsed_ms,
+                    "hint": (
+                        f"Execution exceeded timeout_seconds={timeout}. "
+                        "The run may still complete in the background. "
+                        f"Call get_execution_logs with instance_id='{instance_id}' "
+                        "to check progress."
+                    ),
+                }
+    except SQLAlchemyError as exc:
+        elapsed_ms = int((_time.monotonic() - started_mono) * 1000)
+        logger.exception("execute_draft DB error on instance %s", instance_id)
+        return {
+            "instance_id": instance_id,
+            "status": "failed",
+            "elapsed_ms": elapsed_ms,
+            "error": f"Database error during run: {exc}",
+        }
+    except Exception as exc:
+        elapsed_ms = int((_time.monotonic() - started_mono) * 1000)
+        logger.exception("execute_draft run failed on instance %s", instance_id)
+        return {
+            "instance_id": instance_id,
+            "status": "failed",
+            "elapsed_ms": elapsed_ms,
+            "error": str(exc),
+        }
+
+    elapsed_ms = int((_time.monotonic() - started_mono) * 1000)
+    # Strip internal _-prefixed keys from context before returning to
+    # the agent — mirrors the sync-execute endpoint's behaviour.
+    raw_ctx = run_result.get("context_json") or {}
+    output = {k: v for k, v in raw_ctx.items() if not str(k).startswith("_")}
+
+    return {
+        "instance_id": instance_id,
+        "status": run_result.get("status", "unknown"),
+        "elapsed_ms": elapsed_ms,
+        "output": output,
+        "started_at": run_result.get("started_at"),
+        "completed_at": run_result.get("completed_at"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# get_execution_logs — read back the logs from an execute_draft run
+# ---------------------------------------------------------------------------
+
+
+def get_execution_logs(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,  # noqa: ARG001 — part of the runner-tool contract
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the per-node execution log for a ``WorkflowInstance`` the
+    copilot created via ``execute_draft``.
+
+    Only instances whose parent ``WorkflowDefinition`` is marked
+    ``is_ephemeral=True`` are accessible to the agent — otherwise any
+    workflow run the tenant ever made would be readable by the LLM
+    via function-calling, which is more surface area than we want to
+    expose. Production-log inspection has its own dedicated endpoints.
+
+    Args
+    ----
+    ``args`` shape::
+
+        {
+          "instance_id": "...",        # required
+          "node_id": "...",            # optional — filter to one node
+        }
+
+    Result shape
+    ------------
+
+    ::
+
+        {
+          "instance_id": "...",
+          "status": "completed" | "failed" | "running" | ...,
+          "log_count": N,
+          "logs": [
+            {"node_id", "node_type", "status", "output_json",
+             "error", "started_at", "completed_at"},
+            ...
+          ]
+        }
+    """
+    from app.models.workflow import ExecutionLog, WorkflowDefinition, WorkflowInstance
+
+    instance_id_str = args.get("instance_id")
+    if not instance_id_str:
+        return {"error": "get_execution_logs requires 'instance_id'"}
+
+    try:
+        instance_uuid = uuid.UUID(str(instance_id_str))
+    except ValueError:
+        return {"error": f"Invalid instance_id: {instance_id_str!r}"}
+
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_uuid, tenant_id=tenant_id)
+        .first()
+    )
+    if instance is None:
+        return {"error": f"Instance '{instance_id_str}' not found"}
+
+    wf_def = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=instance.workflow_def_id, tenant_id=tenant_id)
+        .first()
+    )
+    if wf_def is None or not wf_def.is_ephemeral:
+        # Intentionally vague — don't tell the agent "that instance
+        # belongs to a different workflow" because that's a tenant
+        # info leak if the id was probed. Just say not-copilot.
+        return {
+            "error": (
+                f"Instance '{instance_id_str}' is not a copilot-initiated run. "
+                "get_execution_logs only returns logs for drafts the "
+                "copilot executed via execute_draft."
+            ),
+        }
+
+    query = db.query(ExecutionLog).filter_by(instance_id=instance_uuid)
+    node_id_filter = args.get("node_id")
+    if node_id_filter:
+        query = query.filter_by(node_id=node_id_filter)
+    query = query.order_by(ExecutionLog.started_at)
+
+    logs = query.all()
+    return {
+        "instance_id": instance_id_str,
+        "status": instance.status,
+        "log_count": len(logs),
+        "logs": [
+            {
+                "node_id": log.node_id,
+                "node_type": log.node_type,
+                "status": log.status,
+                # output_json and error are the things the agent most
+                # wants for debugging. Omit input_json to keep payload
+                # small — the agent already knows what it sent.
+                "output_json": log.output_json,
+                "error": log.error,
+                "started_at": log.started_at.isoformat() if log.started_at else None,
+                "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+            }
+            for log in logs
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cleanup utility — operator-scheduled reaper for ephemeral runs
+# ---------------------------------------------------------------------------
+
+
+def cleanup_ephemeral_workflows(
+    db: Session,
+    *,
+    older_than_seconds: int = 7 * 24 * 3600,
+) -> int:
+    """Delete ephemeral ``WorkflowDefinition`` rows older than the
+    given age. Cascading FK deletes take ``WorkflowInstance`` and
+    ``ExecutionLog`` with them.
+
+    Returns the number of rows deleted.
+
+    Intended to be called from a Beat task or a manual admin command;
+    no scheduling is wired up in 01b.ii.b. For now the operator docs
+    point at a one-liner like::
+
+        from app.database import SessionLocal, set_tenant_context
+        from app.copilot.runner_tools import cleanup_ephemeral_workflows
+        # NOTE: caller must have BYPASSRLS role, or iterate per tenant.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.workflow import WorkflowDefinition
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)
+    doomed = (
+        db.query(WorkflowDefinition)
+        .filter(
+            WorkflowDefinition.is_ephemeral.is_(True),
+            WorkflowDefinition.created_at < cutoff,
+        )
+        .all()
+    )
+    count = len(doomed)
+    for row in doomed:
+        db.delete(row)
+    db.commit()
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Dispatch — runner-tool analogue of tool_layer.dispatch
 # ---------------------------------------------------------------------------
 
 
-RUNNER_TOOL_NAMES = {"test_node", "get_automationedge_handoff_info"}
+RUNNER_TOOL_NAMES = {
+    "test_node",
+    "get_automationedge_handoff_info",
+    "execute_draft",
+    "get_execution_logs",
+}
 """Tool names the runner-tool dispatch layer handles. Add to this set
 and register a branch in ``dispatch`` below when shipping more
 stateful tools (``execute_draft`` and ``get_execution_logs`` in
@@ -320,6 +698,14 @@ def dispatch(
         )
     if tool_name == "get_automationedge_handoff_info":
         return get_automationedge_handoff_info(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "execute_draft":
+        return execute_draft_sync(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "get_execution_logs":
+        return get_execution_logs(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
     raise KeyError(tool_name)

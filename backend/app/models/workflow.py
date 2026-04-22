@@ -38,6 +38,13 @@ class WorkflowDefinition(Base):
     # DV-07 — when False, Schedule Triggers stop firing. Manual Run, PATCH,
     # and duplicate all continue to work. Default True keeps legacy behaviour.
     is_active = Column(Boolean, nullable=False, default=True, server_default=sa.text("TRUE"))
+    # COPILOT-01b.ii.b — True for transient definitions created by the
+    # copilot's ``execute_draft`` runner tool. Hidden from user-facing
+    # lists (``list_workflows``), the scheduler, and the A2A agent card;
+    # the engine itself does NOT filter on this so it can still load
+    # these rows and run them. Reaped by ``runner_tools.
+    # cleanup_ephemeral_workflows``.
+    is_ephemeral = Column(Boolean, nullable=False, default=False, server_default=sa.text("FALSE"))
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

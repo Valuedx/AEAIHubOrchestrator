@@ -51,7 +51,7 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 | COPILOT-01b.i | Agent runner (Anthropic tool-calling loop) + session/turn API + SSE streaming | **Done** — see [copilot.md §3/§4](copilot.md) |
 | COPILOT-01b.ii.a | `test_node` runner tool — one node in isolation using pinned upstream data | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-01b.ii.a+ | `get_automationedge_handoff_info` runner tool — deterministic-automation fork (inline `automationedge` node vs. handoff to AE Copilot) | **Done** — see [copilot.md §3](copilot.md) + [automationedge.md §2c](automationedge.md#2c-copilot-handoff-optional) |
-| COPILOT-01b.ii.b | `execute_draft` + `get_execution_logs` — needs `is_ephemeral` flag on `workflow_definitions` + filter sweep so temp rows don't leak into UI | Planned |
+| COPILOT-01b.ii.b | `execute_draft` + `get_execution_logs` — full-graph trial runs with threadpool+timeout, agent-scoped log read, `is_ephemeral` column (migration `0023`) + filter sweep + operator cleanup utility | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-01b.iii | System-KB RAG ingestion (codewiki + flattened node_registry) + `search_docs` + `get_node_examples` tools | Planned |
 | COPILOT-01b.iv (Google/Vertex) | Google AI Studio + Vertex AI providers in the agent runner (shared adapter via unified `google-genai` SDK; Vertex per-tenant project via VERTEX-02). Default model `gemini-3.1-pro-preview-customtools`. | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-01b.iv (OpenAI + budget) | OpenAI provider adapter + per-session token budget enforcement | Planned |

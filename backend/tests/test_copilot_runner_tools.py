@@ -484,3 +484,366 @@ def test_dispatch_routes_handoff_info():
 
 def test_runner_tool_names_includes_handoff():
     assert "get_automationedge_handoff_info" in runner_tools.RUNNER_TOOL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# execute_draft_sync + get_execution_logs + cleanup
+# (COPILOT-01b.ii.b)
+# ---------------------------------------------------------------------------
+
+
+def test_execute_draft_blocks_on_validation_errors():
+    """Validation errors must short-circuit before we materialise the
+    ephemeral WorkflowDefinition — otherwise we'd produce a junk row
+    just to throw it away."""
+    from app.copilot import tool_layer
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json=_graph_with(_node("node_1")), version=1,
+    )
+    db = MagicMock()
+
+    with patch.object(
+        tool_layer, "validate_graph",
+        return_value={"errors": ["Node node_1 missing required field"], "warnings": []},
+    ):
+        result = runner_tools.execute_draft_sync(
+            db, tenant_id=TENANT, draft=draft, args={},
+        )
+
+    assert "error" in result
+    assert "validation failed" in result["error"].lower()
+    # No rows added — validation gated the expensive path.
+    assert not db.add.called
+
+
+def test_execute_draft_bad_payload_type_returns_error():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json=_graph_with(_node("node_1")), version=1,
+    )
+    result = runner_tools.execute_draft_sync(
+        MagicMock(), tenant_id=TENANT, draft=draft,
+        args={"payload": "not-a-dict"},
+    )
+    assert "error" in result
+
+
+def test_execute_draft_bad_timeout_type_returns_error():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json=_graph_with(_node("node_1")), version=1,
+    )
+    result = runner_tools.execute_draft_sync(
+        MagicMock(), tenant_id=TENANT, draft=draft,
+        args={"timeout_seconds": "soon"},
+    )
+    assert "error" in result
+
+
+def test_execute_draft_happy_path_returns_instance_and_output():
+    """execute_graph mocked to mark the instance completed with an
+    output context. We verify the ephemeral WorkflowDefinition is
+    created with is_ephemeral=True, the correct name prefix, and
+    the agent gets back {instance_id, status, output, ...}."""
+    from app.copilot import tool_layer
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json=_graph_with(_node("node_1")), version=1,
+    )
+
+    added_rows: list[Any] = []
+    db = MagicMock()
+    db.add.side_effect = lambda r: added_rows.append(r)
+
+    # Fake engine run via a mocked SessionLocal in the worker thread.
+    # The worker thread's session queries WorkflowInstance by id and
+    # we return a MagicMock with the final state.
+    from app.models.workflow import WorkflowInstance
+
+    final_instance = MagicMock(spec=WorkflowInstance)
+    final_instance.status = "completed"
+    final_instance.context_json = {
+        "node_1": {"response": "ok"},
+        "_instance_id": "...",  # internal — must be stripped from output
+    }
+    final_instance.started_at = None
+    final_instance.completed_at = None
+
+    fake_worker_session = MagicMock()
+    fake_worker_session.query.return_value.filter_by.return_value.first.return_value = final_instance
+
+    with patch.object(tool_layer, "validate_graph", return_value={"errors": [], "warnings": []}), \
+         patch("app.database.SessionLocal", return_value=fake_worker_session), \
+         patch("app.database.set_tenant_context"), \
+         patch("app.engine.dag_runner.execute_graph"):
+        result = runner_tools.execute_draft_sync(
+            db, tenant_id=TENANT, draft=draft, args={"timeout_seconds": 10},
+        )
+
+    assert result["status"] == "completed"
+    assert "instance_id" in result
+    assert result["output"] == {"node_1": {"response": "ok"}}
+    # Internal _prefix keys stripped from the output payload.
+    assert "_instance_id" not in result["output"]
+
+    # Temp workflow and instance both added to the session.
+    from app.models.workflow import WorkflowDefinition
+
+    wf_rows = [r for r in added_rows if isinstance(r, WorkflowDefinition)]
+    inst_rows = [r for r in added_rows if isinstance(r, WorkflowInstance)]
+    assert len(wf_rows) == 1
+    assert wf_rows[0].is_ephemeral is True
+    assert wf_rows[0].is_active is False
+    assert wf_rows[0].name.startswith("__copilot_draft_")
+    assert len(inst_rows) == 1
+
+
+def test_execute_draft_timeout_returns_hint_with_instance_id():
+    """When the engine call exceeds the configured timeout, the agent
+    gets back status='timeout' with a hint to call get_execution_logs.
+    We force the timeout by patching execute_graph to block."""
+    from app.copilot import tool_layer
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json=_graph_with(_node("node_1")), version=1,
+    )
+    db = MagicMock()
+
+    def _slow_execute_graph(*_a, **_kw):
+        import time as _t
+        _t.sleep(3)
+
+    # Worker session's query still needs to exist even though we hit
+    # timeout before it's consulted.
+    fake_worker_session = MagicMock()
+
+    with patch.object(tool_layer, "validate_graph", return_value={"errors": [], "warnings": []}), \
+         patch("app.database.SessionLocal", return_value=fake_worker_session), \
+         patch("app.database.set_tenant_context"), \
+         patch("app.engine.dag_runner.execute_graph", side_effect=_slow_execute_graph):
+        result = runner_tools.execute_draft_sync(
+            db, tenant_id=TENANT, draft=draft, args={"timeout_seconds": 1},
+        )
+
+    assert result["status"] == "timeout"
+    assert "instance_id" in result
+    assert "hint" in result
+    assert "get_execution_logs" in result["hint"]
+
+
+def test_execute_draft_accepts_oversized_timeout_without_crashing():
+    """The runner clamps ``timeout_seconds`` to ``[1, 300]`` internally
+    so a pathological caller value (9999, -5, 0) doesn't blow up the
+    ThreadPoolExecutor or block the agent for an unreasonable time.
+    Directly observing the clamped value means patching the
+    ThreadPoolExecutor, which is too much mock plumbing — instead we
+    assert the call returns normally for each edge value."""
+    from app.copilot import tool_layer
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json=_graph_with(_node("node_1")), version=1,
+    )
+
+    # Fake worker session's query returns an instance-shaped thing so
+    # the "post-run read" doesn't choke on MagicMock attribute types.
+    from app.models.workflow import WorkflowInstance
+
+    stub_instance = MagicMock(spec=WorkflowInstance)
+    stub_instance.status = "completed"
+    stub_instance.context_json = {}
+    stub_instance.started_at = None
+    stub_instance.completed_at = None
+    fake_worker_session = MagicMock()
+    fake_worker_session.query.return_value.filter_by.return_value.first.return_value = stub_instance
+
+    with patch.object(tool_layer, "validate_graph", return_value={"errors": [], "warnings": []}), \
+         patch("app.database.SessionLocal", return_value=fake_worker_session), \
+         patch("app.database.set_tenant_context"), \
+         patch("app.engine.dag_runner.execute_graph"):
+        for oversized in (9999, -5, 0):
+            result = runner_tools.execute_draft_sync(
+                MagicMock(), tenant_id=TENANT, draft=draft,
+                args={"timeout_seconds": oversized},
+            )
+            assert "error" not in result, (
+                f"Clamp should not surface as an error for "
+                f"timeout_seconds={oversized}: got {result}"
+            )
+            assert result.get("status") == "completed"
+
+
+def test_get_execution_logs_returns_logs_for_ephemeral_instance():
+    """Happy path: the instance was created by execute_draft (so its
+    parent WD is ephemeral); get_execution_logs returns structured
+    log rows the agent can read to debug."""
+    from app.models.workflow import ExecutionLog, WorkflowDefinition, WorkflowInstance
+
+    instance_id = uuid.uuid4()
+
+    instance = MagicMock(spec=WorkflowInstance)
+    instance.id = instance_id
+    instance.tenant_id = TENANT
+    instance.workflow_def_id = uuid.uuid4()
+    instance.status = "completed"
+
+    wf_def = MagicMock(spec=WorkflowDefinition)
+    wf_def.id = instance.workflow_def_id
+    wf_def.tenant_id = TENANT
+    wf_def.is_ephemeral = True
+
+    log = MagicMock(spec=ExecutionLog)
+    log.node_id = "node_1"
+    log.node_type = "LLM Agent"
+    log.status = "completed"
+    log.output_json = {"response": "hi"}
+    log.error = None
+    log.started_at = None
+    log.completed_at = None
+
+    db = MagicMock()
+    # Sequence: WorkflowInstance lookup → WorkflowDefinition lookup
+    # → ExecutionLog list.
+    def _first_side_effect(*_a, **_kw):
+        return next(_first_side_effect._iter)
+    _first_side_effect._iter = iter([instance, wf_def])
+
+    filter_by = db.query.return_value.filter_by.return_value
+    filter_by.first.side_effect = _first_side_effect
+    filter_by.order_by.return_value.all.return_value = [log]
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    result = runner_tools.get_execution_logs(
+        db, tenant_id=TENANT, draft=draft,
+        args={"instance_id": str(instance_id)},
+    )
+
+    assert result["instance_id"] == str(instance_id)
+    assert result["status"] == "completed"
+    assert result["log_count"] == 1
+    assert result["logs"][0]["node_id"] == "node_1"
+    assert result["logs"][0]["output_json"] == {"response": "hi"}
+
+
+def test_get_execution_logs_rejects_non_ephemeral_instance():
+    """Safety: the agent must not be able to read logs from production
+    runs. Only instances whose parent WD is ephemeral are accessible."""
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance
+
+    instance_id = uuid.uuid4()
+
+    instance = MagicMock(spec=WorkflowInstance)
+    instance.id = instance_id
+    instance.tenant_id = TENANT
+    instance.workflow_def_id = uuid.uuid4()
+    instance.status = "completed"
+
+    wf_def = MagicMock(spec=WorkflowDefinition)
+    wf_def.id = instance.workflow_def_id
+    wf_def.tenant_id = TENANT
+    wf_def.is_ephemeral = False  # production run — refused
+
+    db = MagicMock()
+    filter_by = db.query.return_value.filter_by.return_value
+    filter_by.first.side_effect = iter([instance, wf_def])
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    result = runner_tools.get_execution_logs(
+        db, tenant_id=TENANT, draft=draft,
+        args={"instance_id": str(instance_id)},
+    )
+
+    assert "error" in result
+    assert "not a copilot-initiated run" in result["error"]
+
+
+def test_get_execution_logs_missing_instance_id():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    result = runner_tools.get_execution_logs(
+        MagicMock(), tenant_id=TENANT, draft=draft, args={},
+    )
+    assert "error" in result
+    assert "instance_id" in result["error"]
+
+
+def test_get_execution_logs_invalid_instance_id():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    result = runner_tools.get_execution_logs(
+        MagicMock(), tenant_id=TENANT, draft=draft,
+        args={"instance_id": "not-a-uuid"},
+    )
+    assert "error" in result
+    assert "Invalid" in result["error"]
+
+
+def test_cleanup_ephemeral_workflows_deletes_old_rows():
+    """The cleanup utility removes ephemerals older than the cutoff
+    and returns the count. Cascade deletes on WorkflowInstance +
+    ExecutionLog are the DB's job — we just verify the orchestration."""
+    from app.models.workflow import WorkflowDefinition
+
+    old_wf = MagicMock(spec=WorkflowDefinition)
+    old_wf.id = uuid.uuid4()
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.all.return_value = [old_wf]
+
+    count = runner_tools.cleanup_ephemeral_workflows(
+        db, older_than_seconds=0,
+    )
+
+    assert count == 1
+    db.delete.assert_called_once_with(old_wf)
+    assert db.commit.called
+
+
+def test_runner_tool_names_includes_execute_and_logs():
+    assert "execute_draft" in runner_tools.RUNNER_TOOL_NAMES
+    assert "get_execution_logs" in runner_tools.RUNNER_TOOL_NAMES
+
+
+def test_dispatch_routes_execute_draft_and_get_execution_logs():
+    """The agent's runner-tool dispatch must route both new tool
+    names — otherwise the agent would call the tool and get a
+    KeyError back that isn't caught."""
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch.object(
+        runner_tools, "execute_draft_sync",
+        return_value={"status": "completed", "instance_id": "..."},
+    ) as mock_run:
+        result = runner_tools.dispatch(
+            "execute_draft",
+            db=MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["status"] == "completed"
+    assert mock_run.called
+
+    with patch.object(
+        runner_tools, "get_execution_logs",
+        return_value={"instance_id": "...", "status": "completed", "log_count": 0, "logs": []},
+    ) as mock_logs:
+        result = runner_tools.dispatch(
+            "get_execution_logs",
+            db=MagicMock(), tenant_id=TENANT, draft=draft,
+            args={"instance_id": str(uuid.uuid4())},
+        )
+    assert mock_logs.called

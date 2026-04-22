@@ -212,6 +212,78 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "execute_draft",
+        "description": (
+            "Trial-run the WHOLE draft graph end-to-end through the "
+            "real engine. Use this to prove the draft works before "
+            "asking the user to promote it. Blocks up to "
+            "timeout_seconds (default 30, max 300) before returning. "
+            "Returns {instance_id, status, elapsed_ms, output, "
+            "started_at, completed_at} on completion; status='timeout' "
+            "with a hint if the run is still going (call "
+            "get_execution_logs to check progress). Validation errors "
+            "block the run — fix them via update_node_config first. "
+            "DO NOT call this before narrating the draft to the user "
+            "— trial runs consume real tokens / external API calls / "
+            "side effects, so the user should OK the draft first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "description": (
+                        "Trigger payload for the run (becomes "
+                        "context['trigger']). Default {}."
+                    ),
+                },
+                "deterministic_mode": {
+                    "type": "boolean",
+                    "description": (
+                        "Set LLM temperature to 0 for reproducible "
+                        "runs. Default false."
+                    ),
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": (
+                        "How long to block before returning a "
+                        "timeout result. Default 30; capped at 300 "
+                        "server-side."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "get_execution_logs",
+        "description": (
+            "Fetch per-node execution logs for a prior execute_draft "
+            "run. Use to debug failures — the result includes each "
+            "node's output_json and error so you can localise where "
+            "the run went wrong and propose a config fix. Only "
+            "instance_ids returned by execute_draft are readable; "
+            "arbitrary production instance_ids are rejected. Pass "
+            "node_id to narrow to one node."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["instance_id"],
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": (
+                        "The instance_id returned by execute_draft."
+                    ),
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Optional. Filter to one node.",
+                },
+            },
+        },
+    },
+    {
         "name": "test_node",
         "description": (
             "Run ONE node handler in isolation against pinned upstream "
