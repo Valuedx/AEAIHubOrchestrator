@@ -55,7 +55,8 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 | COPILOT-01b.iii | Docs grounding — `search_docs` + `get_node_examples` over codewiki + flattened node_registry. File-backed word-overlap search in `app/copilot/docs_index.py`; no migration, vector RAG is a follow-up. | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-01b.iv (Google/Vertex) | Google AI Studio + Vertex AI providers in the agent runner (shared adapter via unified `google-genai` SDK; Vertex per-tenant project via VERTEX-02). Default model `gemini-3.1-pro-preview-customtools`. | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-01b.iv (OpenAI + budget) | OpenAI provider adapter + per-session token budget enforcement | Planned |
-| COPILOT-02 | Chat pane, streaming tool-call pills, draft diff overlay on canvas, `PromoteDialog` | Planned |
+| COPILOT-02.i | Chat pane + streaming message list + composer + toolbar Sparkles toggle + mutually-exclusive-with-PropertyInspector layout | **Done** — see [copilot.md §6](copilot.md) |
+| COPILOT-02.ii | DraftDiffOverlay on canvas (sparkle badges on copilot-added nodes) + `PromoteDialog` side-by-side diff + stop-generating button + session history replay | Planned |
 | COPILOT-03 | Debug / test-scenario / `suggest_fix` / auto-heal loop | Planned |
 
 ### Sprint 2D in flight — Multi-tenant admin knobs

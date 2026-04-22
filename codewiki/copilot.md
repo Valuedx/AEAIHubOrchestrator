@@ -172,7 +172,16 @@ Neither path attempts a three-way merge. That's a COPILOT-03+ concern — for no
 - `api.getCopilotProviders`, `listCopilotSessions`, `createCopilotSession`, `getCopilotSession`, `abandonCopilotSession`, `listCopilotTurns`
 - `api.sendCopilotTurn(sessionId, text, signal?)` — async generator yielding `CopilotAgentEvent` items. Uses a streaming `fetch` (EventSource can't POST a body), parses `data: ...\n\n` frames by hand, emits a recoverable `error` event on malformed JSON rather than killing the stream.
 
-No UI yet — the chat pane, diff overlay, and `PromoteDialog` land in COPILOT-02. The typed bindings + async generator are here so 02 is a pure frontend change against a stable contract.
+**Chat pane (COPILOT-02.i):**
+- `components/copilot/CopilotPanel.tsx` — right-side drawer toggled from the toolbar Sparkles icon. **Mutually exclusive with PropertyInspector** (they share the right column; a chat pane squeezed next to a 288-px inspector would leave no room for the canvas) — opening the copilot hides the inspector and vice versa. Default width 460 px so prose bubbles + tool-result cards stay readable; this is explicit user feedback ("panels should be large enough and visible") rather than an arbitrary number.
+- `components/copilot/CopilotMessageList.tsx` — scrollable chat with auto-stick-to-bottom (disabled when the user scrolls up; a "Jump to latest" pill reappears then) and a dotted thinking indicator while streaming.
+- `components/copilot/CopilotComposer.tsx` — auto-growing textarea (1–12 rows), Cmd/Ctrl+Enter to send, disabled while a turn streams. Follow-up 02.ii adds a cancel button.
+- `components/copilot/CopilotToolResultCard.tsx` — discriminated dispatch over `CopilotAgentEvent`. Assistant text → prose bubble; `tool_call` → compact "🔧 name — summary" pill that expands to JSON; `tool_result` → success / error card with per-tool summary strings (`add_node` → "added node_N", `validate_graph` → "N errors · M warnings", `execute_draft` → "completed (412 ms)" or "timeout", etc.) + a collapsible detail drawer showing full result JSON, validation list, and `draft vN`.
+
+**Session lifecycle in the panel.** Each open of the panel ensures a draft + session:
+- Has a current workflow → `createDraft({ base_workflow_id })` so Promote lands as a new version.
+- Empty canvas → `createDraft({ title })` — Promote will ask for a workflow name.
+- Closing the panel aborts any in-flight `sendCopilotTurn` via `AbortController` and drops the in-memory chat items; the draft and session rows stay on the backend (listable via `listCopilotTurns` for a future history-restore feature in 02.ii).
 
 ---
 

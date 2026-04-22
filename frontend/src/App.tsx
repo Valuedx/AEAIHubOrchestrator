@@ -8,6 +8,7 @@ import { Toolbar } from "@/components/toolbar/Toolbar";
 import { ExecutionPanel } from "@/components/toolbar/ExecutionPanel";
 import { WorkflowBanner } from "@/components/banner/WorkflowBanner";
 import { StartupHealthBanner } from "@/components/banner/StartupHealthBanner";
+import { CopilotPanel } from "@/components/copilot/CopilotPanel";
 import { LoginPage } from "@/components/auth/LoginPage";
 import { getAuthToken } from "@/lib/api";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
@@ -17,8 +18,27 @@ const AUTH_MODE = import.meta.env.VITE_AUTH_MODE;
 
 export default function App() {
   const [paletteCollapsed, setPaletteCollapsed] = useState(false);
+  // COPILOT-02.i — chat panel on the right. Mutually exclusive with
+  // PropertyInspector (they share the right column — a chat pane
+  // squeezed next to a 288-px-wide property inspector would leave
+  // no room for the canvas). When the copilot is open we hide the
+  // inspector; when the user selects a node in copilot-open mode
+  // they can close the copilot to get the inspector back.
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   const togglePalette = useCallback(() => setPaletteCollapsed((p) => !p), []);
+  const toggleCopilot = useCallback(() => setCopilotOpen((v) => !v), []);
+  const closeCopilot = useCallback(() => setCopilotOpen(false), []);
+
+  // Expose copilot toggle to the toolbar via a window-scoped event
+  // bus — avoids threading a prop through every toolbar ancestor.
+  // The toolbar dispatches "copilot:toggle" when the Sparkles icon
+  // is clicked.
+  useEffect(() => {
+    const handler = () => toggleCopilot();
+    window.addEventListener("copilot:toggle", handler as EventListener);
+    return () => window.removeEventListener("copilot:toggle", handler as EventListener);
+  }, [toggleCopilot]);
 
   // DV-06 — Tab toggles the palette. Swallowed inside inputs/textareas
   // so typing stays intact.
@@ -57,7 +77,11 @@ export default function App() {
               <FlowCanvas />
               <ExecutionPanel />
             </div>
-            <PropertyInspector />
+            {copilotOpen ? (
+              <CopilotPanel open={copilotOpen} onClose={closeCopilot} />
+            ) : (
+              <PropertyInspector />
+            )}
           </div>
         </div>
       </ReactFlowProvider>

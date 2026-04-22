@@ -28,6 +28,7 @@ import {
   Cloud,
   SlidersHorizontal,
   Key,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -392,6 +393,21 @@ export function Toolbar() {
         </Button>
 
         <Separator orientation="vertical" className="h-6" />
+
+        {/* COPILOT-02.i — workflow authoring chat pane. Mutually
+            exclusive with the PropertyInspector; clicking here swaps
+            the right column between the two. Dispatches a window
+            event so App.tsx (which owns the open/closed state) picks
+            it up without prop-drilling through the toolbar's parent
+            chain. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => window.dispatchEvent(new CustomEvent("copilot:toggle"))}
+          title="Workflow Copilot — chat to build, modify, or debug this workflow"
+        >
+          <Sparkles className="h-4 w-4" />
+        </Button>
 
         <Button
           variant="ghost"
