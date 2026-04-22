@@ -554,6 +554,46 @@ Manage encrypted tenant secrets used for `{{ env.KEY_NAME }}` references in node
 
 ---
 
+## Workflow Copilot — `/api/v1/copilot`
+
+The conversational authoring + debug surface (COPILOT-01 / 02 / SMART-04 / SMART-06). Every mutation flows through a **draft** — nothing touches `workflow_definitions` until the human promotes.
+
+### Drafts — `/api/v1/copilot/drafts`
+
+| Method | Endpoint | Status | Description |
+|--------|----------|--------|-------------|
+| `POST` | `/api/v1/copilot/drafts` | 201 | Create a draft (optionally forked from a `base_workflow_id`) |
+| `GET` | `/api/v1/copilot/drafts` | 200 | List drafts for the tenant |
+| `GET` | `/api/v1/copilot/drafts/{id}` | 200 | Read draft + live validation result |
+| `PATCH` | `/api/v1/copilot/drafts/{id}` | 200 | Manual graph / title update; accepts `expected_version` for optimistic concurrency |
+| `DELETE` | `/api/v1/copilot/drafts/{id}` | 204 | Abandon |
+| `POST` | `/api/v1/copilot/drafts/{id}/tools/{tool_name}` | 200 / 400 / 409 | Dispatch one of the agent tools (`add_node`, `connect_nodes`, `check_draft`, `test_node`, `execute_draft`, `search_docs`, `discover_mcp_tools`, …). Body `{args, expected_version?}` |
+| `POST` | `/api/v1/copilot/drafts/{id}/promote` | 201 / 400 / 404 / 409 | Atomically merge into `workflow_definitions` (net-new or new version of base). Refuses on validation errors or `base.version != base_version_at_fork` |
+
+### Sessions — `/api/v1/copilot/sessions`
+
+| Method | Endpoint | Status | Description |
+|--------|----------|--------|-------------|
+| `GET` | `/api/v1/copilot/sessions/providers` | 200 | Supported providers + default model + declared tool surface |
+| `POST` | `/api/v1/copilot/sessions` | 201 | Create session bound to a draft; pick provider (anthropic / google / vertex) |
+| `GET` | `/api/v1/copilot/sessions` | 200 | List sessions (optional `?draft_id=` filter) |
+| `GET` | `/api/v1/copilot/sessions/{id}` | 200 | Read session metadata |
+| `DELETE` | `/api/v1/copilot/sessions/{id}` | 204 | Mark `abandoned` — turns are preserved |
+| `GET` | `/api/v1/copilot/sessions/{id}/turns` | 200 | Chronological turn list (user / assistant / tool) |
+| `POST` | `/api/v1/copilot/sessions/{id}/turns` | 200 (SSE) | Send a user message and stream the agent's response as `text/event-stream` |
+
+**SSE event shapes** (see `codewiki/copilot.md` §4 for the full contract):
+
+- `{type: "assistant_text", text}`
+- `{type: "tool_call", id, name, args}`
+- `{type: "tool_result", id, name, result, validation, draft_version, error}`
+- `{type: "error", message, recoverable}`
+- `{type: "done", turns_added, final_text}`
+
+**Errors:** `404` (draft/session not found), `409` (session abandoned, or `expected_version` mismatch), `422` (invalid UUID or empty message).
+
+---
+
 ## Error conventions
 
 All errors follow this pattern:

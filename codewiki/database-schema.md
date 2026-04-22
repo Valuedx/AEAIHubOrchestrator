@@ -31,8 +31,16 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `tenant_integrations` | Per-tenant connection defaults for external systems (0017) | Yes |
 | `tenant_mcp_servers` | Per-tenant MCP server registry (0019) | Yes |
 | `tenant_mcp_server_tool_fingerprints` | Forward-declared side table for MCP-06 drift detection (0019) | No (FK-scoped) |
+| `tenant_policies` | Per-tenant operational knobs + SMART-XX feature flags (0020 / 0021 / 0024 / 0025) | Yes |
+| `workflow_drafts` | Copilot draft workspace — ephemeral graph being edited, promoted into `workflow_definitions` on accept (COPILOT-01a, migration 0022) | Yes |
+| `copilot_sessions` | One chat session per draft; holds provider + model for the agent loop (0022) | Yes |
+| `copilot_turns` | Ordered user / assistant / tool messages replayed on reopen (0022) | Yes |
 
 **DV-07 (migration 0018):** `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` — when false, Schedule Triggers skip the workflow. Manual Run, PATCH, and duplicate all stay active.
+
+**COPILOT-01b.ii.b (migration 0023):** `workflow_definitions.is_ephemeral BOOLEAN NOT NULL DEFAULT FALSE` — the copilot's `execute_draft` runner tool creates transient WorkflowDefinition rows marked `is_ephemeral=true` so the engine can run them. Filtered out of `list_workflows`, scheduler scan, and A2A agent card. Reaped by `cleanup_ephemeral_workflows`.
+
+**SMART-04 + SMART-06 (migrations 0024 + 0025):** `tenant_policies.smart_04_lints_enabled` and `smart_06_mcp_discovery_enabled` both BOOLEAN NOT NULL DEFAULT TRUE — per-tenant opt-out for the two copilot intelligence features. Same nullable-column template will apply to SMART-01/02/03/05 as they ship.
 
 ---
 
@@ -382,6 +390,64 @@ Used by the **pgvector** backend. FAISS stores vectors in local files instead.
 
 ---
 
+## Copilot tables
+
+### `workflow_drafts`
+
+Ephemeral graph being edited by a copilot session (or a human editor). Every mutation through the agent tool layer bumps `version` so concurrent tool calls race-safely via optimistic concurrency. Promoted into `workflow_definitions` on accept; the draft is deleted in the same transaction.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `base_workflow_id` | `UUID` | FK → `workflow_definitions.id` (SET NULL) | null = net-new draft; set = editing an existing workflow |
+| `base_version_at_fork` | `INTEGER` | nullable | `WorkflowDefinition.version` at fork time; promote refuses if the base has advanced since (colleague-saved-in-another-tab guard) |
+| `title` | `VARCHAR(256)` | NOT NULL | Seeded from the first NL intent in COPILOT-01b.i |
+| `graph_json` | `JSONB` | NOT NULL, server_default `{"nodes": [], "edges": []}` | Same shape as `workflow_definitions.graph_json` |
+| `version` | `INTEGER` | NOT NULL, default 1 | Optimistic-concurrency token; bumped on every successful mutation; 409 on stale write |
+| `created_by` | `VARCHAR(128)` | nullable | User identifier when available |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:** `ix_draft_tenant_updated` on `(tenant_id, updated_at)`.
+
+### `copilot_sessions`
+
+One chat session per draft (optionally many sequential sessions if a user abandons and reopens). Carries the LLM provider + model so the UI can show "drafted via Claude" etc.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `draft_id` | `UUID` | FK → `workflow_drafts.id` (CASCADE) | |
+| `provider` | `VARCHAR(32)` | NOT NULL | `anthropic` / `google` / `vertex` / `openai` (pending) |
+| `model` | `VARCHAR(128)` | NOT NULL | e.g. `claude-sonnet-4-6`, `gemini-3.1-pro-preview-customtools` |
+| `status` | `VARCHAR(16)` | NOT NULL, default `active` | `active` / `completed` / `abandoned` |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:** `ix_session_tenant_draft` on `(tenant_id, draft_id)`.
+
+### `copilot_turns`
+
+Ordered user / assistant / tool messages. Replayed on session reopen and as the history the agent runner reconstructs for each LLM call.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | Denormalised from the parent session so the RLS policy is a simple equality check |
+| `session_id` | `UUID` | FK → `copilot_sessions.id` (CASCADE) | |
+| `turn_index` | `INTEGER` | NOT NULL, UNIQUE(session_id, turn_index) | Chronological order |
+| `role` | `VARCHAR(16)` | NOT NULL | `user` / `assistant` / `tool` |
+| `content_json` | `JSONB` | NOT NULL | Role-specific — text for user/assistant, `{name, args, result}` for tool |
+| `tool_calls_json` | `JSONB` | nullable | Populated on assistant turns that emit function-calling requests |
+| `token_usage_json` | `JSONB` | nullable | `{input_tokens, output_tokens}` |
+| `created_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:** `ix_turn_tenant_session` on `(tenant_id, session_id)`, unique `(session_id, turn_index)`.
+
+**RLS:** each copilot table has a `tenant_isolation_*` policy on `current_setting('app.tenant_id')`.
+
+---
+
 ## Embedding Cache
 
 ### `embedding_cache`
@@ -433,6 +499,12 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0017 | `0017_async_jobs_and_tenant_integrations.py` | `async_jobs` (AutomationEdge poll queue, Diverted pause-the-clock), `tenant_integrations` (per-tenant connection defaults), `workflow_instances.suspended_reason` column |
 | 0018 | `0018_workflow_is_active.py` | **DV-07** — `workflow_definitions.is_active BOOLEAN` (default TRUE; existing rows backfill active). Schedule Triggers skip `is_active=false` workflows. |
 | 0019 | `0019_tenant_mcp_servers.py` | **MCP-02** — `tenant_mcp_servers` (per-tenant MCP registry with `auth_mode` discriminator + partial unique index enforcing one default per tenant) + empty `tenant_mcp_server_tool_fingerprints` side table forward-declared for MCP-06 drift detection |
+| 0020 | `0020_tenant_policies.py` | **ADMIN-01** — `tenant_policies` table (execution_quota_per_hour, max_snapshots, mcp_pool_size) with RLS |
+| 0021 | `0021_tenant_policies_rate_limit.py` | **ADMIN-02** — add `rate_limit_requests_per_window` + `rate_limit_window_seconds` to `tenant_policies` |
+| 0022 | `0022_copilot_drafts.py` | **COPILOT-01a** — `workflow_drafts` (with `version` optimistic-concurrency + `base_version_at_fork` race guard), `copilot_sessions`, `copilot_turns`; all tenant-scoped RLS |
+| 0023 | `0023_workflow_definitions_is_ephemeral.py` | **COPILOT-01b.ii.b** — add `is_ephemeral BOOLEAN NOT NULL DEFAULT FALSE` to `workflow_definitions` (marks the copilot's throwaway trial-run rows) |
+| 0024 | `0024_tenant_policies_smart_flags.py` | **SMART-04** — add `smart_04_lints_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
+| 0025 | `0025_tenant_policies_smart_06.py` | **SMART-06** — add `smart_06_mcp_discovery_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
 
 ### Running migrations
 
