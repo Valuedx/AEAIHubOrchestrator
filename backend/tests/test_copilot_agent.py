@@ -581,3 +581,157 @@ def test_send_turn_rejects_unsupported_provider(db, draft):
     runner = AgentRunner(db, tenant_id=TENANT, session=session, draft=draft)
     with pytest.raises(UnsupportedProviderError):
         list(runner.send_turn("hi"))
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-03.d — auto-heal per-turn cap on suggest_fix
+# ---------------------------------------------------------------------------
+
+
+def test_send_turn_suggest_fix_per_turn_cap_short_circuits(
+    db, session, draft, mock_anthropic,
+):
+    """03.d — once MAX_SUGGEST_FIX_PER_TURN suggest_fix calls have
+    fired in a single turn, the runner short-circuits the next one
+    with a cap-reached error WITHOUT invoking runner_tools. The LLM
+    receives is_error=True and is expected to hand off to the user.
+    """
+    from app.copilot import runner_tools
+    from app.copilot.agent import MAX_SUGGEST_FIX_PER_TURN
+
+    draft.graph_json = {
+        "nodes": [{"id": "node_1", "type": "agenticNode", "data": {"label": "x"}}],
+        "edges": [],
+    }
+
+    # Build: the LLM calls suggest_fix MAX+1 times in one turn, then
+    # gives up with a final text block.
+    tool_call_blocks = [
+        {
+            "text": "",
+            "tool_uses": [{
+                "id": f"toolu_{i}",
+                "name": "suggest_fix",
+                "input": {"node_id": "node_1", "error": f"try {i}"},
+            }],
+            "raw_content": [{
+                "type": "tool_use", "id": f"toolu_{i}",
+                "name": "suggest_fix",
+                "input": {"node_id": "node_1", "error": f"try {i}"},
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "stop_reason": "tool_use",
+        }
+        for i in range(MAX_SUGGEST_FIX_PER_TURN + 1)
+    ]
+    final_block = {
+        "text": "Handing off — I can't fix this automatically.",
+        "tool_uses": [],
+        "raw_content": [{"type": "text", "text": "Handing off — I can't fix this automatically."}],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+        "stop_reason": "end_turn",
+    }
+    mock_anthropic.side_effect = [*tool_call_blocks, final_block]
+
+    call_count = {"n": 0}
+
+    def _fake_dispatch(tool_name, *, db, tenant_id, draft, args):
+        call_count["n"] += 1
+        return {
+            "node_id": args["node_id"],
+            "node_type": "x",
+            "proposed_patch": {"retries": 3},
+            "rationale": "r",
+            "confidence": "medium",
+            "dropped_keys": [],
+            "applied": False,
+            "usage": {},
+        }
+
+    with patch.object(runner_tools, "dispatch", side_effect=_fake_dispatch):
+        runner = AgentRunner(db, tenant_id=TENANT, session=session, draft=draft)
+        events = list(runner.send_turn("try to fix it"))
+
+    # dispatch was called exactly MAX times — the (MAX+1)-th call was
+    # short-circuited before runner_tools was hit.
+    assert call_count["n"] == MAX_SUGGEST_FIX_PER_TURN
+
+    # The capped tool_result event carries the cap-reached error and
+    # points the agent at a hand-off.
+    tool_results = [e for e in events if e["type"] == "tool_result"]
+    assert len(tool_results) == MAX_SUGGEST_FIX_PER_TURN + 1
+    capped = tool_results[-1]
+    assert capped["error"] is not None
+    assert "cap reached" in capped["error"].lower()
+    assert capped["result"]["auto_heal_count"] == MAX_SUGGEST_FIX_PER_TURN
+    assert capped["result"]["auto_heal_cap"] == MAX_SUGGEST_FIX_PER_TURN
+
+
+def test_suggest_fix_counter_resets_between_turns(db, session, draft, mock_anthropic):
+    """03.d — counter is per-TURN, not per-session. A second
+    send_turn starts with a fresh budget."""
+    from app.copilot import runner_tools
+    from app.copilot.agent import MAX_SUGGEST_FIX_PER_TURN
+
+    draft.graph_json = {
+        "nodes": [{"id": "node_1", "type": "agenticNode", "data": {"label": "x"}}],
+        "edges": [],
+    }
+
+    # Two turns; each makes exactly MAX suggest_fix calls.
+    blocks_per_turn = [
+        *[
+            {
+                "text": "",
+                "tool_uses": [{
+                    "id": f"toolu_{i}", "name": "suggest_fix",
+                    "input": {"node_id": "node_1", "error": "e"},
+                }],
+                "raw_content": [{
+                    "type": "tool_use", "id": f"toolu_{i}",
+                    "name": "suggest_fix",
+                    "input": {"node_id": "node_1", "error": "e"},
+                }],
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "stop_reason": "tool_use",
+            }
+            for i in range(MAX_SUGGEST_FIX_PER_TURN)
+        ],
+        {
+            "text": "done",
+            "tool_uses": [],
+            "raw_content": [{"type": "text", "text": "done"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "stop_reason": "end_turn",
+        },
+    ]
+    mock_anthropic.side_effect = blocks_per_turn + blocks_per_turn
+
+    dispatch_calls: list[str] = []
+
+    def _fake_dispatch(tool_name, **kwargs):
+        dispatch_calls.append(tool_name)
+        return {
+            "proposed_patch": {"retries": 2},
+            "rationale": "r",
+            "confidence": "medium",
+            "dropped_keys": [],
+            "applied": False,
+            "usage": {},
+        }
+
+    with patch.object(runner_tools, "dispatch", side_effect=_fake_dispatch):
+        runner = AgentRunner(db, tenant_id=TENANT, session=session, draft=draft)
+        list(runner.send_turn("turn one — fix it"))
+        list(runner.send_turn("turn two — try again"))
+
+    # Both turns used their full budget. If the counter leaked, the
+    # second turn would be capped and dispatch would only see MAX total.
+    assert len(dispatch_calls) == 2 * MAX_SUGGEST_FIX_PER_TURN
+
+
+def test_max_suggest_fix_per_turn_is_three():
+    """Pin the constant at 3 — documentation and spec both reference
+    this number; a silent bump should require a test update."""
+    from app.copilot.agent import MAX_SUGGEST_FIX_PER_TURN
+    assert MAX_SUGGEST_FIX_PER_TURN == 3

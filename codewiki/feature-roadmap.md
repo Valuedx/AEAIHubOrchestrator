@@ -61,7 +61,7 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 | COPILOT-03.a | Scenario storage (migration 0027) + `save_test_scenario` / `run_scenario` / `list_scenarios` runner tools — persisted regression scenarios the agent can save and replay via `execute_draft` with a recursive `expected_output_contains` partial-match diff | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-03.b | Debug / log inspection tools — `run_debug_scenario` (ad-hoc graph override run with pins + node_overrides, nothing persisted) + `get_node_error` (narrow one failing node with resolved_config for fix suggestions). `get_instance_logs` already shipped as `get_execution_logs` (01b.ii.b). | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-03.c | `suggest_fix` node-scoped LLM subcall — propose-never-auto-apply, patch filtered to schema keys, per-draft cap of 5 calls | **Done** — see [copilot.md §3](copilot.md) |
-| COPILOT-03.d | Auto-heal loop prompt pattern + depth cap (3 retries/turn) | Planned |
+| COPILOT-03.d | Auto-heal loop prompt pattern + per-turn `suggest_fix` cap (3) enforced by `AgentRunner._dispatch_runner_tool` via a counter reset at the top of `send_turn`; per-draft cap of 5 (03.c) bounds lifetime usage | **Done** — see [copilot.md §3 + §7](copilot.md) |
 | COPILOT-03.e | `PromoteDialog` scenario pass/fail badges + stale detection | Planned |
 
 ### Sprint 2D in flight — Multi-tenant admin knobs

@@ -119,6 +119,45 @@ the user has to redo.
   spacing and keep a consistent y. A graph with nodes stacked on
   (0,0) renders unreadable.
 
+## Auto-heal loop (debug → fix → retry)
+
+When a draft fails execution, follow this loop instead of asking the
+user "what do I do now?":
+
+1. `execute_draft` returned `status: "failed"` (or a scenario run
+   surfaced `status: "fail"`). Find the failing node — the
+   per-instance `get_execution_logs` call lists every node's status;
+   the first `status: "failed"` row is the one to investigate.
+2. Call `get_node_error(instance_id, node_id)` on that node. You
+   get the error message + `resolved_config` (what the handler
+   actually saw after expression resolution) + the timestamps.
+3. Call `suggest_fix(node_id, error)` — returns a `proposed_patch`
+   + rationale + confidence. **The patch is a PROPOSAL, not a
+   change.** Never apply it silently.
+4. Surface the proposal to the user: "node X failed with <error>.
+   I suggest `<patch>` because <rationale>. Apply it?" Wait for
+   their response.
+5. If the user agrees, call `update_node_config` with the patch
+   (or the subset they approved), then `run_scenario` or
+   `execute_draft` again to confirm the fix worked. If it's green,
+   narrate success. If it's still failing, return to step 2 — but
+   only if there's room in the cap.
+
+**Hard caps.** The runner enforces two ceilings that short-circuit
+further `suggest_fix` calls:
+
+- per-turn cap: 3 — prevents a flapping loop inside one user
+  message from exhausting the budget.
+- per-draft cap: 5 (counted across all sessions / all turns on
+  this draft) — if the first few fixes didn't land, the next one
+  probably won't either.
+
+When either cap hits, `suggest_fix` returns an `error` with the
+reason. Stop the loop, surface the last error to the user, and let
+them take over. "I tried X, Y, and Z without success — here's what
+the node is complaining about. Can you take it from here?" is the
+right hand-off shape.
+
 ## Deterministic automation → fork to AutomationEdge
 
 When a request (or any sub-step inside it) is a DETERMINISTIC RPA

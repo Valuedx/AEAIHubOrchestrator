@@ -108,6 +108,21 @@ class AgentRunnerError(RuntimeError):
     """Base class; message goes back to the caller as an error event."""
 
 
+# ---------------------------------------------------------------------------
+# Auto-heal loop cap (COPILOT-03.d)
+# ---------------------------------------------------------------------------
+
+# Hard per-turn ceiling on ``suggest_fix`` invocations so a flapping
+# loop (fix → new failure → new fix → ...) can't burn the token
+# budget. Three tries are enough for a real config issue and cheap
+# enough that a bad agent doesn't rack up cost; past three, the
+# runner forces a hand-off so the user can take over. The separate
+# per-draft cap in ``runner_tools.MAX_SUGGEST_FIX_PER_DRAFT`` (5)
+# bounds lifetime usage across turns; this cap bounds per-turn
+# burst.
+MAX_SUGGEST_FIX_PER_TURN = 3
+
+
 class UnsupportedProviderError(AgentRunnerError):
     """Raised when session.provider isn't wired up yet.
 
@@ -686,6 +701,11 @@ class AgentRunner:
         self.tenant_id = tenant_id
         self.session = session
         self.draft = draft
+        # COPILOT-03.d — per-turn counter for auto-heal suggest_fix
+        # calls. Reset at the start of each send_turn. The agent-
+        # dispatch layer short-circuits further suggest_fix calls
+        # once this hits MAX_SUGGEST_FIX_PER_TURN.
+        self._suggest_fix_count = 0
 
     # -- public entry point ------------------------------------------------
 
@@ -708,6 +728,11 @@ class AgentRunner:
                 f"Provider '{self.session.provider}' is not supported. "
                 f"Known providers: {sorted(_PROVIDER_ADAPTERS.keys())}."
             )
+
+        # COPILOT-03.d — reset the per-turn auto-heal counter. Each
+        # user turn gets a fresh budget of MAX_SUGGEST_FIX_PER_TURN
+        # suggest_fix calls.
+        self._suggest_fix_count = 0
 
         # 1. Persist the user turn FIRST so if anything else blows up,
         #    the history is still consistent.
@@ -952,6 +977,35 @@ class AgentRunner:
         that escapes here is a bug in the tool, not the handler.
         """
         from app.copilot import runner_tools
+
+        # COPILOT-03.d — auto-heal per-turn cap. suggest_fix is the
+        # chokepoint in the {execute_draft fail → get_node_error →
+        # suggest_fix → update_node_config → execute_draft} heal loop;
+        # capping it caps the whole loop without needing to detect the
+        # pattern. The per-draft cap inside suggest_fix itself bounds
+        # lifetime usage; this one bounds single-turn burst so a
+        # degenerate flap doesn't spend the user's budget in silence.
+        if tool_name == "suggest_fix":
+            if self._suggest_fix_count >= MAX_SUGGEST_FIX_PER_TURN:
+                msg = (
+                    f"Auto-heal cap reached for this turn "
+                    f"({self._suggest_fix_count}/{MAX_SUGGEST_FIX_PER_TURN} "
+                    "suggest_fix calls). Hand off to the user — "
+                    "too many fix attempts in one turn usually means "
+                    "the failure is structural and the user should "
+                    "take over."
+                )
+                return (
+                    {
+                        "error": msg,
+                        "auto_heal_count": self._suggest_fix_count,
+                        "auto_heal_cap": MAX_SUGGEST_FIX_PER_TURN,
+                    },
+                    None,
+                    self.draft.version,
+                    msg,
+                )
+            self._suggest_fix_count += 1
 
         try:
             result = runner_tools.dispatch(
