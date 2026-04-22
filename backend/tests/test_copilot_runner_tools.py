@@ -901,6 +901,7 @@ def test_check_draft_returns_schema_and_lints_when_flag_on():
         smart_02_pattern_library_enabled=True,
         smart_01_scenario_memory_enabled=False,
         smart_01_strict_promote_gate_enabled=False,
+        smart_05_vector_docs_enabled=False,
         source={},
     )
     with patch(
@@ -945,6 +946,7 @@ def test_check_draft_skips_lints_when_flag_off():
         smart_02_pattern_library_enabled=True,
         smart_01_scenario_memory_enabled=False,
         smart_01_strict_promote_gate_enabled=False,
+        smart_05_vector_docs_enabled=False,
         source={},
     )
     with patch(
@@ -976,6 +978,7 @@ def test_check_draft_lint_crash_does_not_poison_turn():
         smart_02_pattern_library_enabled=True,
         smart_01_scenario_memory_enabled=False,
         smart_01_strict_promote_gate_enabled=False,
+        smart_05_vector_docs_enabled=False,
         source={},
     )
     with patch(
@@ -1009,6 +1012,7 @@ def test_dispatch_routes_check_draft():
         smart_02_pattern_library_enabled=True,
         smart_01_scenario_memory_enabled=False,
         smart_01_strict_promote_gate_enabled=False,
+        smart_05_vector_docs_enabled=False,
         source={},
     )
     with patch(
@@ -1040,6 +1044,7 @@ def _policy_with(
     smart_02: bool = True,
     smart_01_memory: bool = False,
     smart_01_strict_gate: bool = False,
+    smart_05_vector: bool = False,
 ):
     from app.engine.tenant_policy_resolver import EffectivePolicy
     return EffectivePolicy(
@@ -1051,6 +1056,7 @@ def _policy_with(
         smart_02_pattern_library_enabled=smart_02,
         smart_01_scenario_memory_enabled=smart_01_memory,
         smart_01_strict_promote_gate_enabled=smart_01_strict_gate,
+        smart_05_vector_docs_enabled=smart_05_vector,
         source={},
     )
 

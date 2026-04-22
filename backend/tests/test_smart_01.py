@@ -42,6 +42,7 @@ def _policy(
         smart_02_pattern_library_enabled=True,
         smart_01_scenario_memory_enabled=scenario_memory,
         smart_01_strict_promote_gate_enabled=strict_gate,
+        smart_05_vector_docs_enabled=False,
         source={},
     )
 

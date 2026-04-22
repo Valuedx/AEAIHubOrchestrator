@@ -117,6 +117,7 @@ class TestGetPolicy:
             "smart_02_pattern_library_enabled": "env_default",
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
+            "smart_05_vector_docs_enabled": "env_default",
         }
         # SMART-XX feature flags appear under the flags field.
         assert body["flags"] == {
@@ -127,6 +128,8 @@ class TestGetPolicy:
             # spend engine tokens, so cost-conscious default = off).
             "smart_01_scenario_memory_enabled": False,
             "smart_01_strict_promote_gate_enabled": False,
+            # SMART-05 also off by default — embedding calls cost tokens.
+            "smart_05_vector_docs_enabled": False,
         }
         assert body["updated_at"] is None
 

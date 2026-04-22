@@ -88,6 +88,22 @@ class Settings(BaseSettings):
     smart_01_scenario_memory_enabled: bool = False
     smart_01_strict_promote_gate_enabled: bool = False
 
+    # SMART-05 — vector-backed docs search for the copilot. Off by
+    # default because embedding calls cost tokens. When on, the
+    # first ``search_docs`` call per process embeds every codewiki
+    # chunk (~30–50 entries) and caches in-process; subsequent
+    # queries embed the query and rank by cosine similarity. A
+    # per-call fallback to the 01b.iii word-overlap path covers
+    # the "embedding provider unavailable" case so turning this
+    # on never returns *fewer* results than off.
+    smart_05_vector_docs_enabled: bool = False
+    # Which embedding provider / model to use for SMART-05. The
+    # model must exist in ``embedding_provider.EMBEDDING_REGISTRY``.
+    # Default matches the knowledge-base defaults so operators who
+    # already have OpenAI creds don't need extra config.
+    smart_05_embedding_provider: str = "openai"
+    smart_05_embedding_model: str = "text-embedding-3-small"
+
     # Optional: process-wide default URL for the AutomationEdge Copilot
     # (a separate product the workflow authoring copilot can hand off to
     # when the user wants to design deterministic RPA steps before wiring

@@ -918,17 +918,27 @@ def dispatch(
         )
     if tool_name == "search_docs":
         from app.copilot import docs_index
+        from app.engine.tenant_policy_resolver import get_effective_policy
 
         query = args.get("query") or ""
         top_k = args.get("top_k") or 5
-        return docs_index.search_docs(query, top_k=top_k)
+        # SMART-05 — opt-in vector search; resolver falls back to env
+        # default when the tenant row has no explicit value.
+        policy = get_effective_policy(tenant_id)
+        return docs_index.search_docs(
+            query, top_k=top_k, use_vector=policy.smart_05_vector_docs_enabled,
+        )
     if tool_name == "get_node_examples":
         from app.copilot import docs_index
+        from app.engine.tenant_policy_resolver import get_effective_policy
 
         node_type = args.get("node_type") or ""
         if not node_type:
             return {"error": "get_node_examples requires 'node_type'"}
-        return docs_index.get_node_examples(node_type)
+        policy = get_effective_policy(tenant_id)
+        return docs_index.get_node_examples(
+            node_type, use_vector=policy.smart_05_vector_docs_enabled,
+        )
     if tool_name == "check_draft":
         return check_draft(
             db, tenant_id=tenant_id, draft=draft, args=args,

@@ -42,6 +42,7 @@ def _row(
     smart_02_pattern_library_enabled: bool | None = None,
     smart_01_scenario_memory_enabled: bool | None = None,
     smart_01_strict_promote_gate_enabled: bool | None = None,
+    smart_05_vector_docs_enabled: bool | None = None,
 ):
     row = MagicMock()
     row.execution_quota_per_hour = execution_quota_per_hour
@@ -57,6 +58,7 @@ def _row(
     row.smart_02_pattern_library_enabled = smart_02_pattern_library_enabled
     row.smart_01_scenario_memory_enabled = smart_01_scenario_memory_enabled
     row.smart_01_strict_promote_gate_enabled = smart_01_strict_promote_gate_enabled
+    row.smart_05_vector_docs_enabled = smart_05_vector_docs_enabled
     return row
 
 
@@ -90,6 +92,7 @@ class TestEnvFallback:
             "smart_02_pattern_library_enabled": "env_default",
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
+            "smart_05_vector_docs_enabled": "env_default",
         }
 
     def test_no_row_for_tenant_returns_env_defaults(self, patched_settings):
@@ -149,6 +152,7 @@ class TestRowOverrides:
             "smart_02_pattern_library_enabled": "env_default",
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
+            "smart_05_vector_docs_enabled": "env_default",
         }
 
     def test_partial_override_inherits_missing_fields_from_env(self, patched_settings):

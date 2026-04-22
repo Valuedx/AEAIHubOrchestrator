@@ -64,6 +64,10 @@ class EffectivePolicy:
     # explicitly enabled.
     smart_01_scenario_memory_enabled: bool
     smart_01_strict_promote_gate_enabled: bool
+    # SMART-05 — vector-backed docs search for the copilot. Default
+    # off; word-overlap search is the fallback and the automatic
+    # degrade path when the embedding provider is unreachable.
+    smart_05_vector_docs_enabled: bool
     source: dict[str, PolicySource]
 
 
@@ -79,6 +83,7 @@ def _env_defaults() -> EffectivePolicy:
         smart_02_pattern_library_enabled=settings.smart_02_pattern_library_enabled,
         smart_01_scenario_memory_enabled=settings.smart_01_scenario_memory_enabled,
         smart_01_strict_promote_gate_enabled=settings.smart_01_strict_promote_gate_enabled,
+        smart_05_vector_docs_enabled=settings.smart_05_vector_docs_enabled,
         source={
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
@@ -90,6 +95,7 @@ def _env_defaults() -> EffectivePolicy:
             "smart_02_pattern_library_enabled": "env_default",
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
+            "smart_05_vector_docs_enabled": "env_default",
         },
     )
 
@@ -190,6 +196,11 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 getattr(row, "smart_01_strict_promote_gate_enabled", None),
                 settings.smart_01_strict_promote_gate_enabled,
                 "smart_01_strict_promote_gate_enabled",
+            ),
+            smart_05_vector_docs_enabled=_pick_bool(
+                getattr(row, "smart_05_vector_docs_enabled", None),
+                settings.smart_05_vector_docs_enabled,
+                "smart_05_vector_docs_enabled",
             ),
             source=source,
         )

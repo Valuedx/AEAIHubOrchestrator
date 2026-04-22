@@ -22,6 +22,7 @@ This page is the canonical reference. Read §4 before assuming every env knob is
 | `smart_02_pattern_library_enabled` | — | **Default TRUE.** SMART-02 accepted-patterns library. Off = `/promote` skips the pattern save and `recall_patterns` returns `{enabled: false, patterns: []}`. Agent falls back to synthesising without tenant-specific few-shot. | `copilot/pattern_library.save_accepted_pattern` + `recall_patterns` |
 | `smart_01_scenario_memory_enabled` | — | **Default FALSE (opt-in).** SMART-01 scenario memory. When on, every successful `execute_draft` auto-saves a scenario named `auto-<hash>` deduped by payload hash (no `expected_output_contains` — just "this payload still runs"). Cost: one INSERT per successful run. | `copilot/runner_tools.execute_draft_sync` → `_auto_save_scenario_from_run` |
 | `smart_01_strict_promote_gate_enabled` | — | **Default FALSE (opt-in).** SMART-01 strict promote-gate. When on, `/api/v1/copilot/drafts/{id}/promote` runs every saved scenario and refuses with HTTP 400 on any non-pass result (no "promote anyway" override). Cost: one full draft execution per scenario at promote time. Off = the PromoteDialog's existing soft gate still shows pass/fail badges and allows override. | `api/copilot_drafts.promote_draft` → `_enforce_strict_scenario_gate` |
+| `smart_05_vector_docs_enabled` | — | **Default FALSE (opt-in).** SMART-05 vector-backed docs search. When on, `search_docs` embeds the copilot docs corpus (~30–50 chunks) via the process-wide `smart_05_embedding_provider` / `smart_05_embedding_model` pair and ranks queries by cosine similarity; on any embedding failure the call auto-falls back to word-overlap with a `vector_fallback` hint, so enabling this never returns *fewer* results than off. Cost: one corpus embed per process restart + one query embed per copilot search. | `copilot/docs_index.search_docs` + `get_node_examples` |
 
 > **Historical note:** before ADMIN-02 the `slowapi.Limiter` was instantiated with `default_limits` but no middleware was ever installed to apply it. The rate-limit env vars were effectively dead config. ADMIN-02's `TenantRateLimitMiddleware` is the first real enforcement. The old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string setting is deprecated — the new `ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS` int supersedes it.
 
@@ -44,6 +45,7 @@ tenant_policies:
   smart_02_pattern_library_enabled  BOOLEAN NOT NULL DEFAULT TRUE            (0026)
   smart_01_scenario_memory_enabled  BOOLEAN NOT NULL DEFAULT FALSE           (0028)
   smart_01_strict_promote_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE        (0028)
+  smart_05_vector_docs_enabled      BOOLEAN NOT NULL DEFAULT FALSE           (0029)
   created_at, updated_at
 ```
 
@@ -75,7 +77,8 @@ Response shape:
     "smart_06_mcp_discovery_enabled": true,
     "smart_02_pattern_library_enabled": true,
     "smart_01_scenario_memory_enabled": false,
-    "smart_01_strict_promote_gate_enabled": false
+    "smart_01_strict_promote_gate_enabled": false,
+    "smart_05_vector_docs_enabled": false
   },
   "source": {
     "execution_quota_per_hour": "tenant_policy",
@@ -87,7 +90,8 @@ Response shape:
     "smart_06_mcp_discovery_enabled": "env_default",
     "smart_02_pattern_library_enabled": "env_default",
     "smart_01_scenario_memory_enabled": "env_default",
-    "smart_01_strict_promote_gate_enabled": "env_default"
+    "smart_01_strict_promote_gate_enabled": "env_default",
+    "smart_05_vector_docs_enabled": "env_default"
   },
   "updated_at": "2026-04-22T12:34:56+00:00"
 }

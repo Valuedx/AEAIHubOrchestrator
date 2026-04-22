@@ -510,6 +510,7 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0026 | `0026_copilot_accepted_patterns.py` | **SMART-02** — `copilot_accepted_patterns` table (snapshot of promoted drafts + NL intent + tags, tenant-scoped RLS, `ix_accepted_pattern_tenant_created`) + `smart_02_pattern_library_enabled BOOLEAN NOT NULL DEFAULT TRUE` on `tenant_policies` |
 | 0027 | `0027_copilot_test_scenarios.py` | **COPILOT-03.a** — `copilot_test_scenarios` table (draft-or-workflow-scoped regression scenarios with `payload_json`, optional `pins_json`, optional `expected_output_contains_json`; XOR check constraint `ck_scenario_draft_xor_workflow`; two partial unique indexes for per-draft and per-workflow name uniqueness; tenant-scoped RLS) |
 | 0028 | `0028_tenant_policies_smart_01.py` | **SMART-01** — add `smart_01_scenario_memory_enabled BOOLEAN NOT NULL DEFAULT FALSE` and `smart_01_strict_promote_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE` to `tenant_policies`. Both default false (opt-in) because both behaviours spend engine tokens at run-time / promote-time. |
+| 0029 | `0029_tenant_policies_smart_05.py` | **SMART-05** — add `smart_05_vector_docs_enabled BOOLEAN NOT NULL DEFAULT FALSE` to `tenant_policies`. Opt-in because embedding calls cost tokens; word-overlap search (01b.iii) stays the fallback + auto-degrade path when the embedding provider is unreachable. |
 
 ### Running migrations
 

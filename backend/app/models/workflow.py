@@ -402,6 +402,14 @@ class TenantPolicy(Base):
     smart_01_strict_promote_gate_enabled = Column(
         Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
     )
+    # SMART-05 — vector-backed docs search. Default FALSE because
+    # embedding calls cost real tokens at search time; the 01b.iii
+    # file-backed word-overlap search is the fallback (and auto-
+    # fallback when embedding provider is unreachable, so enabling
+    # the flag is strictly additive).
+    smart_05_vector_docs_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
+    )
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

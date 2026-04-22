@@ -390,33 +390,69 @@ def _get_index() -> list[DocChunk]:
 # ---------------------------------------------------------------------------
 
 
-def search_docs(query: str, *, top_k: int = 5) -> dict[str, Any]:
-    """Word-overlap search across the system docs.
+def search_docs(
+    query: str,
+    *,
+    top_k: int = 5,
+    use_vector: bool = False,
+) -> dict[str, Any]:
+    """Search the system docs. Two modes:
 
-    Returns a dict shaped for the LLM's tool_result event::
+    * ``use_vector=False`` (default, 01b.iii) — word-overlap over
+      precomputed token sets. Zero embedding cost, ships out of
+      the box. Works well for terms that appear verbatim in the
+      docs; struggles on synonyms ("classify" vs "route").
 
-        {
-          "query": "...",
-          "match_count": N,
-          "results": [
-            {"source_path": "...", "title": "...", "anchor": "...",
-             "score": F, "excerpt": "..."},
-            ...
-          ]
-        }
+    * ``use_vector=True`` (SMART-05) — cosine similarity over
+      embeddings. First call per process embeds the whole corpus
+      (~30–50 chunks) via ``embedding_provider.get_embeddings_batch_sync``
+      and caches in-process; subsequent queries embed the query
+      and rank by dot product (the corpus vectors are
+      L2-normalised at build time so ``dot == cos``). If the
+      embedding provider fails (no credential, network error)
+      the call automatically falls back to word-overlap and adds
+      ``"vector_fallback": "<reason>"`` to the result so the
+      agent can narrate the degraded path.
 
-    The result list is capped at ``top_k`` (min 1, max 20). Each
-    excerpt is the chunk's full text — no separate summary step
-    since we've already capped chunk length at ~4 KB.
+    The result envelope is identical in both modes so the agent
+    doesn't branch on search mode. Backend is stamped on
+    ``"backend"`` for observability: ``"word_overlap"`` or
+    ``"vector"``.
     """
     if not isinstance(query, str) or not query.strip():
-        return {"query": query, "match_count": 0, "results": []}
+        return {
+            "query": query, "match_count": 0, "results": [],
+            "backend": "word_overlap",
+        }
 
     k = max(1, min(int(top_k or 5), 20))
     chunks = _get_index()
     if not chunks:
-        return {"query": query, "match_count": 0, "results": []}
+        return {
+            "query": query, "match_count": 0, "results": [],
+            "backend": "word_overlap",
+        }
 
+    if use_vector:
+        vector_result = _vector_search(query, chunks, k)
+        if vector_result is not None:
+            return vector_result
+        # Fallthrough to word-overlap with a fallback reason stamped.
+        result = _word_overlap_search(query, chunks, k)
+        result["vector_fallback"] = (
+            "embedding provider unavailable — fell back to word overlap; "
+            "check ORCHESTRATOR_SMART_05_EMBEDDING_PROVIDER + tenant creds"
+        )
+        return result
+
+    return _word_overlap_search(query, chunks, k)
+
+
+def _word_overlap_search(
+    query: str, chunks: list[DocChunk], k: int,
+) -> dict[str, Any]:
+    """The 01b.iii word-overlap path. Factored out of ``search_docs``
+    so the vector path can call it as a fallback without recursion."""
     q_tokens = _tokenize(query)
     scored = []
     for chunk in chunks:
@@ -430,6 +466,7 @@ def search_docs(query: str, *, top_k: int = 5) -> dict[str, Any]:
     return {
         "query": query,
         "match_count": len(scored),
+        "backend": "word_overlap",
         "results": [
             {
                 "source_path": chunk.source_path,
@@ -443,7 +480,11 @@ def search_docs(query: str, *, top_k: int = 5) -> dict[str, Any]:
     }
 
 
-def get_node_examples(node_type: str) -> dict[str, Any]:
+def get_node_examples(
+    node_type: str,
+    *,
+    use_vector: bool = False,
+) -> dict[str, Any]:
     """Return the registry entry for one node type + related codewiki
     sections found via search.
 
@@ -487,7 +528,7 @@ def get_node_examples(node_type: str) -> dict[str, Any]:
         if match:
             query_terms = f"{query_terms} {match.group(1)}"
 
-    related = search_docs(query_terms, top_k=3)
+    related = search_docs(query_terms, top_k=3, use_vector=use_vector)
     # Strip the registry chunk itself from related so it isn't
     # double-reported under both fields.
     related_results = [
@@ -526,3 +567,156 @@ def iter_chunks() -> Iterable[DocChunk]:
     specific sections got indexed (e.g. the AE handoff section from
     COPILOT-01b.iii's own docs)."""
     return list(_get_index())
+
+
+# ---------------------------------------------------------------------------
+# SMART-05 — vector-backed search
+# ---------------------------------------------------------------------------
+#
+# Shape: one ``_VectorIndex`` per (provider, model) — if the operator
+# flips the embedding provider on the settings side, the old index is
+# discarded on next rebuild. Vectors are L2-normalised at build time
+# so ranking is a plain dot product instead of a full cosine.
+#
+# Cache lifetime:
+#   * Rebuilt when the text-level corpus changes (``_CACHE`` reset).
+#   * Rebuilt when (provider, model) changes.
+#   * NOT rebuilt on every query — the docs change on git commits,
+#     not on user turns. Operators can call ``reset_cache()`` after
+#     a docs edit to force a rebuild.
+
+
+@dataclass
+class _VectorIndex:
+    chunks: list[DocChunk]
+    vectors: list[list[float]]  # unit-normalised, same order as chunks
+    provider: str
+    model: str
+
+
+_VECTOR_CACHE: _VectorIndex | None = None
+
+
+def reset_vector_cache() -> None:
+    """Drop the vector index. Next ``use_vector=True`` search rebuilds
+    from disk. Exposed for tests + for operator-side cache-bust after
+    an embedding-provider swap."""
+    global _VECTOR_CACHE
+    _VECTOR_CACHE = None
+
+
+def _l2_normalise(vec: list[float]) -> list[float]:
+    import math
+
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm <= 0:
+        return vec
+    return [x / norm for x in vec]
+
+
+def _get_or_build_vector_index(
+    chunks: list[DocChunk],
+) -> _VectorIndex | None:
+    """Returns the cached index if fresh, otherwise embeds the corpus.
+    Returns ``None`` on embedding failure so the caller can degrade
+    to word-overlap gracefully.
+    """
+    global _VECTOR_CACHE
+    from app.config import settings
+
+    provider = settings.smart_05_embedding_provider
+    model = settings.smart_05_embedding_model
+
+    if (
+        _VECTOR_CACHE is not None
+        and _VECTOR_CACHE.provider == provider
+        and _VECTOR_CACHE.model == model
+        and len(_VECTOR_CACHE.chunks) == len(chunks)
+    ):
+        return _VECTOR_CACHE
+
+    try:
+        from app.engine.embedding_provider import get_embeddings_batch_sync
+
+        texts = [c.text for c in chunks]
+        raw = get_embeddings_batch_sync(
+            texts, provider, model, task_type="RETRIEVAL_DOCUMENT",
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "SMART-05 vector index build failed (provider=%s model=%s): %s",
+            provider, model, exc,
+        )
+        return None
+
+    vectors = [_l2_normalise(list(v)) for v in raw]
+    _VECTOR_CACHE = _VectorIndex(
+        chunks=list(chunks),
+        vectors=vectors,
+        provider=provider,
+        model=model,
+    )
+    logger.info(
+        "SMART-05 vector index built: %d chunks (provider=%s model=%s)",
+        len(chunks), provider, model,
+    )
+    return _VECTOR_CACHE
+
+
+def _vector_search(
+    query: str, chunks: list[DocChunk], k: int,
+) -> dict[str, Any] | None:
+    """Cosine-similarity search over the precomputed corpus. Returns
+    the same envelope as ``_word_overlap_search`` with ``backend:
+    "vector"``. Returns ``None`` on any embedding failure so the
+    caller can fall back cleanly.
+    """
+    index = _get_or_build_vector_index(chunks)
+    if index is None:
+        return None
+
+    try:
+        from app.engine.embedding_provider import get_embedding_sync
+
+        q_raw = get_embedding_sync(
+            query, index.provider, index.model, task_type="RETRIEVAL_QUERY",
+        )
+    except Exception as exc:  # noqa: BLE001 — query-side failure
+        logger.warning(
+            "SMART-05 query embedding failed (provider=%s model=%s): %s",
+            index.provider, index.model, exc,
+        )
+        return None
+
+    q_vec = _l2_normalise(list(q_raw))
+
+    scored: list[tuple[float, DocChunk]] = []
+    for vec, chunk in zip(index.vectors, index.chunks):
+        # Both vectors L2-normalised, so dot product == cosine.
+        score = sum(a * b for a, b in zip(q_vec, vec))
+        scored.append((score, chunk))
+
+    # Threshold: below ~0.2 the match is usually noise. Keep the
+    # result envelope self-explanatory by counting only above-threshold
+    # matches as ``match_count`` — agent narration reads cleaner.
+    scored.sort(key=lambda p: p[0], reverse=True)
+    meaningful = [pair for pair in scored if pair[0] >= 0.2]
+    top = (meaningful or scored)[:k]
+
+    return {
+        "query": query,
+        "match_count": len(meaningful),
+        "backend": "vector",
+        "embedding_provider": index.provider,
+        "embedding_model": index.model,
+        "results": [
+            {
+                "source_path": chunk.source_path,
+                "title": chunk.title,
+                "anchor": chunk.anchor,
+                "score": float(score),
+                "excerpt": chunk.text,
+            }
+            for score, chunk in top
+        ],
+    }

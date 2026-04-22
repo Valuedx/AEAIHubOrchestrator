@@ -130,6 +130,17 @@ class TenantPolicyUpdate(BaseModel):
             "pass/fail badges either way. Null clears the override."
         ),
     )
+    smart_05_vector_docs_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-05 — vector-backed docs search. When true, "
+            "search_docs embeds the docs corpus (one-time per process) "
+            "and ranks results by cosine similarity; falls back to "
+            "word-overlap if the embedding provider is unreachable. "
+            "Off by default because embedding calls cost tokens. "
+            "Null clears the override."
+        ),
+    )
 
 
 class TenantPolicyOut(BaseModel):
@@ -166,6 +177,7 @@ def get_policy(
             "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
             "smart_01_scenario_memory_enabled": policy.smart_01_scenario_memory_enabled,
             "smart_01_strict_promote_gate_enabled": policy.smart_01_strict_promote_gate_enabled,
+            "smart_05_vector_docs_enabled": policy.smart_05_vector_docs_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row and row.updated_at else None,
@@ -211,6 +223,8 @@ def update_policy(
         row.smart_01_scenario_memory_enabled = body.smart_01_scenario_memory_enabled
     if "smart_01_strict_promote_gate_enabled" in sent:
         row.smart_01_strict_promote_gate_enabled = body.smart_01_strict_promote_gate_enabled
+    if "smart_05_vector_docs_enabled" in sent:
+        row.smart_05_vector_docs_enabled = body.smart_05_vector_docs_enabled
 
     db.commit()
     db.refresh(row)
@@ -233,6 +247,7 @@ def update_policy(
             "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
             "smart_01_scenario_memory_enabled": policy.smart_01_scenario_memory_enabled,
             "smart_01_strict_promote_gate_enabled": policy.smart_01_strict_promote_gate_enabled,
+            "smart_05_vector_docs_enabled": policy.smart_05_vector_docs_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row.updated_at else None,
