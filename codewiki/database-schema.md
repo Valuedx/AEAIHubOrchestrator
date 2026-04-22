@@ -36,6 +36,7 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `copilot_sessions` | One chat session per draft; holds provider + model for the agent loop (0022) | Yes |
 | `copilot_turns` | Ordered user / assistant / tool messages replayed on reopen (0022) | Yes |
 | `copilot_accepted_patterns` | SMART-02 — snapshot of every promoted draft (graph + NL intent + tags) so the agent can retrieve nearest prior patterns as few-shot (0026) | Yes |
+| `copilot_test_scenarios` | COPILOT-03.a — persisted regression scenarios the agent saves and re-runs; bound to either `draft_id` or `workflow_id` via an XOR check constraint (0027) | Yes |
 
 **DV-07 (migration 0018):** `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` — when false, Schedule Triggers skip the workflow. Manual Run, PATCH, and duplicate all stay active.
 
@@ -507,6 +508,7 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0024 | `0024_tenant_policies_smart_flags.py` | **SMART-04** — add `smart_04_lints_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
 | 0025 | `0025_tenant_policies_smart_06.py` | **SMART-06** — add `smart_06_mcp_discovery_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
 | 0026 | `0026_copilot_accepted_patterns.py` | **SMART-02** — `copilot_accepted_patterns` table (snapshot of promoted drafts + NL intent + tags, tenant-scoped RLS, `ix_accepted_pattern_tenant_created`) + `smart_02_pattern_library_enabled BOOLEAN NOT NULL DEFAULT TRUE` on `tenant_policies` |
+| 0027 | `0027_copilot_test_scenarios.py` | **COPILOT-03.a** — `copilot_test_scenarios` table (draft-or-workflow-scoped regression scenarios with `payload_json`, optional `pins_json`, optional `expected_output_contains_json`; XOR check constraint `ck_scenario_draft_xor_workflow`; two partial unique indexes for per-draft and per-workflow name uniqueness; tenant-scoped RLS) |
 
 ### Running migrations
 

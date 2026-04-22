@@ -681,6 +681,10 @@ RUNNER_TOOL_NAMES = {
     "discover_mcp_tools",
     # SMART-02
     "recall_patterns",
+    # COPILOT-03.a
+    "save_test_scenario",
+    "run_scenario",
+    "list_scenarios",
 }
 
 
@@ -909,4 +913,339 @@ def dispatch(
         return pattern_library.recall_patterns(
             db, tenant_id=tenant_id, query=query, top_k=top_k,
         )
+    if tool_name == "save_test_scenario":
+        return save_test_scenario(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "run_scenario":
+        return run_scenario(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "list_scenarios":
+        return list_scenarios(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
     raise KeyError(tool_name)
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-03.a — test scenario persistence + replay
+# ---------------------------------------------------------------------------
+
+
+# Cap per draft so a runaway agent can't fill the table with hundreds
+# of near-duplicate scenarios in a single chat. 50 is well above what
+# a real workflow needs (you'd rarely hand-craft more than 10–20) but
+# low enough to make a loop bug obvious in tests.
+MAX_SCENARIOS_PER_DRAFT = 50
+
+
+def save_test_scenario(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist a named regression scenario against the current draft.
+
+    Args
+    ----
+    ::
+
+        {
+          "name": "empty slack message",         # required, unique per draft
+          "payload": {...},                      # required; trigger payload
+          "expected_output_contains": {...}      # optional; partial-match
+                                                  # assertion applied to output
+        }
+
+    Result
+    ------
+
+    Success::
+
+        {"scenario_id": "...", "name": "...", "created_at": "..."}
+
+    Error (validation / duplicate / cap hit)::
+
+        {"error": "..."}
+    """
+    from app.models.copilot import CopilotTestScenario
+
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return {"error": "save_test_scenario requires a non-empty 'name'"}
+    name = name.strip()
+    if len(name) > 128:
+        return {"error": "save_test_scenario 'name' must be <= 128 chars"}
+
+    payload = args.get("payload")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return {"error": "save_test_scenario 'payload' must be an object"}
+
+    expected = args.get("expected_output_contains")
+    if expected is not None and not isinstance(expected, dict):
+        return {
+            "error": "save_test_scenario 'expected_output_contains' must be an object",
+        }
+
+    # Unique-per-draft check. The DB has a partial unique index
+    # (0027 migration) but we short-circuit with a friendly error
+    # instead of surfacing IntegrityError.
+    existing = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id, name=name)
+        .first()
+    )
+    if existing is not None:
+        return {
+            "error": (
+                f"A scenario named '{name}' already exists on this draft. "
+                "Pick a different name or delete the existing one first."
+            ),
+        }
+
+    scenario_count = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id)
+        .count()
+    )
+    if scenario_count >= MAX_SCENARIOS_PER_DRAFT:
+        return {
+            "error": (
+                f"This draft already has {scenario_count} scenarios "
+                f"(cap {MAX_SCENARIOS_PER_DRAFT}). Delete some before "
+                "saving more."
+            ),
+        }
+
+    scenario = CopilotTestScenario(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        draft_id=draft.id,
+        workflow_id=None,
+        name=name,
+        payload_json=payload,
+        pins_json={},
+        expected_output_contains_json=expected,
+    )
+    db.add(scenario)
+    db.commit()
+
+    return {
+        "scenario_id": str(scenario.id),
+        "name": scenario.name,
+        "created_at": scenario.created_at.isoformat()
+        if scenario.created_at
+        else None,
+    }
+
+
+def run_scenario(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute a saved scenario against the draft and diff against its
+    ``expected_output_contains``.
+
+    Args
+    ----
+    ::
+
+        {
+          "scenario_id": "...",   # required
+        }
+
+    Result
+    ------
+
+    ``status`` is one of:
+
+    * ``pass`` — expected match succeeded (or scenario had no
+      expected block, in which case we return ``pass`` with the
+      actual output for reference).
+    * ``fail`` — scenario ran but output didn't match expected.
+      ``mismatches`` lists ``[{path, expected, actual}]``.
+    * ``stale`` — scenario can't run because the draft changed
+      incompatibly. Returned today only as a hook for 03.e (we
+      don't have pin-referenced-node detection in 03.a because
+      pins aren't supported yet).
+    * ``error`` — underlying execute_draft hit an unexpected
+      failure; ``message`` carries the detail.
+
+    ``execution`` is the raw ``execute_draft_sync`` result so the
+    agent can surface logs / instance_id without a separate call.
+    """
+    from app.models.copilot import CopilotTestScenario
+
+    scenario_id_str = args.get("scenario_id")
+    if not scenario_id_str:
+        return {"error": "run_scenario requires 'scenario_id'"}
+    try:
+        scenario_uuid = uuid.UUID(str(scenario_id_str))
+    except ValueError:
+        return {"error": f"Invalid scenario_id: {scenario_id_str!r}"}
+
+    scenario = (
+        db.query(CopilotTestScenario)
+        .filter_by(
+            id=scenario_uuid, tenant_id=tenant_id, draft_id=draft.id,
+        )
+        .first()
+    )
+    if scenario is None:
+        return {
+            "error": (
+                f"Scenario '{scenario_id_str}' not found on this draft. "
+                "Call list_scenarios to see what's saved."
+            ),
+        }
+
+    exec_args = {"payload": scenario.payload_json or {}}
+    execution = execute_draft_sync(
+        db, tenant_id=tenant_id, draft=draft, args=exec_args,
+    )
+
+    # Surface execute-side errors as a scenario-level error so the
+    # agent gets one clean result shape.
+    if execution.get("error") and not execution.get("instance_id"):
+        return {
+            "scenario_id": str(scenario.id),
+            "name": scenario.name,
+            "status": "error",
+            "message": execution["error"],
+            "execution": execution,
+        }
+
+    exec_status = execution.get("status")
+    actual_output = execution.get("output") or {}
+
+    # Non-terminal or engine-failed run — scenario can't be said to
+    # pass even without an expected block.
+    if exec_status not in ("completed", "success", None):
+        return {
+            "scenario_id": str(scenario.id),
+            "name": scenario.name,
+            "status": "fail",
+            "mismatches": [
+                {
+                    "path": "$.status",
+                    "expected": "completed",
+                    "actual": exec_status,
+                },
+            ],
+            "execution": execution,
+        }
+
+    expected = scenario.expected_output_contains_json
+    if not expected:
+        return {
+            "scenario_id": str(scenario.id),
+            "name": scenario.name,
+            "status": "pass",
+            "actual_output": actual_output,
+            "execution": execution,
+        }
+
+    mismatches = _diff_contains(expected, actual_output, path="$")
+    return {
+        "scenario_id": str(scenario.id),
+        "name": scenario.name,
+        "status": "pass" if not mismatches else "fail",
+        "mismatches": mismatches,
+        "actual_output": actual_output,
+        "execution": execution,
+    }
+
+
+def list_scenarios(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],  # noqa: ARG001 — no args today
+) -> dict[str, Any]:
+    """List saved scenarios on this draft — what the agent needs to
+    pick one for ``run_scenario`` without guessing an id.
+    """
+    from app.models.copilot import CopilotTestScenario
+
+    rows = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id)
+        .order_by(CopilotTestScenario.created_at)
+        .all()
+    )
+    return {
+        "count": len(rows),
+        "scenarios": [
+            {
+                "scenario_id": str(r.id),
+                "name": r.name,
+                "payload": r.payload_json or {},
+                "has_expected": r.expected_output_contains_json is not None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+def _diff_contains(
+    expected: Any, actual: Any, *, path: str,
+) -> list[dict[str, Any]]:
+    """Recursive partial-match: every key/value in ``expected`` must
+    appear in ``actual``. Lists match positionally — each expected
+    item must equal the actual item at the same index (so expected
+    can be a shorter-or-equal-length list).
+
+    Returns a list of ``{path, expected, actual}`` mismatches. Empty
+    means the actual subsumes the expected.
+    """
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return [{"path": path, "expected": expected, "actual": actual}]
+        mismatches: list[dict[str, Any]] = []
+        for key, sub_expected in expected.items():
+            if key not in actual:
+                mismatches.append({
+                    "path": f"{path}.{key}",
+                    "expected": sub_expected,
+                    "actual": None,
+                    "reason": "missing",
+                })
+                continue
+            mismatches.extend(
+                _diff_contains(
+                    sub_expected, actual[key], path=f"{path}.{key}",
+                )
+            )
+        return mismatches
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            return [{"path": path, "expected": expected, "actual": actual}]
+        if len(actual) < len(expected):
+            return [{
+                "path": path,
+                "expected": expected,
+                "actual": actual,
+                "reason": "list shorter than expected",
+            }]
+        mismatches = []
+        for i, sub_expected in enumerate(expected):
+            mismatches.extend(
+                _diff_contains(
+                    sub_expected, actual[i], path=f"{path}[{i}]",
+                )
+            )
+        return mismatches
+    # Scalars — exact equality.
+    if expected != actual:
+        return [{"path": path, "expected": expected, "actual": actual}]
+    return []

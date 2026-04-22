@@ -157,6 +157,48 @@ class CopilotAcceptedPattern(Base):
     )
 
 
+class CopilotTestScenario(Base):
+    """COPILOT-03.a — a persisted regression scenario for a draft (or
+    promoted workflow). One row per named scenario.
+
+    Exactly one of ``draft_id`` / ``workflow_id`` is set; a DB CHECK
+    constraint enforces the XOR. Promote (03.e) rewrites the binding
+    from draft_id → workflow_id inside the same transaction so
+    scenarios survive the draft's deletion.
+
+    ``payload_json`` is the trigger payload the scenario re-runs with.
+    ``pins_json`` reserves the shape for future pinned-upstream
+    scenarios; 03.a runs scenarios trigger-only. The
+    ``expected_output_contains_json`` dict (optional) is a partial-
+    match assertion applied recursively to the run output.
+    """
+
+    __tablename__ = "copilot_test_scenarios"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    draft_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_drafts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    workflow_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_definitions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    name = Column(String(128), nullable=False)
+    payload_json = Column(JSONB, nullable=False, default=dict)
+    pins_json = Column(JSONB, nullable=False, default=dict)
+    expected_output_contains_json = Column(JSONB, nullable=True)
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_scenario_tenant_created", "tenant_id", "created_at"),
+    )
+
+
 class CopilotTurn(Base):
     """One message in a copilot session. ``role`` is user / assistant /
     tool. ``content_json`` is role-shaped: text for user/assistant,

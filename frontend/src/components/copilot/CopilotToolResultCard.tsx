@@ -172,6 +172,12 @@ function summariseArgs(name: string, args: Record<string, unknown>): string {
       return args.server_label ? `server=${args.server_label}` : "default server";
     case "recall_patterns":
       return args.query ? `"${String(args.query).slice(0, 40)}"` : "";
+    case "save_test_scenario":
+      return args.name ? `"${String(args.name).slice(0, 40)}"` : "";
+    case "run_scenario":
+      return args.scenario_id ? `id=${short(String(args.scenario_id))}` : "";
+    case "list_scenarios":
+      return "all saved";
     default:
       return "";
   }
@@ -355,6 +361,30 @@ function ResultSummary({
       }
       const count = typeof r.match_count === "number" ? r.match_count : 0;
       return <span className="text-muted-foreground">{count} pattern{count === 1 ? "" : "s"}</span>;
+    }
+    case "save_test_scenario": {
+      if (typeof r.scenario_id !== "string") {
+        return <span className="text-destructive">not saved</span>;
+      }
+      return <span className="text-emerald-700 dark:text-emerald-400">saved "{String(r.name ?? "")}"</span>;
+    }
+    case "run_scenario": {
+      const status = String(r.status ?? "");
+      const mismatches = Array.isArray(r.mismatches) ? r.mismatches.length : 0;
+      if (status === "pass") {
+        return <span className="text-emerald-700 dark:text-emerald-400">pass</span>;
+      }
+      if (status === "fail") {
+        return <span className="text-destructive">fail ({mismatches} mismatch{mismatches === 1 ? "" : "es"})</span>;
+      }
+      if (status === "stale") {
+        return <span className="text-amber-700 dark:text-amber-300">stale</span>;
+      }
+      return <span className="text-muted-foreground">{status || "unknown"}</span>;
+    }
+    case "list_scenarios": {
+      const count = typeof r.count === "number" ? r.count : 0;
+      return <span className="text-muted-foreground">{count} scenario{count === 1 ? "" : "s"}</span>;
     }
     default:
       return <span className="text-muted-foreground">ok</span>;

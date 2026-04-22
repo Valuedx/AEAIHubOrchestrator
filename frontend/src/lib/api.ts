@@ -615,7 +615,16 @@ export type CopilotToolName =
   // SMART-02 — recall nearest accepted workflow patterns this
   // tenant promoted in the past; agent uses them as few-shot
   // instead of synthesising from scratch.
-  | "recall_patterns";
+  | "recall_patterns"
+  // COPILOT-03.a — persisted test scenarios for the debug loop.
+  // Scenarios are draft-scoped; promote migrates them onto the
+  // resulting workflow (03.e). `save` creates, `run` re-executes
+  // the draft with the stored payload and diffs actual vs
+  // expected_output_contains, `list` lets the agent pick one
+  // without guessing an id.
+  | "save_test_scenario"
+  | "run_scenario"
+  | "list_scenarios";
 
 // SMART-04 — one structured lint finding surfaced by check_draft.
 export type CopilotLintSeverity = "error" | "warn";

@@ -479,6 +479,100 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    # ----------------------------------------------------------------------
+    # Test scenarios (COPILOT-03.a). Saved regression cases: given this
+    # trigger payload, the draft should produce output containing X.
+    # ----------------------------------------------------------------------
+    {
+        "name": "save_test_scenario",
+        "description": (
+            "Save a named regression scenario the user cares about — "
+            "a trigger payload plus an optional assertion about the "
+            "output. Call this when the user says 'remember that I "
+            "want this to work' or similar. The scenario can be "
+            "re-run at any time via run_scenario, and Promote (once "
+            "03.e lands) will re-run all scenarios before letting "
+            "the draft leave the draft workspace. Names must be "
+            "unique per draft; cap is 50 scenarios per draft. "
+            "Returns {scenario_id, name, created_at} on success or "
+            "{error} on validation failure / duplicate / cap hit."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["name", "payload"],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Short human-readable name (e.g. 'empty slack "
+                        "message', 'oversized attachment'). Unique "
+                        "per draft. Max 128 chars."
+                    ),
+                },
+                "payload": {
+                    "type": "object",
+                    "description": (
+                        "Trigger payload the run will receive "
+                        "(becomes context['trigger'])."
+                    ),
+                },
+                "expected_output_contains": {
+                    "type": "object",
+                    "description": (
+                        "Optional partial-match assertion on the "
+                        "output. Every key/value must appear in the "
+                        "actual output (recursive dict match; list "
+                        "positional match). Omit to record the "
+                        "scenario without an assertion — run_scenario "
+                        "then just returns the actual output."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "run_scenario",
+        "description": (
+            "Re-run a saved test scenario against the current draft "
+            "and diff the output against the scenario's "
+            "expected_output_contains. Returns {scenario_id, name, "
+            "status, mismatches, actual_output, execution}. Status "
+            "is one of 'pass' / 'fail' / 'stale' / 'error'. "
+            "'mismatches' is a list of {path, expected, actual} for "
+            "fail cases. 'execution' carries the underlying "
+            "execute_draft_sync result so you can surface logs via "
+            "get_execution_logs without another call. Call this "
+            "after edits the user cares about to confirm a regression "
+            "didn't sneak in."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["scenario_id"],
+            "properties": {
+                "scenario_id": {
+                    "type": "string",
+                    "description": (
+                        "UUID returned by save_test_scenario or "
+                        "list_scenarios."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "list_scenarios",
+        "description": (
+            "List all test scenarios saved on this draft. Returns "
+            "{count, scenarios: [{scenario_id, name, payload, "
+            "has_expected, created_at}]}. Use this when the user "
+            "asks 'what scenarios do we have' or when you need to "
+            "pick a scenario to run without guessing an id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 

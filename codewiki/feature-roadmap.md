@@ -58,7 +58,11 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 | COPILOT-02.i | Chat pane + streaming message list + composer + toolbar Sparkles toggle + mutually-exclusive-with-PropertyInspector layout | **Done** — see [copilot.md §6](copilot.md) |
 | COPILOT-02.ii | `PromoteDialog` (diff summary + validation surface + name/description) + stop-generating button + session history replay | **Partially done** — `PromoteDialog`, stop button, history replay shipped; canvas `DraftDiffOverlay` (ghost nodes + sparkle badges) deferred to 02.ii.b because it needs `FlowCanvas` to accept a preview-graph override. See [copilot.md §6](copilot.md) |
 | COPILOT-02.ii.b | `DraftDiffOverlay` on canvas — ghost-rendered copilot-added/modified nodes + sparkle badges + accept-per-node affordance | Planned |
-| COPILOT-03 | Debug / test-scenario / `suggest_fix` / auto-heal loop | Planned |
+| COPILOT-03.a | Scenario storage (migration 0027) + `save_test_scenario` / `run_scenario` / `list_scenarios` runner tools — persisted regression scenarios the agent can save and replay via `execute_draft` with a recursive `expected_output_contains` partial-match diff | **Done** — see [copilot.md §3](copilot.md) |
+| COPILOT-03.b | Debug / log inspection tools: `run_debug_scenario`, `get_instance_logs`, `get_node_error` | Planned |
+| COPILOT-03.c | `suggest_fix` node-scoped LLM subcall — propose-never-auto-apply | Planned |
+| COPILOT-03.d | Auto-heal loop prompt pattern + depth cap (3 retries/turn) | Planned |
+| COPILOT-03.e | `PromoteDialog` scenario pass/fail badges + stale detection | Planned |
 
 ### Sprint 2D in flight — Multi-tenant admin knobs
 
