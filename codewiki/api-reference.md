@@ -436,9 +436,12 @@ The backend rehydrates these rows from `memory_debug` recorded during execution 
 
 ### Public agent card (no auth)
 
+We serve the agent card at **both** paths so A2A v0.2.x and v1.0 clients both discover us (A2A-01.a):
+
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/tenants/{tenant_id}/.well-known/agent.json` | Agent card with capabilities and published skills |
+| `GET` | `/tenants/{tenant_id}/.well-known/agent-card.json` | **A2A v1.0** agent card (spec-required path) |
+| `GET` | `/tenants/{tenant_id}/.well-known/agent.json` | **A2A v0.2.x** legacy alias — identical body |
 
 ### JSON-RPC endpoint (A2A API key auth)
 
@@ -455,14 +458,16 @@ The backend rehydrates these rows from `memory_debug` recorded during execution 
 | `method` | string | See below |
 | `params` | object | Method-specific |
 
-**Methods:**
+**Methods:** we accept both v0.2.x and v1.0 method names as aliases so clients on either spec version work without a shim (A2A-01.a).
 
-| Method | Params | Behavior |
-|--------|--------|----------|
-| `tasks/send` | `skillId`, optional `sessionId`, `message` (with `parts[].text`) | Create and enqueue a task |
-| `tasks/get` | `id` (instance UUID), optional `sessionId` | Get task status |
-| `tasks/cancel` | `id` (instance UUID) | Request cancellation |
-| `tasks/sendSubscribe` | Same as `tasks/send` | Create task + SSE stream |
+| Method (v0.2.x) | Alias (v1.0) | Params | Behavior |
+|-----------------|--------------|--------|----------|
+| `tasks/send` | `message/send` | `skillId` (top-level OR `message.metadata.skillId`), optional `sessionId`, `message` (with `parts[].text`) | Create and enqueue a task |
+| `tasks/sendSubscribe` | `message/sendStreaming` | Same as send | Create task + SSE stream |
+| `tasks/get` | — | `id` (instance UUID), optional `sessionId` | Get task status |
+| `tasks/cancel` | — | `id` (instance UUID) | Request cancellation |
+
+**Skill routing note:** v1.0's `message/send` has no top-level `skillId`; the Google ADK / LangGraph convention puts the id inside `message.metadata.skillId`. Our dispatcher reads from both locations so either param shape works.
 
 ### A2A API key management — `/api/v1/a2a/keys`
 

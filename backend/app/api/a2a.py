@@ -47,6 +47,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -181,11 +182,26 @@ def _extract_final_response(context_json: dict) -> str:
     return ""
 
 
+def _read_metadata_skill_id(message: Any) -> str | None:
+    """A2A v1.0 ``message/send`` clients carry the skill identifier
+    inside ``message.metadata`` rather than as a top-level ``skillId``
+    field. Extract it (accepting both camelCase and snake_case) so
+    the dispatcher's method-name aliasing doesn't force callers to
+    duplicate the id at two levels.
+    """
+    if not isinstance(message, dict):
+        return None
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    return metadata.get("skillId") or metadata.get("skill_id")
+
+
 # ---------------------------------------------------------------------------
 # Agent card
 # ---------------------------------------------------------------------------
 
-@router.get("/tenants/{tenant_id}/.well-known/agent.json")
+@router.get("/tenants/{tenant_id}/.well-known/agent-card.json")
 def agent_card(
     tenant_id: str,
     request: Request,
@@ -197,7 +213,31 @@ def agent_card(
     No authentication required — agent cards are public discovery documents.
     The tenant is taken from the URL path, not the ``X-Tenant-Id`` header,
     so the RLS context is set inline rather than via ``get_tenant_db``.
+
+    **A2A spec v1.0** places the agent card at
+    ``/.well-known/agent-card.json``; v0.2.x placed it at
+    ``/.well-known/agent.json``. We serve both paths so clients on
+    either spec version discover us without guessing (see the
+    ``agent_card_legacy`` alias below).
     """
+    return _build_agent_card(tenant_id, db, request)
+
+
+@router.get("/tenants/{tenant_id}/.well-known/agent.json")
+def agent_card_legacy(
+    tenant_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """A2A v0.2.x legacy discovery path. Delegates to the same
+    builder as the v1.0 path so both responses are identical."""
+    return _build_agent_card(tenant_id, db, request)
+
+
+def _build_agent_card(
+    tenant_id: str, db: Session, request: Request,
+) -> dict:
+    """Shared agent-card body used by both discovery paths."""
     set_tenant_context(db, tenant_id)
     # Ephemeral rows default is_published=False so the filter below
     # already excludes them, but pin the invariant explicitly — a
@@ -251,11 +291,27 @@ async def a2a_dispatcher(
     verified_tenant: str = Depends(_get_a2a_tenant),
     db: Session = Depends(get_db),
 ):
-    """Single JSON-RPC 2.0 endpoint. Routes by body.method."""
+    """Single JSON-RPC 2.0 endpoint. Routes by body.method.
+
+    **Method aliasing (A2A-01.a).** We accept both the v0.2.x and v1.0
+    method names so existing clients keep working while 2026-era
+    v1.0 clients (Google ADK, LangGraph A2A, Bedrock AgentCore,
+    Inkeep, etc.) discover and call us without a shim. The v1.0
+    aliases are:
+
+      * ``message/send``           → same handler as ``tasks/send``
+      * ``message/sendStreaming``  → same handler as ``tasks/sendSubscribe``
+
+    Param-shape compatibility: v1.0 senders typically pass the skill
+    identifier in ``message.metadata.skillId`` rather than as a
+    top-level ``skillId`` field. ``_tasks_send`` + ``_tasks_send_subscribe``
+    read from both locations so either shape works.
+    """
     method = body.method
     params = body.params
 
-    if method == "tasks/send":
+    # Send a message / create a task. v0.2.x + v1.0 names share one handler.
+    if method in {"tasks/send", "message/send"}:
         result = _tasks_send(params, tenant_id, db)
         return {"jsonrpc": "2.0", "id": body.id, "result": result}
 
@@ -267,8 +323,8 @@ async def a2a_dispatcher(
         result = _tasks_cancel(params, tenant_id, db)
         return {"jsonrpc": "2.0", "id": body.id, "result": result}
 
-    if method == "tasks/sendSubscribe":
-        # Streaming — returns SSE, not JSON
+    # Streaming. v0.2.x + v1.0 names share one SSE handler.
+    if method in {"tasks/sendSubscribe", "message/sendStreaming"}:
         return await _tasks_send_subscribe(params, tenant_id, body.id, request, db)
 
     return {
@@ -287,12 +343,25 @@ async def a2a_dispatcher(
 
 def _tasks_send(params: dict, tenant_id: str, db: Session) -> dict:
     """Create a WorkflowInstance and return the initial Task object."""
-    raw_skill_id = params.get("skillId") or params.get("skill_id")
-    session_id   = params.get("sessionId") or params.get("session_id") or str(uuid.uuid4())
     message      = params.get("message") or {}
+    # Skill routing: v0.2.x clients pass ``skillId`` / ``skill_id`` at the
+    # top level; v1.0 ``message/send`` has no top-level skill field so
+    # clients put it inside ``message.metadata.skillId`` (Google ADK's
+    # convention). Accept either shape so the dispatcher can alias the
+    # method names without forcing callers to change their payload.
+    raw_skill_id = (
+        params.get("skillId")
+        or params.get("skill_id")
+        or _read_metadata_skill_id(message)
+    )
+    session_id   = params.get("sessionId") or params.get("session_id") or str(uuid.uuid4())
 
     if not raw_skill_id:
-        raise HTTPException(400, "tasks/send requires a skillId")
+        raise HTTPException(
+            400,
+            "send requires a skillId (top-level `skillId`, or "
+            "`message.metadata.skillId` for v1.0 clients)",
+        )
 
     try:
         skill_uuid = uuid.UUID(str(raw_skill_id))
