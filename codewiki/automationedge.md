@@ -61,9 +61,19 @@ Click the 🤖 **Integrations** icon in the toolbar and **Add Integration** for 
 | Credentials secret prefix | `AUTOMATIONEDGE` | Must match the Secret key prefix used in §2a. |
 | Source tag | `AE AI Hub Orchestrator` | Recorded on the AE side as the request source. |
 | AE userId | `orchestrator` | Recorded on the AE request row for audit. |
+| **AE Copilot URL** *(optional)* | `https://ae.example.com/copilot` | Deep-link the workflow authoring copilot surfaces when the user's request is deterministic RPA — see [Copilot handoff](#2c-copilot-handoff-optional) below. Stored as `config_json.copilotUrl`. |
 | **Use as default** | ☑ | Recommended — nodes with a blank `integrationLabel` will pick this row. |
 
 You can have multiple integrations (e.g. `dev-ae` and `prod-ae`) and switch between them per-node by setting `integrationLabel` on the node config. Exactly one integration per (tenant, system) can be the default.
+
+### 2c. Copilot handoff (optional)
+
+The [workflow authoring copilot](copilot.md) treats deterministic RPA as out-of-scope for its own LLM loop — the right place to *design* RPA steps is the AutomationEdge Copilot (a separate product). When the user describes something like "post this invoice in SAP" or "drop these files into the shared drive", the copilot calls `get_automationedge_handoff_info` and offers the user two paths:
+
+1. **Inline.** Add an `automationedge` node in the current draft pointing at an existing AE workflow. Needs the AE workflow name/id.
+2. **Handoff.** Open the AE Copilot to design the RPA workflow first, then come back and reference it via path 1. The copilot uses the `copilotUrl` field (per-connection, stored on `config_json.copilotUrl`) or the process-wide `ORCHESTRATOR_AE_COPILOT_URL` env as a fallback to produce the deep link.
+
+Same fork applies inside a [Sub-Workflow](node-types.md) — if the sub-workflow is entirely deterministic automation, a single `automationedge` node is usually cleaner than a full child graph.
 
 ---
 

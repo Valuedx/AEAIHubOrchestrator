@@ -321,3 +321,166 @@ def test_dispatch_unknown_runner_tool_raises_keyerror():
 def test_runner_tool_names_is_not_empty():
     # Guardrail: at least one runner tool in 01b.ii.a.
     assert "test_node" in runner_tools.RUNNER_TOOL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# get_automationedge_handoff_info — deterministic-automation fork
+# ---------------------------------------------------------------------------
+
+
+class _FakeIntegration:
+    def __init__(self, *, label, is_default, config_json):
+        self.label = label
+        self.is_default = is_default
+        self.config_json = config_json
+
+
+def _stub_integrations_query(session_mock: MagicMock, integrations: list):
+    """Wire session.query(TenantIntegration).filter_by(...).order_by(...).all()
+    to return our fake integrations."""
+    query = session_mock.query.return_value
+    query.filter_by.return_value = query
+    query.order_by.return_value = query
+    query.all.return_value = integrations
+
+
+def test_handoff_info_returns_connections_and_default_copilot_url():
+    db = MagicMock()
+    _stub_integrations_query(db, [
+        _FakeIntegration(
+            label="prod-ae",
+            is_default=True,
+            config_json={
+                "baseUrl": "https://ae.example.com",
+                "orgCode": "ACME",
+                "copilotUrl": "https://ae.example.com/copilot",
+            },
+        ),
+        _FakeIntegration(
+            label="staging-ae",
+            is_default=False,
+            config_json={
+                "baseUrl": "https://staging-ae.example.com",
+                "orgCode": "ACME-STG",
+            },
+        ),
+    ])
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+
+    result = runner_tools.get_automationedge_handoff_info(
+        db, tenant_id=TENANT, draft=draft, args={},
+    )
+
+    assert result["orchestrator_node_type"] == "automationedge"
+    assert result["ae_copilot_url"] == "https://ae.example.com/copilot"
+    assert len(result["existing_connections"]) == 2
+    assert result["existing_connections"][0]["label"] == "prod-ae"
+    assert result["existing_connections"][0]["is_default"] is True
+    assert result["existing_connections"][1]["copilot_url"] is None
+    assert "INLINE" in result["guidance"]
+    assert "HANDOFF" in result["guidance"]
+
+
+def test_handoff_info_falls_through_to_env_default():
+    """No per-tenant copilotUrl anywhere → use settings.ae_copilot_url."""
+    db = MagicMock()
+    _stub_integrations_query(db, [
+        _FakeIntegration(
+            label="prod-ae",
+            is_default=True,
+            config_json={"baseUrl": "https://ae.example.com", "orgCode": "ACME"},
+        ),
+    ])
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.ae_copilot_url = "https://ae-copilot.example.com/"
+        result = runner_tools.get_automationedge_handoff_info(
+            db, tenant_id=TENANT, draft=draft, args={},
+        )
+
+    assert result["ae_copilot_url"] == "https://ae-copilot.example.com/"
+
+
+def test_handoff_info_no_connections_surfaces_empty_list_and_null_url():
+    """Tenant hasn't registered any AE integration and no env fallback —
+    the agent should still get a usable answer it can narrate ("you'll
+    need to add a connection first")."""
+    db = MagicMock()
+    _stub_integrations_query(db, [])
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.ae_copilot_url = ""
+        result = runner_tools.get_automationedge_handoff_info(
+            db, tenant_id=TENANT, draft=draft, args={},
+        )
+
+    assert result["existing_connections"] == []
+    assert result["ae_copilot_url"] is None
+    # Guidance is still returned so the agent has something to narrate.
+    assert result["guidance"]
+
+
+def test_handoff_info_prefers_default_connection_copilot_url():
+    """When multiple connections have their own copilotUrl, the default
+    connection's URL wins."""
+    db = MagicMock()
+    _stub_integrations_query(db, [
+        _FakeIntegration(
+            label="prod-ae",
+            is_default=True,
+            config_json={
+                "baseUrl": "https://prod.ae.example.com",
+                "orgCode": "ACME",
+                "copilotUrl": "https://prod-copilot.example.com",
+            },
+        ),
+        _FakeIntegration(
+            label="staging-ae",
+            is_default=False,
+            config_json={
+                "baseUrl": "https://stg.ae.example.com",
+                "orgCode": "ACME-STG",
+                "copilotUrl": "https://stg-copilot.example.com",
+            },
+        ),
+    ])
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+
+    result = runner_tools.get_automationedge_handoff_info(
+        db, tenant_id=TENANT, draft=draft, args={},
+    )
+    assert result["ae_copilot_url"] == "https://prod-copilot.example.com"
+
+
+def test_dispatch_routes_handoff_info():
+    db = MagicMock()
+    _stub_integrations_query(db, [])
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.ae_copilot_url = ""
+        result = runner_tools.dispatch(
+            "get_automationedge_handoff_info",
+            db=db, tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["orchestrator_node_type"] == "automationedge"
+
+
+def test_runner_tool_names_includes_handoff():
+    assert "get_automationedge_handoff_info" in runner_tools.RUNNER_TOOL_NAMES

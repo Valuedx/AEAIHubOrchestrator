@@ -180,11 +180,122 @@ def test_node_against_draft(
 
 
 # ---------------------------------------------------------------------------
+# get_automationedge_handoff_info — deterministic-automation deflection
+# ---------------------------------------------------------------------------
+#
+# The orchestrator is AI-native, but many real-world tenant workflows
+# embed a deterministic RPA step (SAP posting, form submission, file
+# transfer, ERP update). Two valid paths:
+#
+#   Path A — inline.  Add an ``automationedge`` node here. Needs the
+#            name / id of an AE workflow the tenant already has.
+#   Path B — handoff. Open the AutomationEdge Copilot (separate
+#            product) to design the RPA steps first, then come back
+#            and reference the resulting AE workflow from path A.
+#
+# This tool hands the agent everything it needs to propose the fork
+# to the user: what AE connections the tenant already has registered,
+# and the deep-link URL for path B. The agent decides how to present
+# it; the prompt guides the wording.
+
+
+def get_automationedge_handoff_info(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,  # noqa: ARG001 — part of the runner-tool contract
+    args: dict[str, Any],  # noqa: ARG001 — no args needed today
+) -> dict[str, Any]:
+    """Return the AE-handoff context:
+
+    ::
+
+        {
+          "orchestrator_node_type": "automationedge",
+          "existing_connections": [
+            {
+              "label": "prod-ae",
+              "base_url": "...",
+              "org_code": "...",
+              "is_default": true,
+              "copilot_url": "<from config_json or null>"
+            },
+            ...
+          ],
+          "ae_copilot_url": "<first configured; per-tenant > env default>",
+          "guidance": "...how to decide between inline vs. handoff..."
+        }
+
+    Works even if the tenant has zero AE connections — the agent then
+    surfaces the generic handoff URL (or explains there's no AE
+    integration configured yet).
+    """
+    from app.config import settings
+    from app.models.workflow import TenantIntegration
+
+    connections = (
+        db.query(TenantIntegration)
+        .filter_by(tenant_id=tenant_id, system="automationedge")
+        .order_by(TenantIntegration.is_default.desc(), TenantIntegration.label)
+        .all()
+    )
+
+    per_connection: list[dict[str, Any]] = []
+    best_copilot_url: str | None = None
+    for conn in connections:
+        cfg = conn.config_json or {}
+        conn_copilot_url = cfg.get("copilotUrl") or None
+        if conn.is_default and conn_copilot_url and best_copilot_url is None:
+            best_copilot_url = conn_copilot_url
+        per_connection.append({
+            "label": conn.label,
+            "base_url": cfg.get("baseUrl"),
+            "org_code": cfg.get("orgCode"),
+            "is_default": bool(conn.is_default),
+            "copilot_url": conn_copilot_url,
+        })
+
+    # Precedence: per-tenant default connection's copilotUrl →
+    # any connection's copilotUrl → process-wide env default → None.
+    if best_copilot_url is None:
+        for c in per_connection:
+            if c["copilot_url"]:
+                best_copilot_url = c["copilot_url"]
+                break
+    if best_copilot_url is None and settings.ae_copilot_url:
+        best_copilot_url = settings.ae_copilot_url
+
+    guidance = (
+        "Two paths for this kind of step:\n"
+        "1) INLINE — add an `automationedge` node in this draft and "
+        "point it at an existing AE workflow the tenant already has. "
+        "Use this when the AE workflow already exists; you need the "
+        "`workflowName` (or id) to put in the node config.\n"
+        "2) HANDOFF — if the user hasn't built the AE workflow yet, "
+        "point them at the AutomationEdge Copilot (separate product) "
+        "to design the RPA steps first. Come back afterwards with the "
+        "workflow name, then use path 1. Do NOT attempt to design the "
+        "inner RPA steps yourself — that's AE's responsibility, not "
+        "this orchestrator's.\n"
+        "Same fork applies inside a Sub-Workflow: if the sub-workflow "
+        "is entirely deterministic RPA, an `automationedge` node is "
+        "usually a better fit than a full sub-graph."
+    )
+
+    return {
+        "orchestrator_node_type": "automationedge",
+        "existing_connections": per_connection,
+        "ae_copilot_url": best_copilot_url,
+        "guidance": guidance,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dispatch — runner-tool analogue of tool_layer.dispatch
 # ---------------------------------------------------------------------------
 
 
-RUNNER_TOOL_NAMES = {"test_node"}
+RUNNER_TOOL_NAMES = {"test_node", "get_automationedge_handoff_info"}
 """Tool names the runner-tool dispatch layer handles. Add to this set
 and register a branch in ``dispatch`` below when shipping more
 stateful tools (``execute_draft`` and ``get_execution_logs`` in
@@ -205,6 +316,10 @@ def dispatch(
     layer for anything not in ``RUNNER_TOOL_NAMES``."""
     if tool_name == "test_node":
         return test_node_against_draft(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "get_automationedge_handoff_info":
+        return get_automationedge_handoff_info(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
     raise KeyError(tool_name)

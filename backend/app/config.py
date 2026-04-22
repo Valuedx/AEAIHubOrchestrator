@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     # MCP connection pool size
     mcp_pool_size: int = 4
 
+    # Optional: process-wide default URL for the AutomationEdge Copilot
+    # (a separate product the workflow authoring copilot can hand off to
+    # when the user wants to design deterministic RPA steps before wiring
+    # them into this orchestrator via an AutomationEdge node). A
+    # per-tenant override can live on
+    # ``tenant_integrations(system='automationedge').config_json.copilotUrl``;
+    # this env default is the fallback. Empty = handoff surfaces as
+    # "open AE Copilot in your AE environment" without a deep link.
+    ae_copilot_url: str = ""
+
     # When False, tasks run in-process via background threads (no Redis/Celery needed)
     use_celery: bool = False
 

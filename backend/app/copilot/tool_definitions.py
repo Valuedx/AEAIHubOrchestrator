@@ -191,6 +191,27 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # pure tool_layer.py; the agent's dispatcher routes by tool name.
     # ----------------------------------------------------------------------
     {
+        "name": "get_automationedge_handoff_info",
+        "description": (
+            "Use when the user's request (or a sub-workflow within it) "
+            "is a DETERMINISTIC RPA task — form submission, SAP / ERP "
+            "posting, file transfer, data entry, anything rule-based "
+            "that belongs in an RPA platform rather than an AI agent. "
+            "Returns the tenant's registered AutomationEdge connections "
+            "and the AE Copilot deep-link URL (AE Copilot is a separate "
+            "product for designing the RPA steps themselves — NOT built "
+            "by this orchestrator). Call this BEFORE adding an "
+            "automationedge node so you can (a) propose two paths to "
+            "the user — inline vs. hand-off to AE Copilot — and (b) "
+            "know which AE connection label to use. Read-only; doesn't "
+            "mutate the draft."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "test_node",
         "description": (
             "Run ONE node handler in isolation against pinned upstream "

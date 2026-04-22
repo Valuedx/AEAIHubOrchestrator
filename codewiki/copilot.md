@@ -77,7 +77,7 @@ Deliberately NOT in the schema:
 
 Lives in `backend/app/copilot/tool_layer.py`. Every function is pure: takes a graph dict, returns a new one plus a small result payload. The HTTP dispatch path (§4) is the only stateful caller today; the agent runner lands in 01b.
 
-Nine tools ship today — eight pure tools (01a) and one runner tool (01b.ii.a):
+Ten tools ship today — eight pure tools (01a) and two runner tools (01b.ii.a + AE-handoff):
 
 | Tool | Kind | Family | Notes |
 |---|---|---|---|
@@ -90,6 +90,7 @@ Nine tools ship today — eight pure tools (01a) and one runner tool (01b.ii.a):
 | `disconnect_edge(edge_id)` | Mutation | Pure | — |
 | `validate_graph()` | Read | Pure | Wraps the existing `config_validator`; returns `{errors, warnings}` |
 | `test_node(node_id, trigger_payload?, pins?)` | Stateful | Runner | Runs ONE handler in isolation using pinned upstream data. No instance / log rows written. Handler exceptions return as `{error, elapsed_ms}` so the LLM can self-correct. `pins` override any graph-stored `pinnedOutput` for that probe. |
+| `get_automationedge_handoff_info()` | Read | Runner | For deterministic-automation tasks (SAP postings, form fills, file transfers, etc.). Returns the tenant's registered `automationedge` connections + the AE Copilot deep-link URL so the agent can propose two paths to the user — **inline** (add an `automationedge` node here pointing at an existing AE workflow) vs. **handoff** (open AE Copilot — a separate product — to design the RPA steps first). System prompt enforces the fork; the agent does NOT try to design the inner RPA itself. Per-tenant `copilotUrl` lives on `tenant_integrations(system='automationedge').config_json.copilotUrl`; `ORCHESTRATOR_AE_COPILOT_URL` env is the fallback. |
 
 **Pure vs. runner tool families.** Pure tools live in `app/copilot/tool_layer.py` — graph dict in, graph dict out, no DB access. Runner tools live in `app/copilot/runner_tools.py` — they need a DB session and tenant scope because they call node handlers (which touch credentials, MCP, LLM providers). The agent's `_dispatch_tool` routes to the pure dispatch by default and falls through to `runner_tools.dispatch` when the name is in `RUNNER_TOOL_NAMES`. Runner tools don't mutate the draft graph, so `validation` is always `null` and `draft_version` is unchanged in their `tool_result` events.
 

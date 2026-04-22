@@ -566,7 +566,13 @@ export type CopilotToolName =
   | "disconnect_edge"
   | "validate_graph"
   // COPILOT-01b.ii runner tools (stateful, touch the engine).
-  | "test_node";
+  | "test_node"
+  // Deterministic-automation fork — the agent reads existing AE
+  // connections + the AE Copilot deep-link URL so it can propose
+  // "add an automationedge node here" vs. "jump to AE Copilot to
+  // design the RPA first". UI can render the copilot_url in the
+  // tool_result event as a clickable deep-link.
+  | "get_automationedge_handoff_info";
 
 export interface CopilotDraftValidation {
   errors: string[];
