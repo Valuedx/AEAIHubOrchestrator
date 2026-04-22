@@ -178,6 +178,20 @@ function summariseArgs(name: string, args: Record<string, unknown>): string {
       return args.scenario_id ? `id=${short(String(args.scenario_id))}` : "";
     case "list_scenarios":
       return "all saved";
+    case "run_debug_scenario": {
+      const pinCount = args.pins && typeof args.pins === "object"
+        ? Object.keys(args.pins).length
+        : 0;
+      const overrideCount = args.node_overrides && typeof args.node_overrides === "object"
+        ? Object.keys(args.node_overrides).length
+        : 0;
+      const parts: string[] = [];
+      if (pinCount) parts.push(`${pinCount} pin${pinCount === 1 ? "" : "s"}`);
+      if (overrideCount) parts.push(`${overrideCount} override${overrideCount === 1 ? "" : "s"}`);
+      return parts.length ? parts.join(" · ") : "no overrides";
+    }
+    case "get_node_error":
+      return args.node_id ? `node=${args.node_id}` : "";
     default:
       return "";
   }
@@ -385,6 +399,27 @@ function ResultSummary({
     case "list_scenarios": {
       const count = typeof r.count === "number" ? r.count : 0;
       return <span className="text-muted-foreground">{count} scenario{count === 1 ? "" : "s"}</span>;
+    }
+    case "run_debug_scenario": {
+      const status = String(r.status ?? "");
+      const ms = typeof r.elapsed_ms === "number" ? r.elapsed_ms : 0;
+      const cls = status === "completed"
+        ? "text-emerald-700 dark:text-emerald-400"
+        : status === "timeout"
+          ? "text-amber-700 dark:text-amber-300"
+          : "text-muted-foreground";
+      return <span className={cls}>{status} {ms ? `(${ms} ms)` : ""}</span>;
+    }
+    case "get_node_error": {
+      const status = String(r.status ?? "");
+      if (status === "failed") {
+        const err = typeof r.error === "string" ? r.error.slice(0, 60) : "failed";
+        return <span className="text-destructive">failed — {err}</span>;
+      }
+      if (r.note) {
+        return <span className="text-amber-700 dark:text-amber-300">{status} (check downstream)</span>;
+      }
+      return <span className="text-muted-foreground">{status || "unknown"}</span>;
     }
     default:
       return <span className="text-muted-foreground">ok</span>;

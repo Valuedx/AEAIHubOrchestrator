@@ -685,6 +685,9 @@ RUNNER_TOOL_NAMES = {
     "save_test_scenario",
     "run_scenario",
     "list_scenarios",
+    # COPILOT-03.b
+    "run_debug_scenario",
+    "get_node_error",
 }
 
 
@@ -923,6 +926,14 @@ def dispatch(
         )
     if tool_name == "list_scenarios":
         return list_scenarios(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "run_debug_scenario":
+        return run_debug_scenario(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "get_node_error":
+        return get_node_error(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
     raise KeyError(tool_name)
@@ -1249,3 +1260,270 @@ def _diff_contains(
     if expected != actual:
         return [{"path": path, "expected": expected, "actual": actual}]
     return []
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-03.b — ad-hoc debug scenarios + per-node error inspection
+# ---------------------------------------------------------------------------
+
+
+class _OverrideDraft:
+    """Shim around ``WorkflowDraft`` so ``execute_draft_sync`` can run
+    against a caller-modified copy of the graph without mutating the
+    original draft row. Has only the attributes execute_draft_sync
+    reads: ``id``, ``tenant_id``, ``graph_json``, ``version``.
+    """
+
+    __slots__ = ("id", "tenant_id", "graph_json", "version")
+
+    def __init__(self, *, id, tenant_id, graph_json, version):
+        self.id = id
+        self.tenant_id = tenant_id
+        self.graph_json = graph_json
+        self.version = version
+
+
+def run_debug_scenario(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Ad-hoc debug run — execute_draft with optional upstream pins and
+    per-node config overrides. Use when the user says "run it with
+    pin node_3 to X" or "try it with the retries bumped to 5" — the
+    overrides stay local to this one run and never touch the
+    persisted draft graph.
+
+    Args
+    ----
+    ::
+
+        {
+          "payload": {...},              # trigger payload, default {}
+          "pins": {                       # optional; merged into each
+            "node_3": {...},              # matching node's
+            ...                           # data.pinnedOutput
+          },
+          "node_overrides": {             # optional; merged into each
+            "node_5": {                   # matching node's data.config
+              "retries": 5,
+              ...
+            },
+          },
+          "deterministic_mode": bool,   # passthrough to execute_draft
+          "timeout_seconds": int,       # passthrough to execute_draft
+        }
+
+    Returns the ``execute_draft_sync`` result verbatim, plus an
+    ``overrides_applied`` echo for the agent's narration.
+    """
+    import copy
+
+    pins = args.get("pins") or {}
+    if not isinstance(pins, dict):
+        return {"error": "run_debug_scenario 'pins' must be an object keyed by node_id"}
+
+    node_overrides = args.get("node_overrides") or {}
+    if not isinstance(node_overrides, dict):
+        return {
+            "error": "run_debug_scenario 'node_overrides' must be an object keyed by node_id",
+        }
+
+    # Deep-copy so mutations don't leak into the live draft row.
+    modified_graph = copy.deepcopy(draft.graph_json or {"nodes": [], "edges": []})
+    graph_node_ids = {
+        n.get("id") for n in (modified_graph.get("nodes") or []) if n.get("id")
+    }
+
+    unknown_pins = [nid for nid in pins if nid not in graph_node_ids]
+    unknown_overrides = [nid for nid in node_overrides if nid not in graph_node_ids]
+    if unknown_pins or unknown_overrides:
+        return {
+            "error": (
+                "Unknown node ids in overrides: "
+                f"pins={unknown_pins}, node_overrides={unknown_overrides}. "
+                "Call check_draft or list_node_types to see valid ids."
+            ),
+        }
+
+    applied_pins: list[str] = []
+    applied_overrides: list[str] = []
+    for node in modified_graph.get("nodes", []):
+        nid = node.get("id")
+        data = node.setdefault("data", {})
+        if nid in pins:
+            data["pinnedOutput"] = pins[nid]
+            applied_pins.append(nid)
+        if nid in node_overrides:
+            override = node_overrides[nid]
+            if not isinstance(override, dict):
+                return {
+                    "error": (
+                        f"node_overrides for '{nid}' must be an object "
+                        "of config-field updates"
+                    ),
+                }
+            data.setdefault("config", {})
+            data["config"] = {**data["config"], **override}
+            applied_overrides.append(nid)
+
+    shim = _OverrideDraft(
+        id=draft.id,
+        tenant_id=draft.tenant_id,
+        graph_json=modified_graph,
+        version=draft.version,
+    )
+    exec_args = {
+        "payload": args.get("payload") or {},
+    }
+    if args.get("deterministic_mode") is not None:
+        exec_args["deterministic_mode"] = bool(args["deterministic_mode"])
+    if args.get("timeout_seconds") is not None:
+        exec_args["timeout_seconds"] = args["timeout_seconds"]
+
+    execution = execute_draft_sync(
+        db, tenant_id=tenant_id, draft=shim, args=exec_args,
+    )
+
+    # Echo back so the agent's narration can mention "ran with these
+    # overrides" without replaying the full args dict.
+    execution["overrides_applied"] = {
+        "pins": applied_pins,
+        "node_overrides": applied_overrides,
+    }
+    return execution
+
+
+def get_node_error(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,  # noqa: ARG001 — part of runner-tool contract
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Narrow to one failed node in a prior ``execute_draft``/
+    ``run_debug_scenario`` run. Returns the error message, the
+    resolved config the node actually ran with (``input_json`` on
+    the ``ExecutionLog`` row), and the partial output if any — the
+    three things needed to propose a concrete fix.
+
+    Safety: same as ``get_execution_logs`` — only ``is_ephemeral``
+    instances are accessible. Arbitrary production instance_ids are
+    rejected so the agent can't pull failure details from workflows
+    the user never ran through the copilot.
+
+    Args
+    ----
+    ::
+
+        {
+          "instance_id": "...",   # required
+          "node_id": "...",       # required
+        }
+
+    Result shape
+    ------------
+
+    Failed node::
+
+        {
+          "instance_id": "...",
+          "node_id": "...",
+          "node_type": "llm_agent",
+          "status": "failed",
+          "error": "no auth configured",
+          "resolved_config": {...},   # input_json — post-expression
+                                        # resolution, what the handler saw
+          "output_json": null,          # usually null on failure
+          "started_at": "...",
+          "completed_at": "...",
+        }
+
+    Node succeeded — agent should look at downstream node instead::
+
+        {"status": "completed", "note": "Node succeeded — the failure "
+         "is likely downstream.", ...}
+
+    Node not found / not run::
+
+        {"error": "Node 'node_9' has no execution log in instance X."}
+    """
+    from app.models.workflow import ExecutionLog, WorkflowDefinition, WorkflowInstance
+
+    instance_id_str = args.get("instance_id")
+    node_id = args.get("node_id")
+    if not instance_id_str:
+        return {"error": "get_node_error requires 'instance_id'"}
+    if not node_id:
+        return {"error": "get_node_error requires 'node_id'"}
+
+    try:
+        instance_uuid = uuid.UUID(str(instance_id_str))
+    except ValueError:
+        return {"error": f"Invalid instance_id: {instance_id_str!r}"}
+
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_uuid, tenant_id=tenant_id)
+        .first()
+    )
+    if instance is None:
+        return {"error": f"Instance '{instance_id_str}' not found"}
+
+    wf_def = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=instance.workflow_def_id, tenant_id=tenant_id)
+        .first()
+    )
+    if wf_def is None or not wf_def.is_ephemeral:
+        return {
+            "error": (
+                f"Instance '{instance_id_str}' is not a copilot-initiated run. "
+                "get_node_error only inspects drafts the copilot executed."
+            ),
+        }
+
+    log = (
+        db.query(ExecutionLog)
+        .filter_by(instance_id=instance_uuid, node_id=node_id)
+        .order_by(ExecutionLog.started_at.desc())
+        .first()
+    )
+    if log is None:
+        return {
+            "error": (
+                f"Node '{node_id}' has no execution log in instance "
+                f"'{instance_id_str}'. The node may not have been reached."
+            ),
+        }
+
+    if log.status != "failed" and not log.error:
+        return {
+            "instance_id": instance_id_str,
+            "node_id": node_id,
+            "node_type": log.node_type,
+            "status": log.status,
+            "note": (
+                "Node succeeded — the failure (if any) is likely on a "
+                "downstream node. Call get_execution_logs for the full "
+                "instance picture."
+            ),
+            "resolved_config": log.input_json,
+            "output_json": log.output_json,
+            "started_at": log.started_at.isoformat() if log.started_at else None,
+            "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+        }
+
+    return {
+        "instance_id": instance_id_str,
+        "node_id": node_id,
+        "node_type": log.node_type,
+        "status": log.status,
+        "error": log.error,
+        "resolved_config": log.input_json,
+        "output_json": log.output_json,
+        "started_at": log.started_at.isoformat() if log.started_at else None,
+        "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+    }

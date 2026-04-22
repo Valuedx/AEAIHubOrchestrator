@@ -624,7 +624,13 @@ export type CopilotToolName =
   // without guessing an id.
   | "save_test_scenario"
   | "run_scenario"
-  | "list_scenarios";
+  | "list_scenarios"
+  // COPILOT-03.b — ad-hoc debug runs with pins / node config
+  // overrides (nothing persisted), plus a per-node error probe
+  // that surfaces resolved_config + error text for the failed
+  // node. Same ephemeral-only safety gate as get_execution_logs.
+  | "run_debug_scenario"
+  | "get_node_error";
 
 // SMART-04 — one structured lint finding surfaced by check_draft.
 export type CopilotLintSeverity = "error" | "warn";

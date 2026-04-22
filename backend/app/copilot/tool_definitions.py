@@ -573,6 +573,98 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {},
         },
     },
+    # ----------------------------------------------------------------------
+    # Debug + error inspection (COPILOT-03.b). Ad-hoc runs with pins /
+    # config overrides (nothing persisted), and a per-node error probe.
+    # ----------------------------------------------------------------------
+    {
+        "name": "run_debug_scenario",
+        "description": (
+            "Ad-hoc trial run with optional overrides that do NOT "
+            "touch the saved draft. Use when the user wants to try "
+            "'what if node_3 returned X' or 'what if retries were "
+            "5 on the email node' without persisting the change. "
+            "'pins' maps node_id -> synthetic upstream output "
+            "(written to that node's data.pinnedOutput on a local "
+            "copy); 'node_overrides' maps node_id -> partial "
+            "config dict merged into that node's data.config. Any "
+            "unknown node_id short-circuits with an error — run "
+            "check_draft if you're unsure what's on the graph. "
+            "Returns the same shape as execute_draft plus "
+            "{overrides_applied: {pins: [...], node_overrides: [...]}} "
+            "so you can narrate exactly what was in force."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "description": "Trigger payload. Default {}.",
+                },
+                "pins": {
+                    "type": "object",
+                    "description": (
+                        "Map of node_id -> synthetic output dict. "
+                        "Takes precedence over any pinnedOutput "
+                        "already on the draft for that node."
+                    ),
+                },
+                "node_overrides": {
+                    "type": "object",
+                    "description": (
+                        "Map of node_id -> partial config dict "
+                        "(merged into data.config). Use to probe "
+                        "config alternatives without saving."
+                    ),
+                },
+                "deterministic_mode": {
+                    "type": "boolean",
+                    "description": (
+                        "Passthrough to execute_draft — LLM "
+                        "temperature 0. Default false."
+                    ),
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": (
+                        "Passthrough to execute_draft. Default 30, "
+                        "max 300."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "get_node_error",
+        "description": (
+            "Narrow on one failed node from a prior execute_draft "
+            "or run_debug_scenario run. Returns {instance_id, "
+            "node_id, node_type, status, error, resolved_config, "
+            "output_json, started_at, completed_at}. "
+            "'resolved_config' is the config the handler actually "
+            "saw AFTER expression resolution — the post-resolution "
+            "view is almost always what you want for a config-fix "
+            "suggestion (pre-resolution config is visible on the "
+            "draft graph). If the node succeeded, the response "
+            "includes a 'note' telling you the failure is likely "
+            "downstream. Safety: only copilot-initiated "
+            "(is_ephemeral) instances are readable."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["instance_id", "node_id"],
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": "Instance id from execute_draft.",
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Node id that you want to inspect.",
+                },
+            },
+        },
+    },
 ]
 
 
