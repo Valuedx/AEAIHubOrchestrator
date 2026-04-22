@@ -99,10 +99,24 @@ class Settings(BaseSettings):
     smart_05_vector_docs_enabled: bool = False
     # Which embedding provider / model to use for SMART-05. The
     # model must exist in ``embedding_provider.EMBEDDING_REGISTRY``.
-    # Default matches the knowledge-base defaults so operators who
-    # already have OpenAI creds don't need extra config.
+    # Default is OpenAI so operators with existing OpenAI creds
+    # get a working default out of the box; Gemini-native tenants
+    # should set these to ``vertex`` + ``gemini-embedding-001``
+    # (3072-dim) or ``text-embedding-005`` (768-dim) to stay on
+    # their preferred stack end-to-end. Any provider registered in
+    # ``embedding_provider.EMBEDDING_REGISTRY`` is valid.
     smart_05_embedding_provider: str = "openai"
     smart_05_embedding_model: str = "text-embedding-3-small"
+
+    # COPILOT-03.c — provider + model that ``suggest_fix`` falls back
+    # to when no active CopilotSession exists on the draft (e.g.
+    # suggest_fix called programmatically before any chat turn). When
+    # a session IS active, suggest_fix reuses the session's provider
+    # + model directly so Vertex/Gemini tenants never silently route
+    # fix suggestions through a different engine. Set to ``vertex``
+    # for Gemini-native deployments. Valid providers: ``anthropic``
+    # / ``google`` / ``vertex``.
+    copilot_default_provider: str = "anthropic"
 
     # Optional: process-wide default URL for the AutomationEdge Copilot
     # (a separate product the workflow authoring copilot can hand off to

@@ -310,3 +310,56 @@ def test_runner_tool_get_node_examples_threads_flag_through():
         )
     _, kwargs = fake_gne.call_args
     assert kwargs["use_vector"] is True
+
+
+# ---------------------------------------------------------------------------
+# Vertex-embedding parity — Gemini-native deployments stay on Vertex
+# ---------------------------------------------------------------------------
+
+
+def test_vector_index_routes_through_vertex_when_settings_pick_vertex():
+    """When operators set SMART-05 to vertex, the index build hits
+    embedding_provider with provider='vertex' + a Vertex model from
+    the registry. Ensures Gemini 3.x tenants don't silently fall back
+    to OpenAI for docs retrieval."""
+    from app.config import settings
+    from app.copilot import docs_index
+
+    docs_index.reset_vector_cache()
+    chunks = _toy_chunks()
+
+    captured: dict[str, Any] = {}
+
+    def fake_batch(texts, provider, model, task_type="RETRIEVAL_DOCUMENT"):
+        captured["provider"] = provider
+        captured["model"] = model
+        return [_fake_embeddings_for(t) for t in texts]
+
+    def fake_single(text, provider, model, task_type="RETRIEVAL_QUERY"):
+        captured["query_provider"] = provider
+        captured["query_model"] = model
+        return _fake_embeddings_for(text)
+
+    with patch(
+        "app.copilot.docs_index._get_index", return_value=chunks,
+    ), patch(
+        "app.engine.embedding_provider.get_embeddings_batch_sync",
+        side_effect=fake_batch,
+    ), patch(
+        "app.engine.embedding_provider.get_embedding_sync",
+        side_effect=fake_single,
+    ), patch.object(
+        settings, "smart_05_embedding_provider", "vertex",
+    ), patch.object(
+        settings, "smart_05_embedding_model", "gemini-embedding-001",
+    ):
+        result = docs_index.search_docs("classify", use_vector=True)
+
+    assert captured["provider"] == "vertex"
+    assert captured["model"] == "gemini-embedding-001"
+    assert captured["query_provider"] == "vertex"
+    # Envelope stamps the provider/model so observability can confirm
+    # the right engine handled the search.
+    assert result["embedding_provider"] == "vertex"
+    assert result["embedding_model"] == "gemini-embedding-001"
+    assert result["backend"] == "vector"

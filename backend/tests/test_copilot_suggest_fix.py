@@ -361,3 +361,197 @@ def test_dispatch_routes_suggest_fix():
         )
     assert result["proposed_patch"] == {"retries": 2}
     assert result["applied"] is False
+
+
+# ---------------------------------------------------------------------------
+# Provider routing — Anthropic / Google / Vertex (03.c Vertex parity)
+# ---------------------------------------------------------------------------
+
+
+def _mock_db_with_session(
+    *,
+    session_provider: str | None,
+    session_model: str | None = None,
+    prior_count: int = 0,
+):
+    """Stage the DB so _resolve_suggest_fix_provider sees a specific
+    session, then the cap-count query sees ``prior_count``."""
+    db = MagicMock()
+
+    session = None
+    if session_provider is not None:
+        session = MagicMock()
+        session.provider = session_provider
+        session.model = session_model
+
+    # First query branch: CopilotSession ordered by created_at desc
+    # → .first()
+    # Second query branch: cap count via func.count(...) → .scalar()
+    session_chain = MagicMock()
+    session_chain.order_by.return_value.first.return_value = session
+
+    count_chain = MagicMock()
+    count_chain.scalar.return_value = prior_count
+
+    def _query_side_effect(arg):
+        name = getattr(arg, "__name__", "")
+        # The join+filter chain on CopilotTurn → scalar() path is the
+        # per-draft cap check. CopilotSession.filter_by → first() is
+        # the provider-resolver path.
+        if name == "CopilotSession":
+            result = MagicMock()
+            result.filter_by.return_value = session_chain
+            return result
+        # count(...) path — the call site uses db.query(func.count(...))
+        result = MagicMock()
+        result.join.return_value.filter.return_value = count_chain
+        return result
+
+    db.query.side_effect = _query_side_effect
+    return db
+
+
+def test_suggest_fix_uses_session_provider_for_vertex():
+    """Vertex session on the draft → suggest_fix must call the
+    Google/Vertex path, not Anthropic."""
+    draft = _FakeDraft(
+        graph_json={"nodes": [_agentic_node("n1", "llm_agent")], "edges": []},
+    )
+    db = _mock_db_with_session(
+        session_provider="vertex",
+        session_model="gemini-3.1-pro-preview-customtools",
+        prior_count=0,
+    )
+
+    with patch.object(
+        runner_tools, "get_node_schema", return_value=_fake_schema("llm_agent"),
+    ), patch.object(
+        runner_tools, "_call_suggest_fix_llm",
+        return_value={
+            "raw_text": '{"patch": {"retries": 5}, "rationale": "r", "confidence": "high"}',
+            "usage": {},
+        },
+    ) as fake_llm:
+        result = runner_tools.suggest_fix(
+            db, tenant_id=TENANT, draft=draft,
+            args={"node_id": "n1", "error": "boom"},
+        )
+
+    _, kwargs = fake_llm.call_args
+    assert kwargs["provider"] == "vertex"
+    assert kwargs["model"] == "gemini-3.1-pro-preview-customtools"
+    # Result surfaces provider + model so agent narration + UI can
+    # show which engine proposed the fix.
+    assert result["provider"] == "vertex"
+    assert result["model"] == "gemini-3.1-pro-preview-customtools"
+
+
+def test_suggest_fix_uses_session_provider_for_google():
+    draft = _FakeDraft(
+        graph_json={"nodes": [_agentic_node("n1", "llm_agent")], "edges": []},
+    )
+    db = _mock_db_with_session(
+        session_provider="google",
+        session_model="gemini-3.1-pro-preview-customtools",
+    )
+
+    with patch.object(
+        runner_tools, "get_node_schema", return_value=_fake_schema("llm_agent"),
+    ), patch.object(
+        runner_tools, "_call_suggest_fix_llm",
+        return_value={
+            "raw_text": '{"patch": {}, "rationale": "", "confidence": "low"}',
+            "usage": {},
+        },
+    ) as fake_llm:
+        runner_tools.suggest_fix(
+            db, tenant_id=TENANT, draft=draft,
+            args={"node_id": "n1", "error": "boom"},
+        )
+
+    _, kwargs = fake_llm.call_args
+    assert kwargs["provider"] == "google"
+
+
+def test_suggest_fix_falls_back_to_settings_default_when_no_session():
+    """No active session on the draft → use settings.copilot_default_provider.
+    Flipping the env default to vertex makes suggest_fix Vertex-by-default."""
+    from app.config import settings
+
+    draft = _FakeDraft(
+        graph_json={"nodes": [_agentic_node("n1", "llm_agent")], "edges": []},
+    )
+    db = _mock_db_with_session(session_provider=None, prior_count=0)
+
+    with patch.object(settings, "copilot_default_provider", "vertex"), \
+         patch.object(
+            runner_tools, "get_node_schema",
+            return_value=_fake_schema("llm_agent"),
+         ), patch.object(
+            runner_tools, "_call_suggest_fix_llm",
+            return_value={
+                "raw_text": '{"patch": {"retries": 1}, "rationale": "r", "confidence": "medium"}',
+                "usage": {},
+            },
+         ) as fake_llm:
+        runner_tools.suggest_fix(
+            db, tenant_id=TENANT, draft=draft,
+            args={"node_id": "n1", "error": "boom"},
+        )
+
+    _, kwargs = fake_llm.call_args
+    assert kwargs["provider"] == "vertex"
+    # Default model pulled from DEFAULT_MODEL_BY_PROVIDER — Gemini 3.x.
+    assert kwargs["model"].startswith("gemini-3")
+
+
+def test_suggest_fix_google_call_dispatches_through_shared_genai_client():
+    """Functional: _call_suggest_fix_llm with provider='vertex' must
+    hit the shared _google_client path (VERTEX-01 parity) instead of
+    the Anthropic SDK."""
+    from google.genai import types  # noqa: F401 — import guard
+
+    with patch(
+        "app.engine.llm_providers._google_client",
+    ) as fake_client_factory:
+        client = MagicMock()
+        part = MagicMock()
+        part.text = '{"patch": {"retries": 3}, "rationale": "r", "confidence": "high"}'
+        candidate = MagicMock()
+        candidate.content.parts = [part]
+        resp = MagicMock()
+        resp.candidates = [candidate]
+        resp.usage_metadata.prompt_token_count = 120
+        resp.usage_metadata.candidates_token_count = 40
+        client.models.generate_content.return_value = resp
+        fake_client_factory.return_value = client
+
+        result = runner_tools._call_suggest_fix_llm(
+            tenant_id=TENANT,
+            node_type="llm_agent",
+            node_id="n1",
+            error="boom",
+            current_config={},
+            config_schema={"properties": {"retries": {"type": "integer"}}},
+            provider="vertex",
+            model="gemini-3.1-pro-preview-customtools",
+        )
+
+    # Vertex backend was requested + tenant id threaded through for
+    # VERTEX-02 per-tenant project resolution.
+    fake_client_factory.assert_called_once_with("vertex", tenant_id=TENANT)
+    # Gemini 3.x model pinned on the Vertex call.
+    _, call_kwargs = client.models.generate_content.call_args
+    assert call_kwargs["model"] == "gemini-3.1-pro-preview-customtools"
+    assert "retries" in result["raw_text"]
+    assert result["usage"]["input_tokens"] == 120
+
+
+def test_suggest_fix_rejects_unsupported_provider():
+    with pytest.raises(ValueError, match="unsupported provider"):
+        runner_tools._call_suggest_fix_llm(
+            tenant_id=TENANT,
+            node_type="llm_agent", node_id="n1", error="x",
+            current_config={}, config_schema={},
+            provider="openai",  # not wired in this slice
+        )

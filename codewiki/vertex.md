@@ -15,6 +15,9 @@ This page is the canonical reference for how Vertex is wired, what VERTEX-01 and
 | Vertex embeddings (RAG, Intent Classifier cache, Entity Extractor scoping) | ✅ Pre-existing | — | `engine/embedding_provider.py::_embed_vertex` |
 | Gemini chat / agent / ReAct / streaming through Vertex | ✅ VERTEX-01 | `c663450` | `engine/llm_providers.py`, `streaming_llm.py`, `react_loop.py` |
 | Per-tenant Vertex project routing | ✅ VERTEX-02 | `cb98bb0` | `engine/llm_providers._resolve_vertex_target`, `api/tenant_integrations.py` |
+| **Workflow Authoring Copilot agent (chat loop)** runs on Vertex with `gemini-3.1-pro-preview-customtools` | ✅ COPILOT-01b.iv (Google/Vertex slice) | — | `copilot/agent.py::_call_google` + provider-adapter registry |
+| **Copilot `suggest_fix` LLM subcall** reuses the active session's provider — Vertex sessions produce Vertex-hosted fix suggestions | ✅ COPILOT-03.c + Vertex-parity fix | — | `copilot/runner_tools._resolve_suggest_fix_provider` + `_call_suggest_fix_google` |
+| **Copilot docs retrieval (SMART-05)** embeds the docs corpus through Vertex when `ORCHESTRATOR_SMART_05_EMBEDDING_PROVIDER=vertex` (pair with `gemini-embedding-001` / `text-embedding-005`) | ✅ SMART-05 | — | `copilot/docs_index._get_or_build_vector_index` via `embedding_provider.get_embeddings_batch_sync` |
 | Per-tenant Vertex service-account identity | ❌ Not planned yet | — | Future work; see §5 |
 | Per-node Vertex project override | ❌ Not planned yet | — | Would extend `integration_resolver` with `integrationLabel` on LLM nodes |
 

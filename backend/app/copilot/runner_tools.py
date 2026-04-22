@@ -1702,6 +1702,54 @@ _SUGGEST_FIX_SYSTEM_PROMPT = (
 )
 
 
+def _resolve_suggest_fix_provider(
+    db: Session, *, tenant_id: str, draft: WorkflowDraft,
+) -> tuple[str, str]:
+    """Pick the provider + model for a ``suggest_fix`` subcall.
+
+    Precedence, most-specific-first:
+
+    1. The most-recent active ``CopilotSession`` bound to this draft.
+       If the user is mid-chat on Vertex, suggest_fix uses Vertex
+       too — no cross-provider billing surprise.
+    2. The ``copilot_default_provider`` / default-model pair from
+       settings (``anthropic`` / ``claude-sonnet-4-6`` today).
+
+    Returns ``(provider, model)``. Providers supported here match the
+    main agent runner's adapter registry — ``anthropic`` / ``google``
+    / ``vertex``.
+    """
+    from app.config import settings
+    from app.copilot.agent import DEFAULT_MODEL_BY_PROVIDER as DEFAULT_MODELS
+    from app.models.copilot import CopilotSession
+
+    session = (
+        db.query(CopilotSession)
+        .filter_by(
+            tenant_id=tenant_id, draft_id=draft.id, status="active",
+        )
+        .order_by(CopilotSession.created_at.desc())
+        .first()
+    )
+    if session is not None:
+        provider = session.provider
+        model = session.model or DEFAULT_MODELS.get(provider, "")
+        if provider in {"anthropic", "google", "vertex"} and model:
+            return provider, model
+
+    # Process-level fallback. Default stays on Anthropic so operators
+    # without Vertex creds keep working; tenants on Vertex sessions
+    # automatically get Vertex via the path above.
+    default_provider = getattr(
+        settings, "copilot_default_provider", "anthropic",
+    )
+    default_model = DEFAULT_MODELS.get(
+        default_provider,
+        "claude-sonnet-4-6",
+    )
+    return default_provider, default_model
+
+
 def _call_suggest_fix_llm(
     *,
     tenant_id: str,
@@ -1710,18 +1758,25 @@ def _call_suggest_fix_llm(
     error: str,
     current_config: dict[str, Any],
     config_schema: dict[str, Any],
+    provider: str = "anthropic",
+    model: str | None = None,
 ) -> dict[str, Any]:
-    """One-shot Anthropic call. Split out as a module-level function
-    so tests can mock via ``patch.object(runner_tools, "_call_suggest_fix_llm", ...)``.
+    """One-shot LLM call to propose a node-config patch. Dispatches
+    by ``provider`` so the subcall uses the same engine as the
+    parent session (Anthropic / Google / Vertex), which keeps
+    billing attribution clean and lets Gemini-native tenants stay
+    on Gemini for the suggest path.
+
+    Split out as a module-level function so tests can mock via
+    ``patch.object(runner_tools, "_call_suggest_fix_llm", ...)``.
     """
     import json as _json
 
-    from anthropic import Anthropic  # lazy import
-    from app.config import settings
-    from app.engine.llm_credentials_resolver import get_anthropic_api_key
+    from app.copilot.agent import DEFAULT_MODEL_BY_PROVIDER as DEFAULT_MODELS
+    from app.config import settings  # noqa: F401 — reserved for future provider-specific knobs
 
-    client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
-    user_message = _json.dumps({
+    resolved_model = model or DEFAULT_MODELS.get(provider) or "claude-sonnet-4-6"
+    user_payload = _json.dumps({
         "node_id": node_id,
         "node_type": node_type,
         "error": error,
@@ -1729,10 +1784,37 @@ def _call_suggest_fix_llm(
         "config_schema": config_schema,
     }, default=str)
 
+    if provider == "anthropic":
+        return _call_suggest_fix_anthropic(
+            tenant_id=tenant_id,
+            model=resolved_model,
+            user_payload=user_payload,
+        )
+    if provider in {"google", "vertex"}:
+        return _call_suggest_fix_google(
+            tenant_id=tenant_id,
+            model=resolved_model,
+            user_payload=user_payload,
+            backend="vertex" if provider == "vertex" else "genai",
+        )
+    raise ValueError(
+        f"suggest_fix: unsupported provider {provider!r}. "
+        "Expected one of anthropic / google / vertex."
+    )
+
+
+def _call_suggest_fix_anthropic(
+    *, tenant_id: str, model: str, user_payload: str,
+) -> dict[str, Any]:
+    from anthropic import Anthropic
+
+    from app.engine.llm_credentials_resolver import get_anthropic_api_key
+
+    client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
     resp = client.messages.create(
-        model=getattr(settings, "copilot_default_anthropic_model", "claude-sonnet-4-6"),
+        model=model,
         system=_SUGGEST_FIX_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[{"role": "user", "content": user_payload}],
         max_tokens=1024,
         temperature=0.1,
     )
@@ -1748,6 +1830,50 @@ def _call_suggest_fix_llm(
         "usage": {
             "input_tokens": getattr(resp.usage, "input_tokens", 0),
             "output_tokens": getattr(resp.usage, "output_tokens", 0),
+        },
+    }
+
+
+def _call_suggest_fix_google(
+    *, tenant_id: str, model: str, user_payload: str, backend: str,
+) -> dict[str, Any]:
+    """Gemini 3.x-capable suggest_fix via the shared `google-genai`
+    SDK. ``backend="vertex"`` routes through Vertex AI (ADC +
+    per-tenant project via VERTEX-02); ``backend="genai"`` routes
+    through Google AI Studio (api_key). Same response-normalisation
+    shape as the Anthropic path so the parent caller doesn't branch.
+    """
+    from google.genai import types
+
+    from app.engine.llm_providers import _google_client
+
+    client = _google_client(backend, tenant_id=tenant_id)
+    contents = [types.Content(
+        role="user",
+        parts=[types.Part.from_text(text=user_payload)],
+    )]
+    config = types.GenerateContentConfig(
+        system_instruction=_SUGGEST_FIX_SYSTEM_PROMPT,
+        temperature=0.1,
+        max_output_tokens=1024,
+    )
+
+    resp = client.models.generate_content(
+        model=model, contents=contents, config=config,
+    )
+
+    text_blocks: list[str] = []
+    if resp.candidates and resp.candidates[0].content:
+        for part in resp.candidates[0].content.parts:
+            if getattr(part, "text", None):
+                text_blocks.append(part.text)
+
+    usage = getattr(resp, "usage_metadata", None)
+    return {
+        "raw_text": "".join(text_blocks).strip(),
+        "usage": {
+            "input_tokens": getattr(usage, "prompt_token_count", 0) if usage else 0,
+            "output_tokens": getattr(usage, "candidates_token_count", 0) if usage else 0,
         },
     }
 
@@ -1917,6 +2043,10 @@ def suggest_fix(
             "cap": MAX_SUGGEST_FIX_PER_DRAFT,
         }
 
+    provider, model = _resolve_suggest_fix_provider(
+        db, tenant_id=tenant_id, draft=draft,
+    )
+
     try:
         llm_result = _call_suggest_fix_llm(
             tenant_id=tenant_id,
@@ -1925,6 +2055,8 @@ def suggest_fix(
             error=error,
             current_config=current_config,
             config_schema=config_schema,
+            provider=provider,
+            model=model,
         )
     except Exception as exc:  # noqa: BLE001 — defensive
         logger.info(
@@ -1974,6 +2106,8 @@ def suggest_fix(
         "dropped_keys": dropped_keys,
         "applied": False,
         "usage": llm_result.get("usage") or {},
+        "provider": provider,
+        "model": model,
         "prior_calls": prior_calls,
         "cap": MAX_SUGGEST_FIX_PER_DRAFT,
     }
