@@ -27,6 +27,7 @@ import {
   FlaskConical,
   Cloud,
   SlidersHorizontal,
+  Key,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,7 @@ import { IntegrationsDialog } from "@/components/toolbar/IntegrationsDialog";
 import { McpServersDialog } from "@/components/toolbar/McpServersDialog";
 import { VertexProjectsDialog } from "@/components/toolbar/VertexProjectsDialog";
 import { TenantPolicyDialog } from "@/components/toolbar/TenantPolicyDialog";
+import { LlmCredentialsDialog } from "@/components/toolbar/LlmCredentialsDialog";
 import { HotkeyCheatsheet } from "@/components/toolbar/HotkeyCheatsheet";
 import { ApiPlaygroundDialog } from "@/components/toolbar/ApiPlaygroundDialog";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
@@ -75,6 +77,7 @@ export function Toolbar() {
   const [mcpServersOpen, setMcpServersOpen] = useState(false);
   const [vertexProjectsOpen, setVertexProjectsOpen] = useState(false);
   const [tenantPolicyOpen, setTenantPolicyOpen] = useState(false);
+  const [llmCredentialsOpen, setLlmCredentialsOpen] = useState(false);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
 
@@ -153,7 +156,7 @@ export function Toolbar() {
 
   return (
     <>
-      <div className="flex items-center h-12 px-3 border-b bg-sidebar gap-2 shrink-0">
+      <div className="flex items-center h-12 px-3 border-b bg-sidebar gap-2 shrink-0 min-w-0 overflow-x-auto">
         <div className="flex items-center gap-1.5 mr-2">
           <div className="h-6 w-6 rounded bg-primary flex items-center justify-center">
             <span className="text-xs font-bold text-primary-foreground">AE</span>
@@ -324,6 +327,15 @@ export function Toolbar() {
         <Button
           variant="ghost"
           size="sm"
+          onClick={() => setLlmCredentialsOpen(true)}
+          title="LLM Provider Credentials — per-tenant Google AI Studio / OpenAI / Anthropic API keys"
+        >
+          <Key className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setTenantPolicyOpen(true)}
           title="Tenant Policy — per-tenant overrides for execution quota, snapshot retention, and MCP pool size"
         >
@@ -432,6 +444,7 @@ export function Toolbar() {
       <McpServersDialog open={mcpServersOpen} onOpenChange={setMcpServersOpen} />
       <VertexProjectsDialog open={vertexProjectsOpen} onOpenChange={setVertexProjectsOpen} />
       <TenantPolicyDialog open={tenantPolicyOpen} onOpenChange={setTenantPolicyOpen} />
+      <LlmCredentialsDialog open={llmCredentialsOpen} onOpenChange={setLlmCredentialsOpen} />
       <TemplateGalleryDialog open={templatesOpen} onOpenChange={setTemplatesOpen} />
       <WorkflowListDialog open={listOpen} onOpenChange={setListOpen} />
       <VersionHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} />

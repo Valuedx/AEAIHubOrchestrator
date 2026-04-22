@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import get_db, get_tenant_db
+from app.database import get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.engine.embedding_provider import (
     get_embedding_dimension,

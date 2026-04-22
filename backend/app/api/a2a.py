@@ -106,9 +106,15 @@ def _get_a2a_tenant(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> str:
-    """Validate the Bearer token against a2a_api_keys for the path tenant_id."""
+    """Validate the Bearer token against a2a_api_keys for the path tenant_id.
+
+    The A2A surface identifies the tenant via URL path rather than the
+    ``X-Tenant-Id`` header, so ``get_tenant_db`` (which keys on the
+    header) can't be used. Set the RLS context explicitly instead.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "A2A request requires a Bearer token")
+    set_tenant_context(db, tenant_id)
     raw_key = authorization.removeprefix("Bearer ").strip()
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     row = (
@@ -192,6 +198,8 @@ def agent_card(
 
     Lists all workflows the tenant has marked as is_published=True.
     No authentication required — agent cards are public discovery documents.
+    The tenant is taken from the URL path, not the ``X-Tenant-Id`` header,
+    so the RLS context is set inline rather than via ``get_tenant_db``.
     """
     set_tenant_context(db, tenant_id)
     workflows = (

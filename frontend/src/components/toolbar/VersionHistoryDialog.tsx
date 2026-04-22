@@ -102,7 +102,7 @@ export function VersionHistoryDialog({ open, onOpenChange }: Props) {
             No saved snapshots yet. Edit and save this workflow to create history.
           </div>
         ) : (
-          <ScrollArea className="max-h-[340px]">
+          <ScrollArea className="flex-1 min-h-0">
             <div className="space-y-1 p-1">
               {snapshots.map((snap) => (
                 <div

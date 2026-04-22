@@ -193,7 +193,7 @@ export function TemplateGalleryDialog({ open, onOpenChange }: Props) {
           />
         </div>
         <Separator />
-        <ScrollArea className="flex-1 min-h-[280px] max-h-[45vh] pr-3">
+        <ScrollArea className="flex-1 min-h-0 pr-3">
           <div className="grid gap-3 sm:grid-cols-2">
             {filtered.map((t) => (
               <div

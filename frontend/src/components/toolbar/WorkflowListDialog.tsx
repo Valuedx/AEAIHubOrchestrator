@@ -63,7 +63,7 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
             No saved workflows yet. Build a graph and click Save.
           </div>
         ) : (
-          <ScrollArea className="max-h-[400px]">
+          <ScrollArea className="flex-1 min-h-0">
             <div className="space-y-1 p-1">
               {workflows.map((wf) => (
                 <button

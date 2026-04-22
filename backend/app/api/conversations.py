@@ -18,7 +18,7 @@ from app.api.schemas import (
     ConversationSessionOut,
     ConversationSessionSummary,
 )
-from app.database import get_db, get_tenant_db
+from app.database import get_tenant_db
 from app.engine.memory_service import archive_active_episode, get_or_create_session
 from app.models.memory import ConversationEpisode, ConversationMessage
 from app.models.workflow import ConversationSession

@@ -430,7 +430,8 @@ def test_node(
     from app.engine.exceptions import NodeSuspendedAsync
     from app.engine.node_handlers import dispatch_node
 
-    set_tenant_context(db, tenant_id)
+    # RLS-01: tenant context is already set by the get_tenant_db
+    # dependency; no manual call needed on the request session.
 
     wf = (
         db.query(WorkflowDefinition)

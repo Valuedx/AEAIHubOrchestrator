@@ -72,7 +72,7 @@ export function InstanceHistoryDialog({ open, onOpenChange }: Props) {
             No execution history found for this workflow.
           </div>
         ) : (
-          <ScrollArea className="max-h-[450px]">
+          <ScrollArea className="flex-1 min-h-0">
             <div className="space-y-1 p-1">
               {instances.map((inst) => {
                 const StatusIcon = STATUS_ICONS[inst.status]?.icon || CircleDot;

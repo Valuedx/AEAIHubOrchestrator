@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db, get_tenant_db
+from app.database import get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.models.workflow import TenantIntegration
 

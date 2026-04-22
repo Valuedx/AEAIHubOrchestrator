@@ -31,9 +31,9 @@ def app_and_session():
         tags=["tenant-integrations"],
     )
 
-    # Override the two FastAPI dependencies: tenant resolver (pin to TENANT)
-    # and get_db (yield a MagicMock session per request).
-    from app.database import get_db
+    # Override the FastAPI dependencies: tenant resolver (pin to TENANT)
+    # and get_db / get_tenant_db (both yield the same MagicMock session).
+    from app.database import get_db, get_tenant_db
     from app.security.tenant import get_tenant_id
 
     session = MagicMock()
@@ -46,6 +46,7 @@ def app_and_session():
 
     app.dependency_overrides[get_tenant_id] = _fake_tenant_id
     app.dependency_overrides[get_db] = _fake_get_db
+    app.dependency_overrides[get_tenant_db] = _fake_get_db
 
     return app, session
 

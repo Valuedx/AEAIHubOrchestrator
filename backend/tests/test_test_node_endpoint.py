@@ -29,7 +29,7 @@ TENANT = "tenant-a"
 @pytest.fixture
 def client_and_session():
     from app.api.workflows import router as workflows_router
-    from app.database import get_db
+    from app.database import get_db, get_tenant_db
     from app.security.tenant import get_tenant_id
 
     app = FastAPI()
@@ -42,6 +42,7 @@ def client_and_session():
 
     app.dependency_overrides[get_tenant_id] = lambda: TENANT
     app.dependency_overrides[get_db] = _fake_get_db
+    app.dependency_overrides[get_tenant_db] = _fake_get_db
     return TestClient(app), session
 
 

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db, get_tenant_db
+from app.database import get_tenant_db
 from app.models.memory import ConversationMessage, EntityFact, MemoryProfile, MemoryRecord
 from app.models.workflow import ExecutionLog, WorkflowInstance
 from app.security.tenant import get_tenant_id

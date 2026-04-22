@@ -49,7 +49,7 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 |---|---------|--------|
 | ADMIN-01 | Per-tenant overrides for `execution_quota_per_hour`, `max_snapshots`, `mcp_pool_size` | **Done** |
 | ADMIN-02 | Per-tenant API rate limits (real enforcement via `TenantRateLimitMiddleware`) | **Done** — see below |
-| ADMIN-03 | Per-tenant LLM provider API keys (parallels VERTEX-02) | Pending |
+| ADMIN-03 | Per-tenant LLM provider API keys (Google AI Studio / OpenAI / Anthropic — Fernet-encrypted vault + labelled dialog) | **Done** |
 | STARTUP-01 | Preflight readiness checks (DB, Redis, Celery, RLS, auth, vault) + `/health/ready` + UI banner | **Done** |
 
 ADMIN-01 adds the `tenant_policies` table (migration `0020`) + the resolver + API + dialog (toolbar Sliders icon).

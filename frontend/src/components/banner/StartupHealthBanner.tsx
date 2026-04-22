@@ -99,7 +99,7 @@ export function StartupHealthBanner() {
             </p>
           )}
           {expanded && (
-            <ul className="mt-1.5 space-y-1.5 text-[12px]">
+            <ul className="mt-1.5 space-y-1.5 text-[12px] max-h-[30vh] overflow-y-auto pr-1">
               {problems.map((c) => (
                 <CheckDetail key={c.name} check={c} isFail={isFail} />
               ))}

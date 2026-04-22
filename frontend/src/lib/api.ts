@@ -492,6 +492,28 @@ export interface TenantPolicyOut {
   updated_at: string | null;
 }
 
+// ADMIN-03 — per-tenant LLM provider credentials (read-only status).
+//
+// Shape mirrors backend app/api/llm_credentials.py. The server never
+// returns the secret values — only source labels so the dialog can
+// render "tenant override" / "env default" / "not configured" badges.
+export type LlmCredentialSource = "tenant_secret" | "env_default" | "missing";
+
+export interface LlmCredentialStatus {
+  source: LlmCredentialSource;
+  secret_name: string;
+}
+
+export interface LlmCredentialsOut {
+  tenant_id: string;
+  providers: {
+    google: LlmCredentialStatus;
+    openai: LlmCredentialStatus;
+    openai_base_url: LlmCredentialStatus;
+    anthropic: LlmCredentialStatus;
+  };
+}
+
 // STARTUP-01 — preflight readiness probe.
 export type StartupCheckStatus = "pass" | "warn" | "fail";
 
@@ -1118,6 +1140,11 @@ export const api = {
   // ---------------------------------------------------------------------------
   // STARTUP-01 — readiness probe
   // ---------------------------------------------------------------------------
+
+  // ADMIN-03 — read-only LLM credentials status.
+  getLlmCredentials(): Promise<LlmCredentialsOut> {
+    return request("/api/v1/llm-credentials");
+  },
 
   async getHealthReady(): Promise<HealthReadyOut> {
     // /health/ready returns 503 when checks fail but the body is

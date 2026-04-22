@@ -86,14 +86,14 @@ function FullJsonDialog({
   const json = JSON.stringify(data, null, 2);
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl w-full">
+      <DialogContent className="max-w-3xl w-full max-h-[85vh] flex flex-col">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <DialogTitle className="text-sm">{title}</DialogTitle>
             <CopyButton text={json} />
           </div>
         </DialogHeader>
-        <ScrollArea className="max-h-[70vh]">
+        <ScrollArea className="flex-1 min-h-0">
           <pre className="text-xs font-mono bg-muted rounded-md p-4 whitespace-pre-wrap break-all">
             {json}
           </pre>
@@ -598,7 +598,7 @@ export function ExecutionPanel() {
           <ExecutionFlowView onNodeClickJumpToLogs={() => setView("logs")} />
         </div>
       ) : (
-      <ScrollArea className="flex-1 px-4 py-2">
+      <ScrollArea className="flex-1 min-h-0 px-4 py-2">
         <div className="space-y-1.5">
           {activeInstance.logs.length === 0 ? (
             <p className="text-sm text-muted-foreground py-4 text-center">
