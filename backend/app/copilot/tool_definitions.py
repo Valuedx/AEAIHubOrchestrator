@@ -185,6 +185,55 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {},
         },
     },
+    # ----------------------------------------------------------------------
+    # Runner tools (COPILOT-01b.ii — stateful, touch the engine).
+    # These are handled by app/copilot/runner_tools.py rather than the
+    # pure tool_layer.py; the agent's dispatcher routes by tool name.
+    # ----------------------------------------------------------------------
+    {
+        "name": "test_node",
+        "description": (
+            "Run ONE node handler in isolation against pinned upstream "
+            "data — does not run the rest of the workflow. Use this to "
+            "debug a specific node's config without paying for a full "
+            "end-to-end run. The node's handler is dispatched exactly "
+            "as it would be at runtime, so LLM / MCP / credential "
+            "lookups all resolve the same way. 'pins' is a dict keyed "
+            "by upstream node_id with the synthetic output each "
+            "upstream should return for this probe — takes precedence "
+            "over any pinnedOutput already on the draft. "
+            "'trigger_payload' seeds the synthetic context's 'trigger' "
+            "key (use this to simulate the webhook / scheduled payload "
+            "the node would receive at runtime). Exceptions from the "
+            "handler are caught and returned as {node_id, error, "
+            "elapsed_ms} so you can read the failure message and "
+            "suggest a config fix."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {
+                "node_id": {"type": "string"},
+                "trigger_payload": {
+                    "type": "object",
+                    "description": (
+                        "Optional. Seeds context['trigger']. Defaults "
+                        "to {} when absent."
+                    ),
+                },
+                "pins": {
+                    "type": "object",
+                    "description": (
+                        "Optional. Map of upstream node_id → synthetic "
+                        "output the probe should see for that node. "
+                        "Values can be objects (merged into context[node_id]) "
+                        "or any JSON scalar (placed verbatim). "
+                        "Overrides any pinnedOutput already on the draft."
+                    ),
+                },
+            },
+        },
+    },
 ]
 
 

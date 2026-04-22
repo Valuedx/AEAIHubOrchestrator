@@ -49,7 +49,8 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 |---|---------|--------|
 | COPILOT-01a | Draft-workspace model + pure tool layer + API + types | **Done** — see [copilot.md](copilot.md) |
 | COPILOT-01b.i | Agent runner (Anthropic tool-calling loop) + session/turn API + SSE streaming | **Done** — see [copilot.md §3/§4](copilot.md) |
-| COPILOT-01b.ii | `test_node` + `execute_draft` + `get_execution_logs` runner-side tools (stateful — separate module from the pure tool layer) | Planned |
+| COPILOT-01b.ii.a | `test_node` runner tool — one node in isolation using pinned upstream data | **Done** — see [copilot.md §3](copilot.md) |
+| COPILOT-01b.ii.b | `execute_draft` + `get_execution_logs` — needs `is_ephemeral` flag on `workflow_definitions` + filter sweep so temp rows don't leak into UI | Planned |
 | COPILOT-01b.iii | System-KB RAG ingestion (codewiki + flattened node_registry) + `search_docs` + `get_node_examples` tools | Planned |
 | COPILOT-01b.iv (Google/Vertex) | Google AI Studio + Vertex AI providers in the agent runner (shared adapter via unified `google-genai` SDK; Vertex per-tenant project via VERTEX-02). Default model `gemini-3.1-pro-preview-customtools`. | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-01b.iv (OpenAI + budget) | OpenAI provider adapter + per-session token budget enforcement | Planned |

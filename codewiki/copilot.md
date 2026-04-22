@@ -77,20 +77,23 @@ Deliberately NOT in the schema:
 
 Lives in `backend/app/copilot/tool_layer.py`. Every function is pure: takes a graph dict, returns a new one plus a small result payload. The HTTP dispatch path (§4) is the only stateful caller today; the agent runner lands in 01b.
 
-Eight tools:
+Nine tools ship today — eight pure tools (01a) and one runner tool (01b.ii.a):
 
-| Tool | Kind | Notes |
-|---|---|---|
-| `list_node_types(category?)` | Read | Trimmed registry — no `config_schema`. Keeps agent context small |
-| `get_node_schema(type)` | Read | Full registry entry for one node type |
-| `add_node(node_type, config?, position?, display_name?)` | Mutation | Returns the new `node_id`. Writes `data.label` from registry (validator uses label, not type) |
-| `update_node_config(node_id, partial, display_name?)` | Mutation | Merge semantics; `null` value clears a key |
-| `delete_node(node_id)` | Mutation | Cascades edges that touch the deleted node |
-| `connect_nodes(source, target, source_handle?, target_handle?)` | Mutation | Refuses self-loops and duplicate edges |
-| `disconnect_edge(edge_id)` | Mutation | — |
-| `validate_graph()` | Read | Wraps the existing `config_validator`; returns `{errors, warnings}` |
+| Tool | Kind | Family | Notes |
+|---|---|---|---|
+| `list_node_types(category?)` | Read | Pure | Trimmed registry — no `config_schema`. Keeps agent context small |
+| `get_node_schema(type)` | Read | Pure | Full registry entry for one node type |
+| `add_node(node_type, config?, position?, display_name?)` | Mutation | Pure | Returns the new `node_id`. Writes `data.label` from registry (validator uses label, not type) |
+| `update_node_config(node_id, partial, display_name?)` | Mutation | Pure | Merge semantics; `null` value clears a key |
+| `delete_node(node_id)` | Mutation | Pure | Cascades edges that touch the deleted node |
+| `connect_nodes(source, target, source_handle?, target_handle?)` | Mutation | Pure | Refuses self-loops and duplicate edges |
+| `disconnect_edge(edge_id)` | Mutation | Pure | — |
+| `validate_graph()` | Read | Pure | Wraps the existing `config_validator`; returns `{errors, warnings}` |
+| `test_node(node_id, trigger_payload?, pins?)` | Stateful | Runner | Runs ONE handler in isolation using pinned upstream data. No instance / log rows written. Handler exceptions return as `{error, elapsed_ms}` so the LLM can self-correct. `pins` override any graph-stored `pinnedOutput` for that probe. |
 
-Deferred to later COPILOT-01b sub-slices: `test_node` + `execute_draft` + `get_execution_logs` (01b.ii), `search_docs` + `get_node_examples` RAG grounding (01b.iii), OpenAI + Google providers + per-session token budget (01b.iv). The agent runner surface is stable — adding these tools means new entries in `tool_definitions.py` + new handlers in `agent._dispatch_tool` (or a split `runner_tools.py` module for the stateful ones), no frontend churn.
+**Pure vs. runner tool families.** Pure tools live in `app/copilot/tool_layer.py` — graph dict in, graph dict out, no DB access. Runner tools live in `app/copilot/runner_tools.py` — they need a DB session and tenant scope because they call node handlers (which touch credentials, MCP, LLM providers). The agent's `_dispatch_tool` routes to the pure dispatch by default and falls through to `runner_tools.dispatch` when the name is in `RUNNER_TOOL_NAMES`. Runner tools don't mutate the draft graph, so `validation` is always `null` and `draft_version` is unchanged in their `tool_result` events.
+
+Deferred to later COPILOT-01b sub-slices: `execute_draft` + `get_execution_logs` (01b.ii.b — needs an `is_ephemeral` flag on `workflow_definitions` so engine-materialised temp rows don't pollute the UI), `search_docs` + `get_node_examples` RAG grounding (01b.iii), OpenAI provider + per-session token budget (01b.iv remainder).
 
 ---
 
@@ -185,7 +188,8 @@ The prompt also enforces a **source-of-truth rule**: for schema-shaped questions
 
 ## §8. What the remaining COPILOT-01b slices add
 
-- **01b.ii — runner tools.** `test_node` (reuse DV-02 single-node test against the draft graph) and `execute_draft` (materialise a throwaway `WorkflowDefinition`, run the engine sync, return `SyncExecuteOut`). These need DB + tenant scope so they live in `app/copilot/runner_tools.py`, separate from the pure `tool_layer.py`. Also `get_execution_logs` for post-run debugging by the agent itself.
+- **01b.ii.a — `test_node` runner tool (shipped).** See §3 table. Reuses `dispatch_node` against the draft's graph directly — no ephemeral `WorkflowDefinition` required because it's single-node.
+- **01b.ii.b — `execute_draft` + `get_execution_logs` (deferred).** These need an `is_ephemeral BOOLEAN` column on `workflow_definitions` plus filters in `list_workflows`, the scheduler, and the A2A agent card, so the temp rows materialised by `execute_draft` don't leak into the UI. Separate slice because the migration + filter sweep is larger than `test_node` alone warranted.
 - **01b.iii — RAG grounding.** Ingest `codewiki/*.md`, the flattened `node_registry.json`, and template descriptions into a dedicated `kb_documents` row under a reserved tenant-id sentinel (cross-tenant-readable, admin-write-only). Expose `search_docs(query, top_k=5)` and `get_node_examples(node_type)` tools. Re-index as a CLI command that runs at deploy time.
 - **01b.iv remainder — OpenAI + token budget.** OpenAI's function-calling shape behind the same adapter-dispatched `AgentRunner` interface — a third entry in `_PROVIDER_ADAPTERS` plus three adapter functions, no change to `send_turn`. Per-session `token_used` + `token_budget` columns with a middleware that suspends the session and prompts the user when the budget is hit. (Google AI Studio + Vertex AI landed early — see §3.)
 
@@ -200,4 +204,5 @@ COPILOT-02 is the chat pane, diff overlay, and `PromoteDialog`. COPILOT-03 is th
 - **`backend/tests/test_copilot_agent.py`** — 10 agent-runner tests with the Anthropic SDK mocked out. Covers text-only turns, mutation-tool dispatch + version bump, read-only tool dispatch (no version bump), bad-args surface to LLM (no 500), unknown tool name, iteration cap (`MAX_TOOL_ITERATIONS`), unsupported provider.
 - **`backend/tests/test_copilot_agent_google.py`** — 9 Google/Vertex tests with `_call_google` mocked. Pins the `gemini-3.x-*-customtools` default, asserts the Vertex provider routes through the same adapter (backend=`vertex`), verifies the Google state builder reconstructs `types.Content(role, parts)` history from persisted turns, and checks the iteration cap under Google's response shape (no per-call tool_use ids — the runner synthesises them from function name).
 - **`backend/tests/test_copilot_sessions_api.py`** — 12 integration tests for the session API: providers endpoint, session CRUD, turn streaming SSE shape, abandoned-session 409, missing-draft 404, empty-text 422.
-- Full suite: **547 passed, 21 skipped** on this branch (up from 469 pre-COPILOT-01).
+- **`backend/tests/test_copilot_runner_tools.py`** — 12 runner-tool tests with `dispatch_node` mocked: happy-path return shape, graph-pin fallback, caller-pin override precedence, trigger-payload pass-through, missing/unknown node error surface, non-dict `pins` validation, handler exceptions returned as `{error}` not raised, `NodeSuspendedAsync` surfaced with a human-readable explanation, dispatch routing, KeyError on unknown runner-tool name. Plus 2 new integration tests in `test_copilot_agent.py` that exercise the end-to-end runner-tool dispatch path through the agent loop.
+- Full suite: **561 passed, 21 skipped** on this branch (up from 469 pre-COPILOT-01).

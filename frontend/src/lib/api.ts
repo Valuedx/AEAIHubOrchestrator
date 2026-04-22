@@ -564,7 +564,9 @@ export type CopilotToolName =
   | "delete_node"
   | "connect_nodes"
   | "disconnect_edge"
-  | "validate_graph";
+  | "validate_graph"
+  // COPILOT-01b.ii runner tools (stateful, touch the engine).
+  | "test_node";
 
 export interface CopilotDraftValidation {
   errors: string[];

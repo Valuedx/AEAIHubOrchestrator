@@ -884,8 +884,21 @@ class AgentRunner:
         Returns ``(result_payload, validation_or_None, draft_version, error_or_None)``.
         Errors are returned as strings so the LLM can read them back
         and correct — we do NOT raise. The ``is_error`` flag on the
-        Anthropic tool_result tells the model the call failed.
+        tool_result tells the model the call failed.
+
+        Routes between two tool families:
+
+        * **Pure tools** (``tool_layer.TOOL_NAMES``) — graph dict in,
+          graph dict out; mutations persist here.
+        * **Runner tools** (``runner_tools.RUNNER_TOOL_NAMES``) —
+          stateful; touch the engine (node handlers, credential
+          resolution, MCP calls). No automatic graph mutation.
         """
+        from app.copilot import runner_tools
+
+        if tool_name in runner_tools.RUNNER_TOOL_NAMES:
+            return self._dispatch_runner_tool(tool_name, args)
+
         if tool_name not in tool_layer.TOOL_NAMES:
             return (
                 {"error": f"Unknown tool '{tool_name}'"},
@@ -921,6 +934,50 @@ class AgentRunner:
             return (result, validation, self.draft.version, None)
 
         return (result, None, self.draft.version, None)
+
+    def _dispatch_runner_tool(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int, str | None]:
+        """Dispatch a stateful runner tool. Runner tools don't mutate
+        the graph (at least in 01b.ii.a — ``test_node`` only), so
+        ``validation`` is always None and ``draft_version`` is unchanged.
+
+        Runner-tool exceptions bubble up the same way pure-tool
+        ones do: caught, logged, returned as
+        ``{"error": "..."}`` so the LLM sees the failure and
+        self-corrects. ``runner_tools.test_node_against_draft``
+        already catches handler exceptions internally — anything
+        that escapes here is a bug in the tool, not the handler.
+        """
+        from app.copilot import runner_tools
+
+        try:
+            result = runner_tools.dispatch(
+                tool_name,
+                db=self.db,
+                tenant_id=self.tenant_id,
+                draft=self.draft,
+                args=args or {},
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception(
+                "Unexpected runner-tool dispatch failure: %s", tool_name,
+            )
+            return (
+                {"error": f"Internal error in {tool_name}: {exc}"},
+                None,
+                self.draft.version,
+                str(exc),
+            )
+
+        # Runner-tool convention: top-level ``"error"`` in the result
+        # means the tool ran but the operation failed (e.g. a handler
+        # raised). Surface that as the dispatch error so the LLM
+        # sees ``is_error=True`` and reads the message.
+        tool_error = result.get("error") if isinstance(result, dict) else None
+        return (result, None, self.draft.version, tool_error)
 
 
 # ---------------------------------------------------------------------------

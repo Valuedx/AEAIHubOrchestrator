@@ -455,6 +455,122 @@ def test_send_turn_caps_at_max_iterations(db, session, draft, mock_anthropic):
 # ---------------------------------------------------------------------------
 
 
+def test_send_turn_dispatches_runner_tool_test_node(db, session, draft, mock_anthropic):
+    """01b.ii.a — the runner-tool dispatch path. The LLM calls
+    test_node; the agent routes to runner_tools, not the pure tool
+    layer. Draft version does NOT bump (runner tools don't mutate the
+    graph). Handler exceptions inside test_node surface as is_error
+    so the LLM can self-correct."""
+    from app.copilot import runner_tools
+
+    # Seed the draft with a node so test_node can find it.
+    draft.graph_json = {
+        "nodes": [
+            {
+                "id": "node_1",
+                "type": "agenticNode",
+                "data": {"label": "LLM Agent", "config": {}},
+            },
+        ],
+        "edges": [],
+    }
+
+    mock_anthropic.side_effect = [
+        {
+            "text": "",
+            "tool_uses": [
+                {
+                    "id": "toolu_1",
+                    "name": "test_node",
+                    "input": {"node_id": "node_1", "trigger_payload": {"x": 1}},
+                },
+            ],
+            "raw_content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "test_node",
+                 "input": {"node_id": "node_1"}},
+            ],
+            "usage": {"input_tokens": 100, "output_tokens": 20},
+            "stop_reason": "tool_use",
+        },
+        {
+            "text": "The node ran successfully.",
+            "tool_uses": [],
+            "raw_content": [{"type": "text", "text": "The node ran successfully."}],
+            "usage": {"input_tokens": 120, "output_tokens": 15},
+            "stop_reason": "end_turn",
+        },
+    ]
+
+    with patch(
+        "app.copilot.runner_tools.test_node_against_draft",
+        return_value={"node_id": "node_1", "output": {"response": "hi"}, "elapsed_ms": 5},
+    ) as mock_run:
+        runner = AgentRunner(db, tenant_id=TENANT, session=session, draft=draft)
+        events = list(runner.send_turn("test node_1"))
+
+    # Runner tool was called.
+    assert mock_run.called
+
+    # Event stream: tool_call → tool_result → assistant_text → done.
+    kinds = [e["type"] for e in events]
+    assert kinds == ["tool_call", "tool_result", "assistant_text", "done"]
+
+    # Runner tools don't mutate the graph, so validation is None and
+    # draft_version is unchanged.
+    tool_result = next(e for e in events if e["type"] == "tool_result")
+    assert tool_result["validation"] is None
+    assert tool_result["draft_version"] == 1
+    assert tool_result["error"] is None
+    assert tool_result["result"]["output"] == {"response": "hi"}
+    assert draft.version == 1
+
+
+def test_send_turn_runner_tool_error_surfaces_to_llm(db, session, draft, mock_anthropic):
+    """test_node handler raised → runner_tools catches → returns
+    {"error": "..."} → agent's _dispatch_runner_tool picks up the
+    top-level error key → LLM sees is_error=True and self-corrects."""
+    draft.graph_json = {
+        "nodes": [{"id": "node_1", "type": "agenticNode", "data": {"label": "LLM Agent"}}],
+        "edges": [],
+    }
+
+    mock_anthropic.side_effect = [
+        {
+            "text": "",
+            "tool_uses": [
+                {"id": "toolu_1", "name": "test_node", "input": {"node_id": "node_1"}},
+            ],
+            "raw_content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "test_node",
+                 "input": {"node_id": "node_1"}},
+            ],
+            "usage": {"input_tokens": 50, "output_tokens": 15},
+            "stop_reason": "tool_use",
+        },
+        {
+            "text": "Looks like the model field is missing from the config.",
+            "tool_uses": [],
+            "raw_content": [{"type": "text", "text": "..."}],
+            "usage": {"input_tokens": 70, "output_tokens": 15},
+            "stop_reason": "end_turn",
+        },
+    ]
+
+    with patch(
+        "app.copilot.runner_tools.test_node_against_draft",
+        return_value={
+            "node_id": "node_1",
+            "error": "missing 'model' field",
+            "elapsed_ms": 3,
+        },
+    ):
+        runner = AgentRunner(db, tenant_id=TENANT, session=session, draft=draft)
+        events = list(runner.send_turn("test node_1"))
+
+    tool_result = next(e for e in events if e["type"] == "tool_result")
+    assert tool_result["error"] == "missing 'model' field"
+
+
 def test_send_turn_rejects_unsupported_provider(db, draft):
     session = _FakeSession(
         id=uuid.uuid4(),
