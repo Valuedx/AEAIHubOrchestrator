@@ -191,3 +191,27 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
 def to_anthropic_tools() -> list[dict[str, Any]]:
     """Anthropic uses the definitions as-is."""
     return [dict(t) for t in COPILOT_TOOL_DEFINITIONS]
+
+
+def to_google_tools() -> list[Any]:
+    """Convert definitions into Google's unified ``google-genai`` tool
+    shape: one ``types.Tool`` wrapping a list of
+    ``types.FunctionDeclaration(name, description, parameters)``. The
+    ``parameters`` field is the same JSON Schema we hand Anthropic —
+    Google's SDK accepts it verbatim.
+
+    Lazy-imports ``google.genai.types`` so unit tests that don't use
+    Google/Vertex don't pay the import cost (and don't fail when the
+    SDK is absent in a minimal environment).
+    """
+    from google.genai import types  # noqa: F401 — lazy
+
+    func_decls = [
+        types.FunctionDeclaration(
+            name=t["name"],
+            description=t["description"],
+            parameters=t["input_schema"],
+        )
+        for t in COPILOT_TOOL_DEFINITIONS
+    ]
+    return [types.Tool(function_declarations=func_decls)]

@@ -86,7 +86,16 @@ add_node × N → connect_nodes × M → validate_graph).
 
 DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
     "anthropic": "claude-sonnet-4-6",
-    # openai + google land in 01b.iv
+    # google: AI Studio via api_key (ADMIN-03 resolves per-tenant key).
+    # ``-customtools`` is the agentic-tool-calling-optimised preview
+    # endpoint — exactly the workload this runner drives. See
+    # https://ai.google.dev/gemini-api/docs/gemini-3
+    "google": "gemini-3.1-pro-preview-customtools",
+    # vertex: same unified google-genai SDK but with vertexai=True +
+    # per-tenant project/location from VERTEX-02.
+    "vertex": "gemini-3.1-pro-preview-customtools",
+    # openai lands in a follow-up; same adapter shape — add a key here
+    # plus _call_openai + _build_openai_messages.
 }
 
 
@@ -324,6 +333,337 @@ def _block_to_dict(block: Any) -> dict[str, Any]:
     return out
 
 
+def _append_anthropic_tool_round(
+    state: _BuiltMessages,
+    response: dict[str, Any],
+    tool_result_payloads: list[dict[str, Any]],
+) -> _BuiltMessages:
+    """Append one tool round to Anthropic's message list shape.
+
+    ``tool_result_payloads`` is the normalised-per-call list the runner
+    built: ``[{tool_use_id, result, is_error}, ...]``. Anthropic wants
+    these as a single user-role message with a list of ``tool_result``
+    content blocks, preceded by the assistant's raw_content (which
+    includes both text and tool_use blocks from the previous turn).
+    """
+    state.messages.append(
+        {"role": "assistant", "content": response["raw_content"]}
+    )
+    state.messages.append({
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": t["tool_use_id"],
+                "content": json.dumps(t["result"], default=str),
+                "is_error": bool(t.get("is_error")),
+            }
+            for t in tool_result_payloads
+        ],
+    })
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Google / Vertex adapter
+#
+# Both providers go through the unified ``google-genai`` SDK — they
+# share every byte of wire format, request shape, and response parsing.
+# Only the ``genai.Client`` constructor differs (AI Studio = api_key;
+# Vertex = vertexai=True + project + location via VERTEX-02's
+# per-tenant target resolver). See llm_providers._google_client.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _GoogleState:
+    """State for the Google adapter. Mirrors the ReAct-loop pattern:
+    ``history`` is a list of ``types.Content(role, parts)`` objects
+    already assembled from prior turns; we append to it as the tool
+    loop progresses."""
+
+    system: str
+    history: list[Any]  # list[types.Content] — kept as Any so tests
+                        # that don't import google.genai still work.
+    _backend: str       # "genai" (AI Studio) or "vertex" — for client
+                        # construction. Underscore because it's an
+                        # internal adapter concern, not LLM state.
+
+
+def _build_google_state(
+    db: Session,
+    *,
+    tenant_id: str,
+    session: CopilotSession,
+    draft: WorkflowDraft,
+    new_user_text: str,
+    backend: str,
+) -> _GoogleState:
+    """Replay prior copilot_turns into Google's ``types.Content`` list.
+
+    Mapping from our normalised turn storage to Google's shape:
+
+      user turn             → Content(role="user", parts=[Part.from_text])
+      assistant turn        → Content(role="model", parts=[text Part +
+                                       function_call Parts...])
+      tool turn (one row)   → Part.from_function_response in a user-role
+                              Content; consecutive tool turns merge.
+
+    The new user message is NOT added to history here — the adapter's
+    call() prepends it at request time, mirroring ReAct's
+    ``state['user_message']`` pattern.
+    """
+    from google.genai import types
+
+    system = build_system_prompt(draft_snapshot=draft.graph_json or {})
+
+    prior_turns = (
+        db.query(CopilotTurn)
+        .filter_by(tenant_id=tenant_id, session_id=session.id)
+        .order_by(CopilotTurn.turn_index)
+        .all()
+    )
+
+    history: list[Any] = []
+    pending_responses: list[Any] = []  # accumulate consecutive tool turns
+
+    def _flush_pending_responses() -> None:
+        if pending_responses:
+            history.append(types.Content(role="user", parts=list(pending_responses)))
+            pending_responses.clear()
+
+    for turn in prior_turns:
+        if turn.role == "user":
+            _flush_pending_responses()
+            text = (turn.content_json or {}).get("text", "")
+            history.append(types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=text)],
+            ))
+        elif turn.role == "assistant":
+            _flush_pending_responses()
+            content = turn.content_json or {}
+            parts: list[Any] = []
+            if content.get("text"):
+                parts.append(types.Part.from_text(text=content["text"]))
+            # Normalised tool calls live on tool_calls_json; fall back
+            # to content.tool_calls if the caller stored there.
+            tcs = turn.tool_calls_json or content.get("tool_calls") or []
+            for tc in tcs:
+                parts.append(types.Part.from_function_call(
+                    name=tc["name"],
+                    args=tc.get("input") or tc.get("args") or {},
+                ))
+            if parts:
+                history.append(types.Content(role="model", parts=parts))
+        elif turn.role == "tool":
+            tr = turn.content_json or {}
+            result = tr.get("result", {})
+            # Google wants response as a dict.
+            response_dict = result if isinstance(result, dict) else {"result": result}
+            pending_responses.append(types.Part.from_function_response(
+                name=tr.get("name", ""),
+                response=response_dict,
+            ))
+
+    _flush_pending_responses()
+
+    return _GoogleState(system=system, history=history, _backend=backend)
+
+
+def _call_google(
+    *,
+    model: str,
+    state: _GoogleState,
+    tenant_id: str,
+    new_user_text: str | None = None,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+) -> dict[str, Any]:
+    """One round-trip to Google AI Studio / Vertex AI. Returns the same
+    normalised shape as ``_call_anthropic`` so the runner loop doesn't
+    branch on provider.
+
+    ``new_user_text`` is the just-submitted user message that has NOT
+    yet been persisted into ``state.history``. On tool-result rounds
+    it's ``None`` — the tool results already live in state.history
+    (appended by ``_append_google_tool_round``).
+    """
+    from google.genai import types
+
+    from app.engine.llm_providers import _google_client
+
+    client = _google_client(state._backend, tenant_id=tenant_id)
+    contents = list(state.history)
+    if new_user_text:
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=new_user_text)],
+        ))
+
+    config = types.GenerateContentConfig(
+        system_instruction=state.system or None,
+        temperature=temperature,
+        max_output_tokens=max_tokens,
+        tools=to_google_tools(),
+    )
+
+    resp = client.models.generate_content(
+        model=model, contents=contents, config=config,
+    )
+
+    text_blocks: list[str] = []
+    tool_uses: list[dict[str, Any]] = []
+    if resp.candidates and resp.candidates[0].content:
+        for part in resp.candidates[0].content.parts:
+            if getattr(part, "function_call", None):
+                fc = part.function_call
+                # Google doesn't emit per-call unique ids — we synthesise
+                # one from name + position so tool_turn rows have a
+                # stable link back to their originating call for UI
+                # rendering. The LLM never sees this id; it links
+                # function_response by ``name`` in the next turn.
+                tool_uses.append({
+                    "id": f"gfn_{fc.name}_{len(tool_uses)}",
+                    "name": fc.name,
+                    "input": dict(fc.args) if fc.args else {},
+                })
+            elif getattr(part, "text", None):
+                text_blocks.append(part.text)
+
+    usage = getattr(resp, "usage_metadata", None)
+    return {
+        "text": "".join(text_blocks).strip(),
+        "tool_uses": tool_uses,
+        # raw_content is unused by the Google adapter — tool rounds
+        # are replayed from normalised turns, not from raw blocks.
+        "raw_content": [],
+        "usage": {
+            "input_tokens": getattr(usage, "prompt_token_count", 0) if usage else 0,
+            "output_tokens": getattr(usage, "candidates_token_count", 0) if usage else 0,
+        },
+        "stop_reason": getattr(resp, "finish_reason", None),
+    }
+
+
+def _append_google_tool_round(
+    state: _GoogleState,
+    response: dict[str, Any],
+    tool_result_payloads: list[dict[str, Any]],
+) -> _GoogleState:
+    """Append the assistant's model-role turn + the batched
+    function_response user turn to state.history, mirroring ReAct's
+    ``_google_append``. The next ``_call_google`` has ``new_user_text``
+    set to None since history already carries everything."""
+    from google.genai import types
+
+    assistant_parts: list[Any] = []
+    if response["text"]:
+        assistant_parts.append(types.Part.from_text(text=response["text"]))
+    for tc in response["tool_uses"]:
+        assistant_parts.append(types.Part.from_function_call(
+            name=tc["name"],
+            args=tc["input"],
+        ))
+    if assistant_parts:
+        state.history.append(types.Content(role="model", parts=assistant_parts))
+
+    response_parts: list[Any] = []
+    for t in tool_result_payloads:
+        result = t["result"]
+        response_dict = result if isinstance(result, dict) else {"result": result}
+        response_parts.append(types.Part.from_function_response(
+            name=t["name"],
+            response=response_dict,
+        ))
+    if response_parts:
+        state.history.append(types.Content(role="user", parts=response_parts))
+
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Provider adapter registry
+#
+# Each adapter bundles three callables. The runner loop is agnostic to
+# which provider is in play — only the state object's shape differs,
+# and it's opaque to the loop.
+# ---------------------------------------------------------------------------
+
+
+def _build_anthropic_state(
+    db: Session,
+    *,
+    tenant_id: str,
+    session: CopilotSession,
+    draft: WorkflowDraft,
+    new_user_text: str,
+) -> _BuiltMessages:
+    """Alias of ``_build_anthropic_messages`` — kept as a named export
+    so the provider registry at the bottom of the module stays uniform
+    across providers."""
+    return _build_anthropic_messages(
+        db,
+        tenant_id=tenant_id,
+        session=session,
+        draft=draft,
+        new_user_text=new_user_text,
+    )
+
+
+def _call_anthropic_adapter(
+    *,
+    model: str,
+    state: _BuiltMessages,
+    tenant_id: str,
+    new_user_text: str | None = None,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+) -> dict[str, Any]:
+    """Normalised signature matching ``_call_google``. The adapter
+    ignores ``new_user_text`` on tool-result rounds — the Anthropic
+    state already carries the full message list."""
+    return _call_anthropic(
+        model=model,
+        built=state,
+        tenant_id=tenant_id,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+
+def _call_google_adapter(**kwargs: Any) -> dict[str, Any]:
+    """Thin wrapper so tests can patch ``_call_google`` by name — the
+    adapter registry binds this wrapper at import time, but the wrapper
+    dispatches by module lookup at call time. Same pattern as
+    ``_call_anthropic_adapter`` → ``_call_anthropic``."""
+    return _call_google(**kwargs)
+
+
+_PROVIDER_ADAPTERS: dict[str, dict[str, Any]] = {
+    "anthropic": {
+        "build_state": _build_anthropic_state,
+        "call": _call_anthropic_adapter,
+        "append_tool_round": _append_anthropic_tool_round,
+        "initial_user_goes_in_state": True,  # message list already
+                                             # contains the new user turn
+    },
+    "google": {
+        "build_state": lambda **kw: _build_google_state(**kw, backend="genai"),
+        "call": _call_google_adapter,
+        "append_tool_round": _append_google_tool_round,
+        "initial_user_goes_in_state": False,  # call() takes new_user_text
+                                              # as a kwarg on first iter
+    },
+    "vertex": {
+        "build_state": lambda **kw: _build_google_state(**kw, backend="vertex"),
+        "call": _call_google_adapter,
+        "append_tool_round": _append_google_tool_round,
+        "initial_user_goes_in_state": False,
+    },
+}
+
+
 # ---------------------------------------------------------------------------
 # Agent runner
 # ---------------------------------------------------------------------------
@@ -356,12 +696,17 @@ class AgentRunner:
         SSE. The caller owns the DB transaction boundary — we flush
         but do not commit so the HTTP layer can decide on atomicity
         vs. stream-then-commit.
+
+        Provider-agnostic: the adapter registered in ``_PROVIDER_ADAPTERS``
+        for ``session.provider`` owns state shape, LLM round-trip, and
+        message-history reconstruction. All three providers that ship in
+        01b.iv (anthropic / google / vertex) use this same loop.
         """
-        if self.session.provider != "anthropic":
+        adapter = _PROVIDER_ADAPTERS.get(self.session.provider)
+        if adapter is None:
             raise UnsupportedProviderError(
-                f"Provider '{self.session.provider}' not wired up yet. "
-                "COPILOT-01b.i ships Anthropic only; OpenAI / Google "
-                "land in 01b.iv."
+                f"Provider '{self.session.provider}' is not supported. "
+                f"Known providers: {sorted(_PROVIDER_ADAPTERS.keys())}."
             )
 
         # 1. Persist the user turn FIRST so if anything else blows up,
@@ -376,14 +721,23 @@ class AgentRunner:
         self.db.flush()
         turns_added: list[str] = [str(user_turn.id)]
 
-        # 2. Build the Anthropic message list from prior history + new
-        #    user message.
-        built = _build_anthropic_messages(
-            self.db,
+        # 2. Build the provider-specific initial state from prior turns.
+        state = adapter["build_state"](
+            db=self.db,
             tenant_id=self.tenant_id,
             session=self.session,
             draft=self.draft,
             new_user_text=user_text,
+        )
+
+        # Anthropic state already contains the new user message in its
+        # `messages` list (see _build_anthropic_messages). Google state
+        # doesn't — the adapter's call() takes new_user_text as a kwarg
+        # on the first iteration only.
+        pending_new_user = (
+            None
+            if adapter["initial_user_goes_in_state"]
+            else user_text
         )
 
         final_text = ""
@@ -391,15 +745,16 @@ class AgentRunner:
         for iteration in range(MAX_TOOL_ITERATIONS):
             # 3. Call the LLM.
             try:
-                response = _call_anthropic(
+                response = adapter["call"](
                     model=self.session.model,
-                    built=built,
+                    state=state,
                     tenant_id=self.tenant_id,
+                    new_user_text=pending_new_user,
                 )
             except Exception as exc:  # pragma: no cover — external dep
                 logger.exception(
-                    "Agent LLM call failed (session=%s, iter=%d)",
-                    self.session.id, iteration,
+                    "Agent LLM call failed (session=%s, iter=%d, provider=%s)",
+                    self.session.id, iteration, self.session.provider,
                 )
                 yield {
                     "type": "error",
@@ -407,6 +762,7 @@ class AgentRunner:
                     "recoverable": False,
                 }
                 return
+            pending_new_user = None  # consumed on first iteration
 
             # 4. Persist assistant turn (always — tool_use blocks AND
             #    text are part of the same turn in the protocol).
@@ -417,7 +773,10 @@ class AgentRunner:
                 role="assistant",
                 content={
                     "text": response["text"],
-                    "blocks": response["raw_content"],
+                    # raw_content is only populated by Anthropic; for
+                    # Google it stays [] and history reconstruction
+                    # falls back to normalised tool_calls.
+                    "blocks": response.get("raw_content") or [],
                 },
                 tool_calls=response["tool_uses"] or None,
                 token_usage=response["usage"],
@@ -434,8 +793,9 @@ class AgentRunner:
                 break
 
             # 6. Dispatch each tool call, persist a tool turn per call,
-            #    and build tool_result blocks for the next iteration.
-            tool_result_blocks: list[dict[str, Any]] = []
+            #    and build the normalised tool_result payloads the
+            #    adapter will translate into its provider-specific shape.
+            tool_result_payloads: list[dict[str, Any]] = []
             for call in response["tool_uses"]:
                 yield {
                     "type": "tool_call",
@@ -466,10 +826,10 @@ class AgentRunner:
                 )
                 self.db.flush()
 
-                tool_result_blocks.append({
-                    "type": "tool_result",
+                tool_result_payloads.append({
                     "tool_use_id": call["id"],
-                    "content": json.dumps(result_payload, default=str),
+                    "name": call["name"],
+                    "result": result_payload,
                     "is_error": bool(dispatch_error),
                 })
 
@@ -483,14 +843,11 @@ class AgentRunner:
                     "error": dispatch_error,
                 }
 
-            # 7. Append the assistant turn (with its tool_use blocks)
-            #    and the user-role tool_result message to the message
-            #    list for the next iteration.
-            built.messages.append(
-                {"role": "assistant", "content": response["raw_content"]}
-            )
-            built.messages.append(
-                {"role": "user", "content": tool_result_blocks}
+            # 7. Fold the assistant turn + the tool results into the
+            #    adapter's state so the next iteration's call() sees
+            #    them as prior context.
+            state = adapter["append_tool_round"](
+                state, response, tool_result_payloads,
             )
         else:
             # for/else: fell through without break → hit MAX_TOOL_ITERATIONS.
