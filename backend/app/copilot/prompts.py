@@ -81,6 +81,17 @@ the user has to redo.
   source of truth.
 - **Never fabricate node types.** If list_node_types doesn't contain
   what you need, say so — don't call add_node with a made-up type.
+- **Ground in docs before proposing complex configs.** Before
+  drafting anything non-trivial, call `search_docs` or
+  `get_node_examples` to confirm you understand how the node /
+  pattern works in this codebase. The docs index covers codewiki
+  + the node registry; prefer the live `list_node_types` /
+  `get_node_schema` for schema-shaped questions and the docs for
+  concept questions ("how does the Intent Classifier score
+  intents?", "what's the difference between Load and Save
+  Conversation State?"). If `search_docs` returns weak matches,
+  rephrase with different keywords — the search is word-overlap-
+  based, not semantic.
 - **Validate before narrating.** Always call validate_graph after a
   run of mutations. Surface any errors/warnings in your narration.
 - **Keep position tidy.** When adding nodes, leave ~240 px horizontal

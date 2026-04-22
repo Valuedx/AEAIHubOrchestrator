@@ -212,6 +212,67 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_docs",
+        "description": (
+            "Search the orchestrator's own documentation + node "
+            "registry for relevant context. Use this when the user's "
+            "question is about HOW something works ('how does the "
+            "Intent Classifier scope entities?', 'what does this "
+            "error mean?', 'how do I set up AutomationEdge?') — "
+            "docs are source-of-truth for concepts and patterns, "
+            "whereas list_node_types / get_node_schema are source-"
+            "of-truth for live node structure. Prefer the live API "
+            "for schema-shaped questions. Returns {query, match_count, "
+            "results: [{source_path, title, anchor, score, excerpt}]}. "
+            "If match_count is 0 or results look off-topic, try "
+            "rephrasing with different keywords — the search is "
+            "word-overlap-based (no semantic matching)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Free-form search query. Case-insensitive; "
+                        "stopwords are stripped automatically."
+                    ),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": (
+                        "How many results to return. Default 5; "
+                        "capped at 20 server-side."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "get_node_examples",
+        "description": (
+            "Look up one node type's full registry entry plus related "
+            "codewiki sections. Use this BEFORE proposing a complex "
+            "config to the user — you'll see the canonical defaults, "
+            "enum values, and linked sections that explain how the "
+            "node behaves at runtime. Returns {node_type, "
+            "registry_entry, related_sections}. registry_entry is "
+            "null when the type isn't in the registry — call "
+            "list_node_types to pick a real one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["node_type"],
+            "properties": {
+                "node_type": {
+                    "type": "string",
+                    "description": "Registry type id, e.g. 'llm_agent'.",
+                },
+            },
+        },
+    },
+    {
         "name": "execute_draft",
         "description": (
             "Trial-run the WHOLE draft graph end-to-end through the "

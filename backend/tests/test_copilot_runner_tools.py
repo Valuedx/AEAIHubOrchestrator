@@ -818,6 +818,58 @@ def test_runner_tool_names_includes_execute_and_logs():
     assert "get_execution_logs" in runner_tools.RUNNER_TOOL_NAMES
 
 
+def test_dispatch_routes_search_docs_and_get_node_examples():
+    """01b.iii — docs-grounding tools. ``search_docs`` and
+    ``get_node_examples`` are filesystem-backed (no DB) but still
+    routed through the runner-tool dispatcher so the agent sees them
+    alongside the stateful tools."""
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch("app.copilot.docs_index.search_docs") as mock_search:
+        mock_search.return_value = {"query": "x", "match_count": 0, "results": []}
+        result = runner_tools.dispatch(
+            "search_docs",
+            db=MagicMock(), tenant_id=TENANT, draft=draft,
+            args={"query": "how does the Intent Classifier work?", "top_k": 3},
+        )
+    assert mock_search.called
+    assert result["match_count"] == 0
+
+    with patch("app.copilot.docs_index.get_node_examples") as mock_examples:
+        mock_examples.return_value = {
+            "node_type": "llm_agent",
+            "registry_entry": None,
+            "related_sections": [],
+        }
+        result = runner_tools.dispatch(
+            "get_node_examples",
+            db=MagicMock(), tenant_id=TENANT, draft=draft,
+            args={"node_type": "llm_agent"},
+        )
+    assert mock_examples.called
+    assert result["node_type"] == "llm_agent"
+
+
+def test_get_node_examples_missing_node_type_returns_error():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    result = runner_tools.dispatch(
+        "get_node_examples",
+        db=MagicMock(), tenant_id=TENANT, draft=draft,
+        args={},
+    )
+    assert "error" in result
+
+
+def test_runner_tool_names_includes_docs_tools():
+    assert "search_docs" in runner_tools.RUNNER_TOOL_NAMES
+    assert "get_node_examples" in runner_tools.RUNNER_TOOL_NAMES
+
+
 def test_dispatch_routes_execute_draft_and_get_execution_logs():
     """The agent's runner-tool dispatch must route both new tool
     names — otherwise the agent would call the tool and get a

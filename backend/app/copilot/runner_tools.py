@@ -673,6 +673,8 @@ RUNNER_TOOL_NAMES = {
     "get_automationedge_handoff_info",
     "execute_draft",
     "get_execution_logs",
+    "search_docs",
+    "get_node_examples",
 }
 """Tool names the runner-tool dispatch layer handles. Add to this set
 and register a branch in ``dispatch`` below when shipping more
@@ -708,4 +710,17 @@ def dispatch(
         return get_execution_logs(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
+    if tool_name == "search_docs":
+        from app.copilot import docs_index
+
+        query = args.get("query") or ""
+        top_k = args.get("top_k") or 5
+        return docs_index.search_docs(query, top_k=top_k)
+    if tool_name == "get_node_examples":
+        from app.copilot import docs_index
+
+        node_type = args.get("node_type") or ""
+        if not node_type:
+            return {"error": "get_node_examples requires 'node_type'"}
+        return docs_index.get_node_examples(node_type)
     raise KeyError(tool_name)

@@ -580,7 +580,13 @@ export type CopilotToolName =
   // Fetch per-node logs for a prior execute_draft instance.
   // Scoped to copilot-initiated (is_ephemeral=true) runs so the
   // agent can't read production logs.
-  | "get_execution_logs";
+  | "get_execution_logs"
+  // Docs grounding (01b.iii) — file-backed word-overlap search
+  // over codewiki/*.md + flattened node_registry. No vector DB;
+  // the agent uses these for concept questions and before
+  // proposing a complex config.
+  | "search_docs"
+  | "get_node_examples";
 
 export interface CopilotDraftValidation {
   errors: string[];
