@@ -77,6 +77,159 @@ Ranked by impact-in-our-context:
 
 Deferred: sampling (MCP-11), resources / prompts primitives (MCP-12). See [mcp-audit.md §6](mcp-audit.md) for full rationale.
 
+### Workflow Authoring Copilot — COPILOT-01 … COPILOT-03
+
+Expands roadmap entry [#24](#24-workflow-authoring-copilot-nl--draft-workflow--planned) into three shippable tickets. A Claude-Code-style conversational agent that can create, modify, test, and debug workflows through tool-calling — with a safety boundary so the copilot never mutates a live workflow directly.
+
+| # | Title | Dep | Rough effort |
+|---|-------|-----|--------------|
+| COPILOT-01 | Draft-workspace model + agent tool surface (backend) | — | ~3 wks |
+| COPILOT-02 | Chat pane + diff-apply UI (frontend) | COPILOT-01 | ~2 wks |
+| COPILOT-03 | Debug / test-scenario / auto-heal loop | COPILOT-01 | ~2–3 wks |
+
+**Why this order:** COPILOT-01 ships the safety boundary + tool layer before any user-facing surface exists. A copilot that can edit-and-execute a *published* workflow is too high blast radius — every mutation must pass through a draft that the human accepts before it lands in `workflow_definitions`. COPILOT-02 and -03 can be shipped in either order but pair naturally.
+
+**Natural synergy with MCP-07 (elicitation):** the copilot's "ask a clarifying question" shape is structurally identical to MCP's `elicitation/create` flow. If MCP-07 ships first, the suspend/resume plumbing is reusable.
+
+---
+
+#### COPILOT-01 — Draft-workspace model + agent tool surface
+
+**Goal.** An agent can safely create, patch, validate, and trial-run workflows through an exposed tool set, with all writes going to a draft layer that a human promotes before anything touches `workflow_definitions`.
+
+**Schema (migration `0022`).**
+- `workflow_drafts` — `id`, `tenant_id`, `base_workflow_id` (nullable; null when drafting net-new), `graph_json`, `title`, `created_by`, `created_at`, `updated_at`, `last_copilot_session_id`. RLS tenant-scoped like every other tenant table (see `RLS-01`).
+- `copilot_sessions` — `id`, `tenant_id`, `draft_id`, `provider` (google/openai/anthropic, follows ADMIN-03), `created_at`. Chat-history container.
+- `copilot_turns` — `id`, `session_id`, `tenant_id`, `role` (`user`/`assistant`/`tool`), `content_json`, `tool_calls_json`, `token_usage_json`, `created_at`.
+
+**Backend surface.**
+- `POST /api/v1/copilot/drafts` — create draft (from scratch or from a `base_workflow_id`).
+- `GET /api/v1/copilot/drafts/{id}` — read current state + last validation result.
+- `DELETE /api/v1/copilot/drafts/{id}` — abandon.
+- `POST /api/v1/copilot/drafts/{id}/promote` — atomically merges draft into `workflow_definitions` as a new version (when `base_workflow_id` set) or creates a new workflow (null base).
+- `POST /api/v1/copilot/sessions` — start a copilot session bound to a draft.
+- `POST /api/v1/copilot/sessions/{id}/turn` — send user message; returns streamed assistant message + tool-call log (SSE).
+
+**NL-first turn pipeline** (enforced by the system prompt):
+
+1. **Intent extract** — before any tool call, emit a structured intent JSON: `{trigger, primary_operation, key_decisions, downstream_effects, ambiguities[]}`. Read-only on the user's prose; no drafting yet.
+2. **Clarification loop** — for every item in `ambiguities[]`, ask one question at a time. Cannot advance to drafting until the list is empty. Same suspend-for-input shape as MCP-07 elicitation — reuse that plumbing if MCP-07 ships first.
+3. **Pattern match** — call `search_docs` + `get_node_examples` to retrieve 2–3 nearest template patterns from the system KB (see below). Draft by adapting a known template, not by synthesising from nothing. Keeps hallucination low.
+4. **Draft** — emit `add_node` / `connect` tool calls.
+5. **Narrate** — plain-language summary of what was built before the user hits Apply, so the NL input gets a NL receipt.
+
+**System knowledge base (RAG grounding).** A non-tenant-scoped KB ingested once at deploy time (or via a CLI re-index command) containing:
+- `codewiki/*.md` — architecture, security, node types, memory model, automationedge, etc.
+- Flattened `node_registry.json` — one doc page per node type, generated from the schema.
+- `api-reference.md` — the orchestrator's own API.
+- Template gallery descriptions — one doc per canonical pattern (classifier+router, RAG-over-KB, ReAct-with-MCP, etc.).
+
+Reuses the existing RAG pipeline (pgvector + markdown chunker + embedding provider). Lives in a dedicated `kb_documents` row with a reserved tenant-id sentinel so the system KB is cross-tenant-readable but only re-index operations (admin) can write.
+
+**Agent tool surface** (function-calling, passed to the configured LLM provider):
+- `get_draft()` — returns `{graph_json, validation: {errors, warnings}}`.
+- `list_node_types(category?: string)` — trimmed node-registry entries with id/category/short-description only. Copilot calls `get_node_schema(type)` to get the full schema for the one it picked — two-step flow prevents context blowup.
+- `get_node_schema(type)` — full JSON-schema for one node type plus usage notes.
+- `add_node(type, config, position)` → `{node_id, validation_delta}`.
+- `update_node_config(node_id, partial)` → `{validation_delta}`.
+- `delete_node(node_id)`.
+- `connect(from_node, from_handle?, to_node, to_handle?)` → `{edge_id}`.
+- `disconnect(edge_id)`.
+- `validate()` — reuses `config_validator` / existing `/api/v1/workflows/{id}/validate` shape.
+- `test_node(node_id, pins)` — reuses DV-02 single-node probe.
+- `execute_draft(payload, sync=true)` — trial run against the draft graph by materialising a throwaway `WorkflowDefinition` internally (no engine fork).
+- `get_execution_logs(instance_id, node_id?)` — structured log list for debugging.
+- `search_docs(query, top_k=5)` — retrieves relevant chunks from the system KB. Used for "how does the Intent Classifier scope entities?" or debug-time "what does this error mean?".
+- `get_node_examples(type)` — template snippets using a given node type, pulled from the gallery — concrete few-shot for config shape.
+
+**Source-of-truth rule.** For schema-shaped questions (node types, config fields, endpoints) the copilot MUST prefer the live API (`list_node_types`, `get_node_schema`) over RAG-retrieved docs. Docs are for *concepts and patterns*; the API is source of truth for *structure*. Docs that contradict the live API surface as stale and should be re-indexed.
+
+**Acceptance criteria.**
+- Draft CRUD, promote, and all tool endpoints pass unit tests.
+- Promote creates a new version of the base workflow OR a fresh workflow, atomically, and deletes the draft.
+- RLS enforced: cross-tenant read/write denied. Regression test similar to `test_rls_dependency_wired.py`.
+- `validate` matches the shape of the existing workflow validator (zero duplication).
+- `execute_draft` routes through the existing engine path (same logs, same checkpoints).
+- A synthetic end-to-end test drives an `anthropic.messages.create`-compatible function-calling loop through `add_node` → `connect` → `validate` → `execute_draft` and asserts the draft was built correctly.
+
+**Out of scope.** UI (COPILOT-02), auto-heal loop (COPILOT-03), system-prompt tuning (ongoing — ship with a hand-written v1 prompt).
+
+**Risks.**
+- Registry context explosion: ~50 node types × ~200 tokens each = 10k tokens just for `list_node_types`. Mitigate with a two-step flow: copilot first calls `list_node_types({category})`, then `get_node_schema(type)` for the specific one.
+- Draft/published schema drift: keep `graph_json` byte-identical between draft and published — same validator, same runner. No divergence allowed.
+- Cost unbounded: add a per-session token budget (default 100k tokens) that suspends the session and prompts the user when exceeded.
+
+---
+
+#### COPILOT-02 — Chat pane + diff-apply UI
+
+**Goal.** A canvas-side chat where the user describes intent, the copilot drafts + explains, and the user accepts/rejects at node-level granularity before anything lands in `workflow_definitions`.
+
+**Frontend surface.**
+- `CopilotPanel.tsx` — resizable right-side drawer. Toggled by a toolbar Sparkles icon. Coexists with `PropertyInspector` (mutually exclusive: opening the copilot hides the inspector, and vice versa — the right column is narrow, no sense fighting for it).
+- `CopilotMessageList.tsx` — streaming assistant messages via SSE reusing the existing streaming infra. Tool calls render as inline pills (`🔧 add_node(llm_agent)` → click to expand arguments).
+- `CopilotComposer.tsx` — textarea + model-picker (reuses ADMIN-03 credentials). Cmd+Enter to send.
+- `DraftDiffOverlay.tsx` — when a draft is active, the canvas overlays a semi-transparent sparkle badge on nodes added/modified by the copilot; edges added by the copilot render dashed with a coloured stroke. A top bar shows "Draft mode — 3 changes unapplied" + Accept / Abandon buttons.
+- `PromoteDialog.tsx` — side-by-side summary of draft vs. base (nodes added/removed/changed), confirms workflow name if net-new, confirms version bump if updating existing, then POSTs `/promote`.
+
+**UX flow.**
+1. User clicks Sparkles → panel opens with "What would you like to build?" prompt.
+2. User types intent; copilot begins streaming. Tool calls surface as pills; draft starts rendering on canvas with sparkle badges.
+3. Copilot asks clarifying questions inline; user answers in the same chat.
+4. Before applying, user sees a diff summary; clicks Accept → promoted.
+5. Abandon at any point discards the draft.
+
+**Acceptance criteria.**
+- From a blank canvas, "build a flow that reads a Slack message, summarises it, emails the summary" produces a draft that the user can accept and save.
+- Draft preview matches the would-be post-promotion workflow exactly.
+- Abandon deletes the draft cleanly (no orphan rows, no orphan nodes).
+- Playwright E2E covers the three happy paths: create-new, edit-existing, abandon.
+- Regen button retries the last assistant turn (reuses the same session, advances token counter).
+
+**Out of scope.** Voice input, multi-user drafting (one draft = one user for v1), auto-heal on failed runs (COPILOT-03).
+
+**Risks.**
+- Token cost per turn grows with graph size: add a context-compression step that summarises older turns and transmits only the current diff to the LLM.
+- "Who owns the canvas" ambiguity when a draft is active: banner must be unmissable; disable direct canvas edits while draft is mid-flight, or confirm "discard copilot's 3 pending changes?" if the user tries.
+
+---
+
+#### COPILOT-03 — Debug / test-scenario / auto-heal loop
+
+**Goal.** When the user says "it's broken" or "test that it handles an empty payload," the copilot can trial-run, read logs, propose fixes, and remember named test scenarios — the Claude-Code-debugging-a-test shape applied to workflows.
+
+**New tools exposed to the agent.**
+- `run_debug_scenario(payload, pins={}, node_overrides={})` — trial-runs the draft with optional upstream pins (DV-01) for reproducible debugging.
+- `get_instance_logs(instance_id)` — returns structured `[{node_id, timestamp, level, message, data}]`.
+- `get_node_error(instance_id, node_id)` — narrows to the failed node: error message, stack (if available), the resolved `config_json` it ran with, the `context_json` it received.
+- `suggest_fix(node_id, error)` — internal LLM subcall scoped to one node; returns a proposed config patch with a rationale. Never auto-applies — always round-trips through the user.
+- `save_test_scenario(name, payload, pins, expected_output_contains?)` — persists a reusable debug scenario.
+- `run_scenario(scenario_id)` — executes a saved scenario, diffs actual vs. `expected_output_contains`.
+
+**Schema (migration `0023`).**
+- `copilot_test_scenarios` — `id`, `tenant_id`, `draft_id` (or `workflow_id` for published-workflow scenarios), `name`, `payload_json`, `pins_json`, `expected_output_contains_json`, `created_at`. RLS tenant-scoped. When a draft promotes, scenarios either migrate to the new workflow_id or stay draft-scoped and get garbage-collected (decision during impl — lean toward migrate).
+
+**Auto-heal loop.**
+1. Copilot calls `execute_draft`. Run fails.
+2. Copilot automatically calls `get_node_error` on the failed node.
+3. Copilot calls `suggest_fix`, surfaces the proposal to the user ("The email node failed with `no auth configured`. Want me to wire it to the `SENDGRID_API_KEY` you already have in Secrets?").
+4. On user approval, `update_node_config` patches the draft; copilot re-runs; confirms green.
+
+**Promote-gate integration.**
+- `PromoteDialog` (from COPILOT-02) now lists saved scenarios with pass/fail state: "✔ 3 of 4 scenarios pass. `empty-slack-message` fails — promote anyway?"
+
+**Acceptance criteria.**
+- End-to-end test: user asks "run it with an empty message"; copilot runs, surfaces the failure with the specific node + error, proposes a fix, applies it on approval, re-runs green.
+- Three common failure modes covered explicitly: auth missing, schema mismatch (e.g. expression references a field not in upstream output), downstream node receives `null` where non-null expected.
+- Saved scenario survives a draft edit and can be re-run; diff against `expected_output_contains` works.
+- Scenario compatibility check: if a draft's schema change invalidates a scenario (e.g. deletes a node the scenario pins), the scenario surfaces as `stale` instead of silently failing.
+
+**Out of scope.** Scheduled regression runs (separate eval harness — roadmap #13), sandboxing the copilot's own compute (v1 runs within the orchestrator process with full tenant scope).
+
+**Risks.**
+- `suggest_fix` hallucination: bounded by the "propose, never auto-apply" rule and by constraining the prompt to the node's config schema (copilot can only suggest changes that validate).
+- Cost of auto-heal loop in a degenerate "flap" case (fix → fails differently → new fix → ...): cap the auto-heal depth at 3 retries per turn, then surface a "this is beyond auto-heal" message so the user takes over.
+
 ---
 
 ## Priority matrix
@@ -300,7 +453,9 @@ Closely related to #14 (RBAC / Team Collaboration) but distinct: RBAC is *static
 
 > Dify's AI Agent copilot can draft and refine workflows from a natural-language prompt. Anthropic's Claude Code has begun embedding this pattern for tool-chain generation.
 
-Today, authoring is drag-and-drop only. A copilot that accepts "build me a classifier that routes refund requests to AE and everything else to an LLM reply" and produces a draft graph would shorten the ramp for non-builder users. Architecture: a tenant-scoped LLM node chain that reads the current `node_registry.json`, emits a candidate `graph_json`, validates against `config_validator`, then opens it on the canvas as an unsaved draft. High-leverage combined with our existing **Test single node** (DV-02) probe — the copilot can iterate on a node's config without end-to-end runs.
+Today, authoring is drag-and-drop only. A copilot that accepts "build me a classifier that routes refund requests to AE and everything else to an LLM reply" and produces a draft graph would shorten the ramp for non-builder users.
+
+**Scoped as COPILOT-01 / 02 / 03** — see the [detailed breakdown](#workflow-authoring-copilot--copilot-01--copilot-03) under Pending backlog. Architecture in one line: a draft-workspace model (safety boundary) + Claude-Code-style tool surface over the existing workflow API + chat pane + debug/test-scenario loop. High-leverage combined with existing **Test single node** (DV-02) and **Data pinning** (DV-01) — the copilot iterates on a node's config without end-to-end runs.
 
 #### 25. MCP Server Catalogue — Planned
 
