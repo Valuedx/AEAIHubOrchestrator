@@ -66,6 +66,7 @@ import {
   type CopilotTurnOut,
 } from "@/lib/api";
 import { useWorkflowStore } from "@/store/workflowStore";
+import { useFlowStore } from "@/store/flowStore";
 import { CopilotMessageList, type ChatItem } from "./CopilotMessageList";
 import { CopilotComposer } from "./CopilotComposer";
 import { PromoteDialog } from "./PromoteDialog";
@@ -84,6 +85,8 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
   const currentWorkflow = useWorkflowStore((s) => s.currentWorkflow);
   const loadWorkflow = useWorkflowStore((s) => s.loadWorkflow);
   const fetchWorkflows = useWorkflowStore((s) => s.fetchWorkflows);
+  const setCopilotPreview = useFlowStore((s) => s.setCopilotPreview);
+  const clearCopilotPreview = useFlowStore((s) => s.clearCopilotPreview);
 
   const [draft, setDraft] = useState<CopilotDraftOut | null>(null);
   const [session, setSession] = useState<CopilotSessionOut | null>(null);
@@ -188,7 +191,36 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
     setDraft(null);
     setStreaming(false);
     setBootstrap("idle");
-  }, [open]);
+    // COPILOT-02.ii.b — exit the canvas preview so the user returns
+    // to editing the base workflow when the panel closes.
+    clearCopilotPreview();
+  }, [open, clearCopilotPreview]);
+
+  // COPILOT-02.ii.b — drive the canvas preview from draft state.
+  // Any time the draft is at a version beyond fork (the copilot
+  // has made at least one mutation since it forked) we render the
+  // draft graph read-only on the canvas with diff annotations.
+  // Below fork = draft is identical to the base workflow, so the
+  // live workflow view is what the user wants to see.
+  useEffect(() => {
+    if (!open) return;
+    const baseVersion = draft?.base_version_at_fork ?? 0;
+    const hasChanges = (draft?.version ?? 0) > baseVersion;
+    if (draft && hasChanges) {
+      setCopilotPreview(
+        draft.graph_json,
+        currentWorkflow?.graph_json ?? null,
+      );
+    } else {
+      clearCopilotPreview();
+    }
+  }, [
+    open,
+    draft,
+    currentWorkflow,
+    setCopilotPreview,
+    clearCopilotPreview,
+  ]);
 
   // ----------------------------------------------------------------
   // Send a user turn and stream the response.
@@ -281,10 +313,12 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
   );
 
   // Apply button becomes clickable once the draft has at least one
-  // mutation since fork — version > 0 is our proxy for "something
-  // changed". Net-new drafts start at 0 and bump to 1 after the first
-  // tool call; forks inherit their base-workflow's version.
-  const hasDraftChanges = (draft?.version ?? 0) > 0;
+  // mutation since fork. Net-new drafts start at 0 → 1 on first
+  // tool call; forks start at their base's version (captured as
+  // ``base_version_at_fork``) and bump from there, so we compare
+  // against the fork point rather than a naive >0.
+  const baseVersionAtFork = draft?.base_version_at_fork ?? 0;
+  const hasDraftChanges = (draft?.version ?? 0) > baseVersionAtFork;
 
   const baseNodeCount = currentWorkflow?.graph_json?.nodes?.length;
   const baseEdgeCount = currentWorkflow?.graph_json?.edges?.length;

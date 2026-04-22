@@ -10,6 +10,7 @@ import {
   MarkerType,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Sparkles } from "lucide-react";
 
 import { useFlowStore } from "@/store/flowStore";
 import { useWorkflowStore } from "@/store/workflowStore";
@@ -28,8 +29,8 @@ const defaultEdgeOptions: DefaultEdgeOptions = {
 export function FlowCanvas() {
   const reactFlowRef = useRef<ReactFlowInstance | null>(null);
 
-  const nodes = useFlowStore((s) => s.nodes);
-  const edges = useFlowStore((s) => s.edges);
+  const baseNodes = useFlowStore((s) => s.nodes);
+  const baseEdges = useFlowStore((s) => s.edges);
   const onNodesChange = useFlowStore((s) => s.onNodesChange);
   const onEdgesChange = useFlowStore((s) => s.onEdgesChange);
   const onConnect = useFlowStore((s) => s.onConnect);
@@ -39,6 +40,15 @@ export function FlowCanvas() {
   const undo = useFlowStore((s) => s.undo);
   const redo = useFlowStore((s) => s.redo);
   const markDirty = useWorkflowStore((s) => s.markDirty);
+
+  // COPILOT-02.ii.b — when the copilot panel hands a preview graph
+  // to flowStore, render THAT read-only instead of the base
+  // nodes/edges. Preview state carries the diff annotations + added
+  // counts so we can show a banner above the canvas.
+  const preview = useFlowStore((s) => s.copilotPreview);
+  const inPreviewMode = preview !== null;
+  const nodes = inPreviewMode ? preview!.nodes : baseNodes;
+  const edges = inPreviewMode ? preview!.edges : baseEdges;
 
   // DV-03 — drop a sticky at the current viewport centre. Used by the
   // Shift+S shortcut and the Toolbar "Add sticky" button (via custom
@@ -157,24 +167,33 @@ export function FlowCanvas() {
   );
 
   return (
-    <div className="flex-1 h-full">
+    <div className="flex-1 h-full relative">
+      {inPreviewMode && <CopilotPreviewBanner preview={preview!} />}
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        onNodesChange={handleNodesChange}
-        onEdgesChange={handleEdgesChange}
-        onConnect={handleConnect}
+        onNodesChange={inPreviewMode ? undefined : handleNodesChange}
+        onEdgesChange={inPreviewMode ? undefined : handleEdgesChange}
+        onConnect={inPreviewMode ? undefined : handleConnect}
         onInit={(instance) => {
           reactFlowRef.current = instance;
         }}
-        onDrop={onDrop}
-        onDragOver={onDragOver}
+        onDrop={inPreviewMode ? undefined : onDrop}
+        onDragOver={inPreviewMode ? undefined : onDragOver}
         onNodeClick={(_, node) => selectNode(node.id)}
         onPaneClick={() => selectNode(null)}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
         fitView
-        deleteKeyCode={["Backspace", "Delete"]}
+        // Preview mode is read-only: no drags, no connect-drags, no
+        // delete-on-key, no drop-from-palette. Selection stays on so
+        // the inspector can still show a clicked node's config if the
+        // user opens it (inspector is hidden while copilot open, but
+        // the affordance reads cleanly for future splits).
+        nodesDraggable={!inPreviewMode}
+        nodesConnectable={!inPreviewMode}
+        elementsSelectable={true}
+        deleteKeyCode={inPreviewMode ? null : ["Backspace", "Delete"]}
         className="bg-background"
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
@@ -186,6 +205,37 @@ export function FlowCanvas() {
           zoomable
         />
       </ReactFlow>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// COPILOT-02.ii.b — preview banner
+// ---------------------------------------------------------------------------
+
+
+function CopilotPreviewBanner({
+  preview,
+}: {
+  preview: import("@/store/flowStore").CopilotPreviewGraph;
+}) {
+  const added = preview.addedNodeIds.length;
+  const modified = preview.modifiedNodeIds.length;
+  const parts: string[] = [];
+  if (added) parts.push(`${added} added`);
+  if (modified) parts.push(`${modified} modified`);
+  if (!parts.length) parts.push("no structural changes");
+  return (
+    <div
+      className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-10 rounded-full border border-primary/40 bg-primary/10 backdrop-blur px-3 py-1.5 text-[11px] text-primary flex items-center gap-1.5 shadow-sm"
+      aria-live="polite"
+      role="status"
+    >
+      <Sparkles className="h-3 w-3" />
+      <span className="font-medium">Copilot draft preview</span>
+      <span className="text-muted-foreground">· {parts.join(" · ")}</span>
+      <span className="text-muted-foreground">· read-only — Apply in the panel to promote</span>
     </div>
   );
 }

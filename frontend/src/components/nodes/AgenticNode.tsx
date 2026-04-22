@@ -25,6 +25,7 @@ import {
   ListFilter,
   Layers,
   Network,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -138,10 +139,23 @@ function AgenticNodeComponent({ id, data, selected }: NodeProps) {
   const hasError = errorIds.has(id);
   const hasWarning = !hasError && warningIds.has(id);
 
+  // COPILOT-02.ii.b — diff annotation set by flowStore.setCopilotPreview
+  // when the canvas is in preview mode. "added" = this node is new in
+  // the draft (not on the base workflow); "modified" = same id but
+  // different config/label. The ring + corner-badge make both
+  // obvious without hiding category styling.
+  const diffStatus = (nodeData as Record<string, unknown>).__copilotDiff as
+    | "added"
+    | "modified"
+    | "unchanged"
+    | undefined;
+  const isCopilotAdded = diffStatus === "added";
+  const isCopilotModified = diffStatus === "modified";
+
   return (
     <Card
       className={cn(
-        "min-w-[180px] max-w-[220px] border-2 shadow-md transition-shadow",
+        "min-w-[180px] max-w-[220px] border-2 shadow-md transition-shadow relative",
         styles.border,
         styles.bg,
         // Selection ring takes highest priority
@@ -152,6 +166,13 @@ function AgenticNodeComponent({ id, data, selected }: NodeProps) {
         !selected && hasError && "ring-2 ring-red-500/70",
         // Warning ring when not selected and no error
         !selected && hasWarning && "ring-2 ring-yellow-500/60",
+        // COPILOT-02.ii.b — diff rings. Added = dashed amber;
+        // modified = solid amber. Only paint when no higher-priority
+        // ring is already on (selected / replay / validation).
+        !selected && !isReplayCursor && !hasError && !hasWarning &&
+          isCopilotAdded && "ring-2 ring-dashed ring-amber-400 shadow-lg",
+        !selected && !isReplayCursor && !hasError && !hasWarning &&
+          isCopilotModified && "ring-2 ring-amber-400",
       )}
     >
       {hasInput && (
@@ -160,6 +181,25 @@ function AgenticNodeComponent({ id, data, selected }: NodeProps) {
           position={Position.Left}
           className="!w-3 !h-3 !bg-muted-foreground !border-2 !border-background"
         />
+      )}
+
+      {(isCopilotAdded || isCopilotModified) && (
+        <span
+          className={cn(
+            "absolute -top-2 -right-2 inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[9px] font-medium shadow-sm",
+            isCopilotAdded
+              ? "bg-amber-50 border-amber-400 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+              : "bg-amber-100 border-amber-400 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200",
+          )}
+          title={
+            isCopilotAdded
+              ? "Copilot added this node"
+              : "Copilot modified this node"
+          }
+        >
+          <Sparkles className="h-2.5 w-2.5" />
+          {isCopilotAdded ? "new" : "edit"}
+        </span>
       )}
 
       <CardHeader className="p-3 pb-2">

@@ -32,6 +32,22 @@ const MAX_HISTORY = 50;
 
 type Snapshot = { nodes: Node[]; edges: Edge[] };
 
+/**
+ * COPILOT-02.ii.b — annotation placed on each node of the preview
+ * graph so AgenticNode can render added-vs-modified styling. The
+ * diff is computed once in ``setCopilotPreview`` instead of in each
+ * node render, so repaints stay cheap.
+ */
+export type CopilotDiffStatus = "added" | "modified" | "unchanged";
+
+export interface CopilotPreviewGraph {
+  nodes: Node[];
+  edges: Edge[];
+  addedNodeIds: string[];
+  modifiedNodeIds: string[];
+  addedEdgeIds: string[];
+}
+
 interface FlowState {
   nodes: Node[];
   edges: Edge[];
@@ -42,6 +58,16 @@ interface FlowState {
   future: Snapshot[];
   /** Tracks node IDs currently being dragged so we snapshot once per drag */
   _draggingNodeIds: Set<string>;
+
+  /**
+   * COPILOT-02.ii.b — when set, the canvas renders this snapshot
+   * read-only instead of the editable ``nodes`` / ``edges``. Each
+   * node carries a ``data.__copilotDiff`` annotation (`added` /
+   * `modified` / `unchanged`) so the node component can style
+   * itself. Clearing returns the canvas to the base workflow view;
+   * editing is disabled while set.
+   */
+  copilotPreview: CopilotPreviewGraph | null;
 
   onNodesChange: OnNodesChange;
   onEdgesChange: OnEdgesChange;
@@ -73,6 +99,20 @@ interface FlowState {
   /** DV-03 — add a sticky note at the given canvas position. Returns
    *  the new node's id so callers can scroll / select it. */
   addStickyNote: (position: XYPosition) => string;
+
+  /**
+   * COPILOT-02.ii.b — pass the draft's graph (and the base workflow's
+   * graph, if any) to switch the canvas into read-only preview mode.
+   * The diff between draft and base is computed here once; passing
+   * ``null`` for ``baseGraph`` treats everything as added (net-new
+   * drafts).
+   */
+  setCopilotPreview: (
+    draftGraph: { nodes: unknown[]; edges: unknown[] } | null,
+    baseGraph: { nodes: unknown[]; edges: unknown[] } | null,
+  ) => void;
+  /** Exit preview mode — canvas returns to showing the live nodes/edges. */
+  clearCopilotPreview: () => void;
 }
 
 export const useFlowStore = create<FlowState>((set, get) => ({
@@ -82,6 +122,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   past: [],
   future: [],
   _draggingNodeIds: new Set(),
+  copilotPreview: null,
 
   _pushHistory: () => {
     const { nodes, edges, past } = get();
@@ -234,4 +275,122 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         get().selectedNodeId === id ? null : get().selectedNodeId,
     });
   },
+
+  // ------------------------------------------------------------------
+  // COPILOT-02.ii.b — preview mode
+  // ------------------------------------------------------------------
+
+  setCopilotPreview: (draftGraph, baseGraph) => {
+    if (!draftGraph) {
+      set({ copilotPreview: null });
+      return;
+    }
+    const preview = _buildCopilotPreview(draftGraph, baseGraph);
+    set({ copilotPreview: preview });
+  },
+
+  clearCopilotPreview: () => {
+    set({ copilotPreview: null });
+  },
 }));
+
+
+// ---------------------------------------------------------------------------
+// COPILOT-02.ii.b — diff helper
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Build the ``CopilotPreviewGraph`` by comparing ``draftGraph`` against
+ * ``baseGraph``. Nodes present in draft but not in base → ``added``.
+ * Nodes in both but with different ``data.config`` → ``modified``.
+ * Nodes in both with matching config → ``unchanged``. Nodes in base
+ * but missing from draft are not surfaced here (they'd render as
+ * ghost-deleted, which 02.ii.b defers to a later slice).
+ *
+ * Returned nodes are copied with ``data.__copilotDiff`` set — the
+ * original draft graph is not mutated.
+ */
+function _buildCopilotPreview(
+  draftGraph: { nodes: unknown[]; edges: unknown[] },
+  baseGraph: { nodes: unknown[]; edges: unknown[] } | null,
+): CopilotPreviewGraph {
+  const baseNodes = (baseGraph?.nodes ?? []) as Node[];
+  const baseEdges = (baseGraph?.edges ?? []) as Edge[];
+  const draftNodes = (draftGraph.nodes ?? []) as Node[];
+  const draftEdges = (draftGraph.edges ?? []) as Edge[];
+
+  const baseNodeById = new Map<string, Node>();
+  for (const n of baseNodes) {
+    if (typeof n.id === "string") baseNodeById.set(n.id, n);
+  }
+  const baseEdgeIds = new Set<string>();
+  for (const e of baseEdges) {
+    if (typeof e.id === "string") baseEdgeIds.add(e.id);
+  }
+
+  const addedNodeIds: string[] = [];
+  const modifiedNodeIds: string[] = [];
+
+  const annotated: Node[] = draftNodes.map((n) => {
+    const base = baseNodeById.get(n.id);
+    let status: CopilotDiffStatus;
+    if (!base) {
+      status = "added";
+      addedNodeIds.push(n.id);
+    } else if (_nodesDiffer(base, n)) {
+      status = "modified";
+      modifiedNodeIds.push(n.id);
+    } else {
+      status = "unchanged";
+    }
+    return {
+      ...n,
+      // xyflow respects the `draggable` flag per-node. Preview is
+      // read-only, so we disable dragging at the node level too —
+      // the FlowCanvas-level flags are a backstop.
+      draggable: false,
+      selectable: true,
+      data: {
+        ...(n.data as Record<string, unknown>),
+        __copilotDiff: status,
+      },
+    };
+  });
+
+  const addedEdgeIds: string[] = [];
+  const annotatedEdges: Edge[] = draftEdges.map((e) => {
+    const isNew = !baseEdgeIds.has(e.id);
+    if (isNew) addedEdgeIds.push(e.id);
+    return {
+      ...e,
+      animated: isNew,
+      style: {
+        ...(e.style ?? {}),
+        strokeDasharray: isNew ? "6 4" : undefined,
+      },
+    };
+  });
+
+  return {
+    nodes: annotated,
+    edges: annotatedEdges,
+    addedNodeIds,
+    modifiedNodeIds,
+    addedEdgeIds,
+  };
+}
+
+
+function _nodesDiffer(a: Node, b: Node): boolean {
+  // Compare config + label + displayName. Position changes count as
+  // "unchanged" for diff purposes (the copilot might re-layout
+  // without really mutating the semantic graph).
+  const aData = (a.data ?? {}) as Record<string, unknown>;
+  const bData = (b.data ?? {}) as Record<string, unknown>;
+  if (aData.label !== bData.label) return true;
+  if (aData.displayName !== bData.displayName) return true;
+  const aCfg = JSON.stringify(aData.config ?? {});
+  const bCfg = JSON.stringify(bData.config ?? {});
+  return aCfg !== bCfg;
+}
