@@ -175,27 +175,87 @@ def poll_until_done(
     )
 
 
-def extract_response_text(task: dict[str, Any]) -> str:
-    """Pull concatenated text from a completed task's artifacts.
+def extract_response_parts(task: dict[str, Any]) -> dict[str, Any]:
+    """Fan out a completed task's artifacts into ``{text, data, files}``.
 
-    Falls back to the status message if no artifacts are present
-    (some agents return the answer inline in status.message for simple tasks).
+    A2A-01.c: remote agents can return mixed TextPart / DataPart /
+    FilePart content. The Agent Call node previously only saw text;
+    this helper returns the full surface so downstream nodes can
+    route on the structured payload. The ``file`` variant's bytes
+    field is base64-decoded into raw bytes for the caller — URIs
+    pass through as-is.
+
+    Shape::
+
+        {
+          "text":  "concatenated prose",
+          "data":  [JSON-any, JSON-any, ...],   # one per DataPart
+          "files": [                            # one per FilePart
+            {"name": str|None, "mimeType": str|None,
+             "bytes": bytes|None, "uri": str|None},
+            ...
+          ],
+        }
+
+    Falls back to the status message's parts when the task carried
+    no artifacts (simple agents inline the answer in ``status.message``).
     """
-    parts: list[str] = []
+    import base64
+
+    text_bits: list[str] = []
+    data_bits: list[Any] = []
+    file_bits: list[dict[str, Any]] = []
+
+    def _absorb_parts(source_parts: Any) -> None:
+        if not isinstance(source_parts, list):
+            return
+        for part in source_parts:
+            if not isinstance(part, dict):
+                continue
+            if isinstance(part.get("text"), str):
+                text_bits.append(part["text"])
+            if part.get("data") is not None:
+                data_bits.append(part["data"])
+            file_ref = part.get("file")
+            if isinstance(file_ref, dict):
+                raw = file_ref.get("bytes")
+                decoded: bytes | None = None
+                if isinstance(raw, str) and raw:
+                    try:
+                        decoded = base64.b64decode(raw)
+                    except Exception:  # noqa: BLE001 — malformed input
+                        logger.info(
+                            "A2A: FilePart.bytes failed base64 decode "
+                            "(name=%r) — passing through as raw string",
+                            file_ref.get("name"),
+                        )
+                file_bits.append({
+                    "name": file_ref.get("name"),
+                    "mimeType": file_ref.get("mimeType") or part.get("mimeType"),
+                    "bytes": decoded if decoded is not None else raw,
+                    "uri": file_ref.get("uri"),
+                })
 
     for artifact in task.get("artifacts", []):
-        for part in artifact.get("parts", []):
-            if isinstance(part.get("text"), str):
-                parts.append(part["text"])
+        _absorb_parts(artifact.get("parts"))
 
-    if parts:
-        return "".join(parts)
+    if not text_bits and not data_bits and not file_bits:
+        # Fallback: status message text (some agents return answers
+        # inline in status.message for simple tasks).
+        status_msg = task.get("status", {}).get("message")
+        if isinstance(status_msg, dict):
+            _absorb_parts(status_msg.get("parts"))
 
-    # Fallback: status message text
-    status_msg = task.get("status", {}).get("message")
-    if status_msg:
-        for part in status_msg.get("parts", []):
-            if isinstance(part.get("text"), str):
-                parts.append(part["text"])
+    return {
+        "text": "".join(text_bits),
+        "data": data_bits,
+        "files": file_bits,
+    }
 
-    return "".join(parts)
+
+def extract_response_text(task: dict[str, Any]) -> str:
+    """Back-compat shim — returns just the concatenated text from
+    ``extract_response_parts``. Existing callers (A2A Agent Call
+    node handler) keep working without a signature change.
+    """
+    return extract_response_parts(task)["text"]

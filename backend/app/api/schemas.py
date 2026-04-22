@@ -356,14 +356,53 @@ class ArchiveConversationEpisodeOut(BaseModel):
 # A2A Protocol (Agent-to-Agent)
 # ---------------------------------------------------------------------------
 
+class A2AFileReference(BaseModel):
+    """A2A v1.0 FilePart body.
+
+    ``bytes`` (base64-encoded) and ``uri`` are mutually exclusive —
+    callers pass one or the other. We accept either shape without
+    enforcing the exclusivity on the Pydantic side so Pydantic errors
+    stay out of the JSON-RPC error envelope; the consumer side in
+    ``_parse_message_parts`` picks whichever is set.
+    """
+    name: str | None = None
+    mimeType: str | None = None
+    bytes: str | None = None   # base64
+    uri: str | None = None
+
+
 class A2AMessagePart(BaseModel):
-    """A single content unit inside an A2A message (text or future media types)."""
+    """A single content unit inside an A2A message.
+
+    A2A v1.0 defines the Part union as a tagged OneOf over four
+    variants. We encode it here via field-presence (the Google ADK
+    + LangGraph convention) — set exactly one of ``text`` / ``data``
+    / ``file`` per part. ``mimeType`` is optional at the part level
+    and is most useful on DataParts where it discriminates JSON
+    shape (e.g. ``application/vnd.slack.message+json``).
+
+    Back-compat: v0.2.x clients only set ``text``; nothing breaks
+    when the other fields are left null.
+    """
+    # TextPart
     text: str | None = None
+    # DataPart — JSON-any. We use Any to preserve the caller's
+    # shape without coercing; downstream workflows read this via
+    # trigger_payload.message_parts.
+    data: Any | None = None
+    # FilePart
+    file: A2AFileReference | None = None
+    # Optional MIME on the part itself; spec allows it on data +
+    # file parts.
+    mimeType: str | None = None
 
 
 class A2AMessage(BaseModel):
     role: str = "user"
     parts: list[A2AMessagePart]
+    # v1.0 messages carry an optional metadata bag — we use it for
+    # skillId routing (see a2a.py::_read_metadata_skill_id).
+    metadata: dict[str, Any] | None = None
 
 
 class A2ATaskStatus(BaseModel):
@@ -374,7 +413,15 @@ class A2ATaskStatus(BaseModel):
 
 
 class A2AArtifact(BaseModel):
-    """Final output of a completed task — one or more content parts."""
+    """Final output of a completed task — one or more content parts.
+
+    v1.0 artifacts can mix text, data, and file parts (e.g. a
+    workflow returns both a prose summary AND the structured
+    context the caller wanted to drop into their own pipeline).
+    Our ``_instance_to_task`` emits text + optional data today;
+    file emission is reserved for a follow-up once we have a
+    workflow node that produces file output.
+    """
     index: int = 0
     parts: list[A2AMessagePart]
     lastChunk: bool | None = None

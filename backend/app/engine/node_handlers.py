@@ -892,6 +892,7 @@ def _handle_a2a_call(
         fetch_agent_card,
         send_task,
         poll_until_done,
+        extract_response_parts,
         extract_response_text,
     )
 
@@ -981,18 +982,27 @@ def _handle_a2a_call(
 
     final_state = final_task["status"]["state"]
 
-    # 4. Extract response text
-    response_text = extract_response_text(final_task)
+    # 4. Extract the full Part surface (A2A-01.c). ``response`` stays
+    #    a plain string for back compat with existing downstream
+    #    expressions; data + files are exposed alongside so workflows
+    #    that need the structured payload can read it without
+    #    re-parsing ``task.artifacts``.
+    parts = extract_response_parts(final_task)
+    response_text = parts["text"]
 
     logger.info(
-        "A2A Agent Call: completed task=%s state=%s response_len=%d",
+        "A2A Agent Call: completed task=%s state=%s response_len=%d "
+        "data_parts=%d file_parts=%d",
         task_id, final_state, len(response_text),
+        len(parts["data"]), len(parts["files"]),
     )
 
     return {
         "task_id":  task_id,
         "state":    final_state,
         "response": response_text,
+        "data":     parts["data"],
+        "files":    parts["files"],
         "skill_id": skill_id,
         "agent":    card.get("name", agent_url),
         "task":     final_task,

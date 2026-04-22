@@ -427,3 +427,277 @@ def test_map_a2a_state_falls_back_to_unknown_not_working():
     inst = _fake_instance(status="running")
     inst.status = None
     assert _map_a2a_state(inst) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# A2A-01.c — multi-part inbound messages
+# ---------------------------------------------------------------------------
+
+
+def test_parse_message_parts_splits_text_data_files():
+    from app.api.a2a import _parse_message_parts
+
+    msg = {
+        "role": "user",
+        "parts": [
+            {"text": "please summarise"},
+            {"data": {"priority": "high", "recipient": "team"}},
+            {
+                "file": {
+                    "name": "logs.txt",
+                    "mimeType": "text/plain",
+                    "bytes": "aGVsbG8=",  # "hello"
+                },
+            },
+            {"text": "in three bullets"},
+        ],
+    }
+
+    parsed = _parse_message_parts(msg)
+    assert parsed["text"] == "please summarise in three bullets"
+    assert parsed["data"] == [{"priority": "high", "recipient": "team"}]
+    assert parsed["files"][0]["name"] == "logs.txt"
+    assert parsed["files"][0]["bytes"] == "aGVsbG8="  # still base64 on inbound
+    assert parsed["files"][0]["mimeType"] == "text/plain"
+
+
+def test_parse_message_parts_uses_part_mime_type_fallback():
+    """When a FilePart has no nested mimeType, the part-level
+    mimeType field wins."""
+    from app.api.a2a import _parse_message_parts
+
+    msg = {
+        "parts": [
+            {
+                "mimeType": "application/pdf",
+                "file": {"name": "doc.pdf", "uri": "https://ex.com/doc.pdf"},
+            },
+        ],
+    }
+    parsed = _parse_message_parts(msg)
+    assert parsed["files"][0]["mimeType"] == "application/pdf"
+    assert parsed["files"][0]["uri"] == "https://ex.com/doc.pdf"
+    assert parsed["files"][0]["bytes"] is None
+
+
+def test_parse_message_parts_ignores_malformed_parts():
+    from app.api.a2a import _parse_message_parts
+
+    parsed = _parse_message_parts({"parts": ["bare string", 42, None, {"text": "ok"}]})
+    assert parsed["text"] == "ok"
+    assert parsed["data"] == []
+    assert parsed["files"] == []
+
+
+def test_parse_message_parts_empty_or_missing_message():
+    from app.api.a2a import _parse_message_parts
+    assert _parse_message_parts(None) == {"text": "", "data": [], "files": []}
+    assert _parse_message_parts({}) == {"text": "", "data": [], "files": []}
+    assert _parse_message_parts({"parts": []}) == {
+        "text": "", "data": [], "files": [],
+    }
+
+
+def test_tasks_send_propagates_multi_part_message_to_trigger_payload(
+    client_and_session,
+):
+    """End-to-end: multi-part inbound message → trigger_payload
+    carries both the legacy ``message`` string (text) and the new
+    ``message_parts`` rich dict."""
+    client, session = client_and_session
+    wf = _stub_workflow()
+    _stage_send_success(session, wf)
+
+    captured: dict = {}
+
+    def _capture_instance(obj):
+        # session.add is called with the WorkflowInstance — snapshot
+        # its trigger_payload before commit/refresh.
+        if hasattr(obj, "trigger_payload"):
+            captured["trigger_payload"] = obj.trigger_payload
+
+    session.add.side_effect = _capture_instance
+
+    with patch("app.security.rate_limiter.check_execution_quota"), \
+         patch("app.workers.tasks.execute_workflow_task.delay"):
+        resp = client.post(
+            f"/tenants/{TENANT}/a2a",
+            headers={"Authorization": "Bearer dummy"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [
+                            {"text": "hi"},
+                            {"data": {"priority": "high"}},
+                        ],
+                        "metadata": {"skillId": str(wf.id)},
+                    },
+                },
+            },
+        )
+
+    assert resp.status_code == 200
+    payload = captured["trigger_payload"]
+    # Back-compat: message stays a flat string.
+    assert payload["message"] == "hi"
+    # New: message_parts carries the rich shape.
+    assert payload["message_parts"]["text"] == "hi"
+    assert payload["message_parts"]["data"] == [{"priority": "high"}]
+
+
+# ---------------------------------------------------------------------------
+# A2A-01.c — multi-part outbound artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_completed_artifact_emits_text_and_data_parts():
+    """A completed task's artifact carries a TextPart with the
+    prose response AND a DataPart with the non-internal context so
+    downstream workflows get the structured output for free."""
+    from app.api.a2a import _build_completed_artifact_parts
+
+    context = {
+        "node_1": {"response": "Summary: ok"},
+        "node_2": {"user_id": 42, "routed_to": "team-a"},
+        # Internal key — must NOT leak into the artifact.
+        "_approval_message": "waiting for the boss",
+    }
+
+    parts = _build_completed_artifact_parts(context)
+    # TextPart first (prose response).
+    assert parts[0]["text"] == "Summary: ok"
+    # DataPart second — includes every non-internal key.
+    data = parts[1]["data"]
+    assert data["node_1"] == {"response": "Summary: ok"}
+    assert data["node_2"] == {"user_id": 42, "routed_to": "team-a"}
+    assert "_approval_message" not in data
+    assert parts[1]["mimeType"] == "application/json"
+
+
+def test_completed_artifact_text_only_when_no_public_context():
+    from app.api.a2a import _build_completed_artifact_parts
+
+    # Only internal keys → no DataPart, but TextPart from the
+    # internal response is still emitted (it's extracted via
+    # _extract_final_response which looks at node_* keys, so this
+    # empty-context case produces no parts at all).
+    parts = _build_completed_artifact_parts({"_only_internal": True})
+    assert parts == []
+
+
+def test_completed_artifact_drops_when_context_is_empty():
+    from app.api.a2a import _build_completed_artifact_parts
+    assert _build_completed_artifact_parts({}) == []
+
+
+# ---------------------------------------------------------------------------
+# A2A-01.c — outbound client parses rich artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_extract_response_parts_decodes_base64_file_bytes():
+    """The Agent Call node handler receives raw bytes, not the
+    base64 string, so downstream nodes can pipe files straight into
+    handlers that expect `bytes`."""
+    from app.engine.a2a_client import extract_response_parts
+
+    task = {
+        "status": {"state": "completed"},
+        "artifacts": [{
+            "index": 0,
+            "parts": [
+                {"text": "here's the report"},
+                {"data": {"rows": 42}},
+                {
+                    "file": {
+                        "name": "report.bin",
+                        "mimeType": "application/octet-stream",
+                        "bytes": "aGVsbG8=",  # "hello"
+                    },
+                },
+            ],
+        }],
+    }
+    parts = extract_response_parts(task)
+    assert parts["text"] == "here's the report"
+    assert parts["data"] == [{"rows": 42}]
+    assert parts["files"][0]["bytes"] == b"hello"
+    assert parts["files"][0]["name"] == "report.bin"
+    assert parts["files"][0]["mimeType"] == "application/octet-stream"
+
+
+def test_extract_response_parts_preserves_uri_files_without_decoding():
+    from app.engine.a2a_client import extract_response_parts
+
+    task = {
+        "status": {"state": "completed"},
+        "artifacts": [{
+            "index": 0,
+            "parts": [{
+                "file": {
+                    "name": "doc.pdf",
+                    "mimeType": "application/pdf",
+                    "uri": "https://ex.com/doc.pdf",
+                },
+            }],
+        }],
+    }
+    parts = extract_response_parts(task)
+    assert parts["files"][0]["uri"] == "https://ex.com/doc.pdf"
+    assert parts["files"][0]["bytes"] is None
+
+
+def test_extract_response_parts_handles_malformed_base64_gracefully():
+    """A remote agent sending garbage in ``bytes`` must not crash
+    the Agent Call node — pass through the raw string."""
+    from app.engine.a2a_client import extract_response_parts
+
+    task = {
+        "status": {"state": "completed"},
+        "artifacts": [{
+            "index": 0,
+            "parts": [{"file": {"name": "x", "bytes": "!!!not-base64!!!"}}],
+        }],
+    }
+    parts = extract_response_parts(task)
+    # Pass-through keeps the Agent Call node producing a result
+    # envelope the agent can narrate, rather than 500-ing.
+    assert parts["files"][0]["bytes"] == "!!!not-base64!!!"
+
+
+def test_extract_response_text_shim_stays_text_only():
+    """Back-compat shim: existing callers of extract_response_text
+    keep getting a plain string even when the remote returned
+    structured + file parts."""
+    from app.engine.a2a_client import extract_response_text
+
+    task = {
+        "status": {"state": "completed"},
+        "artifacts": [{
+            "parts": [
+                {"text": "hi"},
+                {"data": {"x": 1}},
+                {"file": {"name": "a", "bytes": "aGVsbG8="}},
+            ],
+        }],
+    }
+    assert extract_response_text(task) == "hi"
+
+
+def test_extract_response_parts_falls_back_to_status_message():
+    """Simple agents inline the answer in status.message instead of
+    spawning an artifact — the parser still pulls the text."""
+    from app.engine.a2a_client import extract_response_parts
+
+    task = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "inline answer"}]},
+        },
+        "artifacts": [],
+    }
+    assert extract_response_parts(task)["text"] == "inline answer"

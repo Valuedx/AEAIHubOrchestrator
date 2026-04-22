@@ -205,12 +205,17 @@ def _instance_to_task(
                 "parts": [{"text": approval_msg}],
             }
 
-    # For completed, surface the final LLM response from context
+    # For completed, surface the final response as a multi-part
+    # artifact (A2A-01.c): one TextPart with the prose response the
+    # caller probably wants to show the user, plus a DataPart
+    # carrying the full non-internal context so pipelines that pipe
+    # our output into their own workflows get the structured side
+    # for free.
     artifacts = []
     if state == "completed" and instance.context_json:
-        response_text = _extract_final_response(instance.context_json)
-        if response_text:
-            artifacts = [{"index": 0, "parts": [{"text": response_text}], "lastChunk": True}]
+        parts = _build_completed_artifact_parts(instance.context_json)
+        if parts:
+            artifacts = [{"index": 0, "parts": parts, "lastChunk": True}]
 
     return {
         "id": str(instance.id),
@@ -218,6 +223,37 @@ def _instance_to_task(
         "status": status,
         "artifacts": artifacts,
     }
+
+
+def _build_completed_artifact_parts(context_json: dict) -> list[dict]:
+    """Build the Part list for a completed task's artifact.
+
+    Emits up to two parts:
+
+    1. TextPart with the final LLM response (same string
+       ``_extract_final_response`` used to return).
+    2. DataPart with every non-internal key in the context dict —
+       the downstream workflow's structured output. Internal
+       ``_``-prefixed keys are stripped so we don't leak
+       ``_approval_message`` etc. to the A2A caller.
+
+    If neither yields anything we return ``[]`` and
+    ``_instance_to_task`` suppresses the artifact entirely.
+    """
+    parts: list[dict] = []
+
+    response_text = _extract_final_response(context_json)
+    if response_text:
+        parts.append({"text": response_text})
+
+    public = {
+        k: v for k, v in context_json.items()
+        if not str(k).startswith("_")
+    }
+    if public:
+        parts.append({"data": public, "mimeType": "application/json"})
+
+    return parts
 
 
 def _extract_final_response(context_json: dict) -> str:
@@ -249,6 +285,57 @@ def _read_metadata_skill_id(message: Any) -> str | None:
     if not isinstance(metadata, dict):
         return None
     return metadata.get("skillId") or metadata.get("skill_id")
+
+
+def _parse_message_parts(message: Any) -> dict[str, Any]:
+    """Fan an inbound A2A v1.0 Message out into the richer shape
+    downstream workflows want (A2A-01.c).
+
+    Returns::
+
+        {
+          "text": str,        # concatenated text parts
+          "data": list[Any],  # every DataPart's payload, in order
+          "files": list[dict],# every FilePart's reference, in order
+        }
+
+    Text parts are joined with single spaces — the same behaviour
+    the v0.2.x ``_tasks_send`` had, so existing workflows keep
+    receiving ``trigger_payload.message`` as a plain string. Data
+    and file parts are net-new in 01.c: workflows that want the
+    richer payload read ``trigger_payload.message_parts`` instead.
+    """
+    text_bits: list[str] = []
+    data_bits: list[Any] = []
+    file_bits: list[dict[str, Any]] = []
+
+    if not isinstance(message, dict):
+        return {"text": "", "data": [], "files": []}
+
+    for part in message.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        if isinstance(part.get("text"), str):
+            text_bits.append(part["text"])
+        if part.get("data") is not None:
+            data_bits.append(part["data"])
+        file_ref = part.get("file")
+        if isinstance(file_ref, dict):
+            # Preserve whichever of bytes / uri the caller supplied.
+            # mimeType + name are best-effort; mirrored through so
+            # engine-side handlers can route on them.
+            file_bits.append({
+                "name": file_ref.get("name"),
+                "mimeType": file_ref.get("mimeType") or part.get("mimeType"),
+                "bytes": file_ref.get("bytes"),
+                "uri": file_ref.get("uri"),
+            })
+
+    return {
+        "text": " ".join(text_bits).strip(),
+        "data": data_bits,
+        "files": file_bits,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -481,15 +568,16 @@ def _tasks_send(params: dict, tenant_id: str, db: Session) -> dict:
     if not wf:
         raise HTTPException(404, f"Skill '{raw_skill_id}' not found or not published")
 
-    # Extract text from A2A message parts (guard against malformed message)
-    parts = message.get("parts", []) if isinstance(message, dict) else []
-    text = " ".join(
-        p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")
-    ).strip()
-
-    trigger_payload = {
+    # A2A-01.c — fan the message out across text / data / file
+    # parts. `message` stays a plain string for back compat with
+    # existing workflows that read trigger_payload.message; the
+    # rich shape lands on trigger_payload.message_parts so newer
+    # workflows can read data + file payloads without parsing.
+    parsed = _parse_message_parts(message)
+    trigger_payload: dict[str, Any] = {
         "session_id": session_id,
-        "message": text,
+        "message": parsed["text"],
+        "message_parts": parsed,
         "a2a": True,
     }
     # Propagate caller-supplied task id for idempotency tracking

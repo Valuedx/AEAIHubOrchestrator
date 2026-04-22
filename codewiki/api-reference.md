@@ -495,6 +495,24 @@ ORCHESTRATOR_A2A_DOCUMENTATION_URL="https://your.example/docs"
 
 **Skill routing note:** v1.0's `message/send` has no top-level `skillId`; the Google ADK / LangGraph convention puts the id inside `message.metadata.skillId`. Our dispatcher reads from both locations so either param shape works.
 
+**Message Part types (A2A-01.c):** messages and artifacts carry a list of parts; each part is one of four variants discriminated by field presence (Google ADK / LangGraph convention).
+
+| Variant | Shape | Example |
+|---|---|---|
+| TextPart | `{text: string}` | `{"text": "please summarise"}` |
+| DataPart | `{data: any JSON, mimeType?: string}` | `{"data": {"priority": "high"}, "mimeType": "application/vnd.slack.message+json"}` |
+| FilePart (bytes) | `{file: {name?, mimeType?, bytes: base64}}` | `{"file": {"name": "logs.txt", "mimeType": "text/plain", "bytes": "aGVsbG8="}}` |
+| FilePart (uri) | `{file: {name?, mimeType?, uri: string}}` | `{"file": {"uri": "https://ex.com/doc.pdf", "mimeType": "application/pdf"}}` |
+
+**Inbound (`message/send` / `tasks/send`):** parts are fanned out into the workflow's `trigger_payload`:
+
+- `trigger_payload.message` — concatenated text (back-compat string, unchanged).
+- `trigger_payload.message_parts.text` — same as above.
+- `trigger_payload.message_parts.data` — list of DataPart payloads, in order.
+- `trigger_payload.message_parts.files` — list of FilePart references (bytes stay base64 on the inbound side; workflows decode as needed).
+
+**Outbound (completed task artifacts):** every completed task emits a single artifact with up to two parts — a TextPart carrying the final LLM response (prose for the user) plus a DataPart carrying every non-internal key in the workflow context (`_`-prefixed keys are stripped so internal markers don't leak). Workflows calling the **A2A Agent Call** node handler get `{response, data, files}` in the node output; `response` stays a plain string for back compat while `data`/`files` expose the richer payload — file bytes are base64-decoded to raw `bytes` on the outbound client side.
+
 **Task state mapping (A2A-01.b):** A2A v1.0 defines 8 states. Our `WorkflowInstance.status + suspended_reason` pair maps onto them:
 
 | WorkflowInstance `status` | `suspended_reason` | A2A state |
