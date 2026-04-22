@@ -39,6 +39,7 @@ def _row(
     rate_limit_window_seconds: int | None = None,
     smart_04_lints_enabled: bool | None = None,
     smart_06_mcp_discovery_enabled: bool | None = None,
+    smart_02_pattern_library_enabled: bool | None = None,
 ):
     row = MagicMock()
     row.execution_quota_per_hour = execution_quota_per_hour
@@ -51,6 +52,7 @@ def _row(
     # semantics (resolver should treat it as env fallback).
     row.smart_04_lints_enabled = smart_04_lints_enabled
     row.smart_06_mcp_discovery_enabled = smart_06_mcp_discovery_enabled
+    row.smart_02_pattern_library_enabled = smart_02_pattern_library_enabled
     return row
 
 
@@ -77,10 +79,11 @@ class TestEnvFallback:
             "mcp_pool_size": "env_default",
             "rate_limit_requests_per_window": "env_default",
             "rate_limit_window_seconds": "env_default",
-            # SMART-04 / SMART-06 flags (every SMART-XX ticket that
-            # ships adds its key here).
+            # SMART-XX flags (every SMART-XX ticket that ships adds
+            # its key here).
             "smart_04_lints_enabled": "env_default",
             "smart_06_mcp_discovery_enabled": "env_default",
+            "smart_02_pattern_library_enabled": "env_default",
         }
 
     def test_no_row_for_tenant_returns_env_defaults(self, patched_settings):
@@ -137,6 +140,7 @@ class TestRowOverrides:
             # fall through to env_default.
             "smart_04_lints_enabled": "env_default",
             "smart_06_mcp_discovery_enabled": "env_default",
+            "smart_02_pattern_library_enabled": "env_default",
         }
 
     def test_partial_override_inherits_missing_fields_from_env(self, patched_settings):

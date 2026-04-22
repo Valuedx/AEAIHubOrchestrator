@@ -54,6 +54,10 @@ class EffectivePolicy:
     # When off, the ``discover_mcp_tools`` runner tool returns an
     # empty list with ``discovery_enabled: false``.
     smart_06_mcp_discovery_enabled: bool
+    # SMART-02 — toggle the accepted-patterns library. Off = promote
+    # doesn't persist a pattern row and ``recall_patterns`` returns
+    # an empty list.
+    smart_02_pattern_library_enabled: bool
     source: dict[str, PolicySource]
 
 
@@ -66,6 +70,7 @@ def _env_defaults() -> EffectivePolicy:
         rate_limit_window_seconds=settings.rate_limit_window_seconds,
         smart_04_lints_enabled=settings.smart_04_lints_enabled,
         smart_06_mcp_discovery_enabled=settings.smart_06_mcp_discovery_enabled,
+        smart_02_pattern_library_enabled=settings.smart_02_pattern_library_enabled,
         source={
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
@@ -74,6 +79,7 @@ def _env_defaults() -> EffectivePolicy:
             "rate_limit_window_seconds": "env_default",
             "smart_04_lints_enabled": "env_default",
             "smart_06_mcp_discovery_enabled": "env_default",
+            "smart_02_pattern_library_enabled": "env_default",
         },
     )
 
@@ -159,6 +165,11 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 getattr(row, "smart_06_mcp_discovery_enabled", None),
                 settings.smart_06_mcp_discovery_enabled,
                 "smart_06_mcp_discovery_enabled",
+            ),
+            smart_02_pattern_library_enabled=_pick_bool(
+                getattr(row, "smart_02_pattern_library_enabled", None),
+                settings.smart_02_pattern_library_enabled,
+                "smart_02_pattern_library_enabled",
             ),
             source=source,
         )

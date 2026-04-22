@@ -35,12 +35,13 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `workflow_drafts` | Copilot draft workspace — ephemeral graph being edited, promoted into `workflow_definitions` on accept (COPILOT-01a, migration 0022) | Yes |
 | `copilot_sessions` | One chat session per draft; holds provider + model for the agent loop (0022) | Yes |
 | `copilot_turns` | Ordered user / assistant / tool messages replayed on reopen (0022) | Yes |
+| `copilot_accepted_patterns` | SMART-02 — snapshot of every promoted draft (graph + NL intent + tags) so the agent can retrieve nearest prior patterns as few-shot (0026) | Yes |
 
 **DV-07 (migration 0018):** `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` — when false, Schedule Triggers skip the workflow. Manual Run, PATCH, and duplicate all stay active.
 
 **COPILOT-01b.ii.b (migration 0023):** `workflow_definitions.is_ephemeral BOOLEAN NOT NULL DEFAULT FALSE` — the copilot's `execute_draft` runner tool creates transient WorkflowDefinition rows marked `is_ephemeral=true` so the engine can run them. Filtered out of `list_workflows`, scheduler scan, and A2A agent card. Reaped by `cleanup_ephemeral_workflows`.
 
-**SMART-04 + SMART-06 (migrations 0024 + 0025):** `tenant_policies.smart_04_lints_enabled` and `smart_06_mcp_discovery_enabled` both BOOLEAN NOT NULL DEFAULT TRUE — per-tenant opt-out for the two copilot intelligence features. Same nullable-column template will apply to SMART-01/02/03/05 as they ship.
+**SMART-04 + SMART-06 + SMART-02 (migrations 0024 + 0025 + 0026):** `tenant_policies.smart_04_lints_enabled`, `smart_06_mcp_discovery_enabled`, and `smart_02_pattern_library_enabled` — all BOOLEAN NOT NULL DEFAULT TRUE — per-tenant opt-out flags for the three copilot intelligence features shipped so far. Same column template applies to SMART-01/03/05 as they ship.
 
 ---
 
@@ -505,6 +506,7 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0023 | `0023_workflow_definitions_is_ephemeral.py` | **COPILOT-01b.ii.b** — add `is_ephemeral BOOLEAN NOT NULL DEFAULT FALSE` to `workflow_definitions` (marks the copilot's throwaway trial-run rows) |
 | 0024 | `0024_tenant_policies_smart_flags.py` | **SMART-04** — add `smart_04_lints_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
 | 0025 | `0025_tenant_policies_smart_06.py` | **SMART-06** — add `smart_06_mcp_discovery_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
+| 0026 | `0026_copilot_accepted_patterns.py` | **SMART-02** — `copilot_accepted_patterns` table (snapshot of promoted drafts + NL intent + tags, tenant-scoped RLS, `ix_accepted_pattern_tenant_created`) + `smart_02_pattern_library_enabled BOOLEAN NOT NULL DEFAULT TRUE` on `tenant_policies` |
 
 ### Running migrations
 

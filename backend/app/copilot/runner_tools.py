@@ -679,6 +679,8 @@ RUNNER_TOOL_NAMES = {
     "check_draft",
     # SMART-06
     "discover_mcp_tools",
+    # SMART-02
+    "recall_patterns",
 }
 
 
@@ -896,5 +898,15 @@ def dispatch(
     if tool_name == "discover_mcp_tools":
         return discover_mcp_tools(
             db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "recall_patterns":
+        from app.copilot import pattern_library
+
+        query = args.get("query") or args.get("nl_intent") or ""
+        top_k = args.get("top_k") or pattern_library.SMART_02_RECALL_DEFAULT_TOP_K
+        if not isinstance(query, str):
+            return {"error": "recall_patterns 'query' must be a string"}
+        return pattern_library.recall_patterns(
+            db, tenant_id=tenant_id, query=query, top_k=top_k,
         )
     raise KeyError(tool_name)

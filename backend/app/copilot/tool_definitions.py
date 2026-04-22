@@ -210,6 +210,48 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # pure tool_layer.py; the agent's dispatcher routes by tool name.
     # ----------------------------------------------------------------------
     {
+        "name": "recall_patterns",
+        "description": (
+            "Retrieve the nearest accepted workflow patterns this "
+            "tenant has promoted in the past so you can adapt them "
+            "as few-shot instead of synthesising from scratch. The "
+            "tenant's own conventions — naming, preferred MCP "
+            "servers, memory profile choices — live in these "
+            "patterns. Returns {enabled, query, match_count, "
+            "patterns: [{id, title, score, nl_intent, tags, "
+            "node_types, node_count, edge_count, created_at, "
+            "graph_json}]}. Call this AFTER intent-extract but "
+            "BEFORE add_node — if a strong match exists, adapt "
+            "that graph rather than synthesising a fresh one. "
+            "`enabled: false` means the tenant has opted out; "
+            "fall back to synthesising with no patterns to show "
+            "and don't offer to retrieve."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Free-form intent query — typically the "
+                        "user's most recent message. Tokens are "
+                        "scored against each candidate pattern's "
+                        "stored NL intent + tags + node types + "
+                        "title (2× title boost)."
+                    ),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": (
+                        "How many patterns to return. Default 3; "
+                        "capped at 10 server-side."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "discover_mcp_tools",
         "description": (
             "List the tools available on the tenant's connected MCP "

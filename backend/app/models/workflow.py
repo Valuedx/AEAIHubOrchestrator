@@ -383,6 +383,13 @@ class TenantPolicy(Base):
     smart_06_mcp_discovery_enabled = Column(
         Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
     )
+    # SMART-02 — accepted-patterns library: every successful promote
+    # saves the graph + NL intent so the agent can retrieve nearest
+    # prior patterns as few-shot for future drafts. Save + retrieve
+    # are pure DB I/O; default TRUE.
+    smart_02_pattern_library_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

@@ -251,6 +251,38 @@ describe("CopilotEventCard", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("renders recall_patterns summary with match count and disabled state", () => {
+    const enabled: CopilotAgentEvent = {
+      type: "tool_result",
+      id: "toolu_1",
+      name: "recall_patterns",
+      result: {
+        enabled: true,
+        query: "summarise slack",
+        match_count: 3,
+        patterns: [],
+      },
+      validation: null,
+      draft_version: 1,
+      error: null,
+    };
+    const { unmount } = render(<CopilotEventCard event={enabled} />);
+    expect(screen.getByText(/3 patterns/)).toBeInTheDocument();
+    unmount();
+
+    const disabled: CopilotAgentEvent = {
+      type: "tool_result",
+      id: "toolu_1",
+      name: "recall_patterns",
+      result: { enabled: false, query: "x", match_count: 0, patterns: [] },
+      validation: null,
+      draft_version: 1,
+      error: null,
+    };
+    render(<CopilotEventCard event={disabled} />);
+    expect(screen.getByText("disabled")).toBeInTheDocument();
+  });
+
   it("renders discover_mcp_tools summary with tool count and disabled state", () => {
     const enabled: CopilotAgentEvent = {
       type: "tool_result",

@@ -898,6 +898,7 @@ def test_check_draft_returns_schema_and_lints_when_flag_on():
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=True,
         smart_06_mcp_discovery_enabled=True,
+        smart_02_pattern_library_enabled=True,
         source={},
     )
     with patch(
@@ -939,6 +940,7 @@ def test_check_draft_skips_lints_when_flag_off():
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=False,
         smart_06_mcp_discovery_enabled=True,
+        smart_02_pattern_library_enabled=True,
         source={},
     )
     with patch(
@@ -967,6 +969,7 @@ def test_check_draft_lint_crash_does_not_poison_turn():
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=True,
         smart_06_mcp_discovery_enabled=True,
+        smart_02_pattern_library_enabled=True,
         source={},
     )
     with patch(
@@ -997,6 +1000,7 @@ def test_dispatch_routes_check_draft():
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=True,
         smart_06_mcp_discovery_enabled=True,
+        smart_02_pattern_library_enabled=True,
         source={},
     )
     with patch(
@@ -1022,7 +1026,7 @@ def test_runner_tool_names_includes_check_draft():
 # ---------------------------------------------------------------------------
 
 
-def _policy_with(smart_06: bool = True, smart_04: bool = True):
+def _policy_with(smart_06: bool = True, smart_04: bool = True, smart_02: bool = True):
     from app.engine.tenant_policy_resolver import EffectivePolicy
     return EffectivePolicy(
         execution_quota_per_hour=50, max_snapshots=20,
@@ -1030,6 +1034,7 @@ def _policy_with(smart_06: bool = True, smart_04: bool = True):
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=smart_04,
         smart_06_mcp_discovery_enabled=smart_06,
+        smart_02_pattern_library_enabled=smart_02,
         source={},
     )
 

@@ -28,6 +28,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -110,6 +111,49 @@ class CopilotSession(Base):
 
     __table_args__ = (
         Index("ix_session_tenant_draft", "tenant_id", "draft_id"),
+    )
+
+
+class CopilotAcceptedPattern(Base):
+    """SMART-02 — snapshot of a promoted draft used for future few-shot
+    retrieval. One row per successful ``/promote``; writes happen
+    inside the same transaction as the promote so a retrieval
+    read-after-write sees the new pattern immediately.
+
+    The row is intentionally denormalised — we store ``node_types``
+    and ``tags`` as JSONB arrays so keyword / overlap retrieval
+    doesn't have to re-walk the graph on every query. Retrieval is
+    O(log n) index lookup + in-memory scoring of the top-N recent
+    rows per tenant (``SMART_02_RETRIEVAL_CANDIDATES`` in
+    ``pattern_library.py``).
+
+    ``source_draft_id`` is intentionally NOT a FK — the draft is
+    deleted as part of promote, and we want to preserve the pattern
+    regardless.
+    """
+
+    __tablename__ = "copilot_accepted_patterns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    source_draft_id = Column(UUID(as_uuid=True), nullable=True)
+    source_workflow_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_definitions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title = Column(String(256), nullable=False)
+    nl_intent = Column(Text, nullable=True)
+    graph_json = Column(JSONB, nullable=False)
+    node_types = Column(JSONB, nullable=False, default=list)
+    tags = Column(JSONB, nullable=False, default=list)
+    node_count = Column(Integer, nullable=False, default=0)
+    edge_count = Column(Integer, nullable=False, default=0)
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_accepted_pattern_tenant_created", "tenant_id", "created_at"),
     )
 
 

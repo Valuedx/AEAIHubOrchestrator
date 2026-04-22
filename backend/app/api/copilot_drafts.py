@@ -318,6 +318,27 @@ def promote_draft(
         workflow = _promote_as_new_version(db, tenant_id, draft, body)
         created = False
 
+    # SMART-02 — persist the accepted graph + NL intent as a
+    # learnable pattern before the draft (and its turn history) is
+    # deleted below. save_accepted_pattern is best-effort — a save
+    # failure is logged and swallowed so it can't block a promote.
+    # It also reads the tenant's opt-out flag internally, so we
+    # don't need to gate the call site on the policy.
+    from app.copilot.pattern_library import save_accepted_pattern
+
+    # Flush so the new workflow row has an id the pattern FK can
+    # reference. Without this the FK insert fires before the
+    # workflow insert has been flushed, and Postgres rejects it.
+    db.flush()
+    save_accepted_pattern(
+        db,
+        tenant_id=tenant_id,
+        source_draft_id=draft.id,
+        source_workflow_id=workflow.id,
+        title=workflow.name,
+        graph_json=workflow.graph_json or {"nodes": [], "edges": []},
+    )
+
     # Draft is consumed once promoted. Deleting it in the same
     # transaction keeps the invariant "a promoted draft no longer
     # exists" simple to reason about.

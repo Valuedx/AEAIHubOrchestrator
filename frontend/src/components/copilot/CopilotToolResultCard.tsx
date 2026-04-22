@@ -170,6 +170,8 @@ function summariseArgs(name: string, args: Record<string, unknown>): string {
       return "AE fork";
     case "discover_mcp_tools":
       return args.server_label ? `server=${args.server_label}` : "default server";
+    case "recall_patterns":
+      return args.query ? `"${String(args.query).slice(0, 40)}"` : "";
     default:
       return "";
   }
@@ -346,6 +348,13 @@ function ResultSummary({
       }
       const tools = Array.isArray(r.tools) ? r.tools.length : 0;
       return <span className="text-muted-foreground">{tools} MCP tool{tools === 1 ? "" : "s"}</span>;
+    }
+    case "recall_patterns": {
+      if (r.enabled === false) {
+        return <span className="text-muted-foreground italic">disabled</span>;
+      }
+      const count = typeof r.match_count === "number" ? r.match_count : 0;
+      return <span className="text-muted-foreground">{count} pattern{count === 1 ? "" : "s"}</span>;
     }
     default:
       return <span className="text-muted-foreground">ok</span>;

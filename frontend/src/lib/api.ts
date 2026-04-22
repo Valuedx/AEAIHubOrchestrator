@@ -489,6 +489,7 @@ export interface TenantPolicyOut {
   flags: {
     smart_04_lints_enabled: boolean;
     smart_06_mcp_discovery_enabled: boolean;
+    smart_02_pattern_library_enabled: boolean;
   };
   source: {
     execution_quota_per_hour: TenantPolicySource;
@@ -499,6 +500,7 @@ export interface TenantPolicyOut {
     // SMART-XX flags
     smart_04_lints_enabled: TenantPolicySource;
     smart_06_mcp_discovery_enabled: TenantPolicySource;
+    smart_02_pattern_library_enabled: TenantPolicySource;
   };
   updated_at: string | null;
 }
@@ -557,6 +559,8 @@ export interface TenantPolicyUpdate {
   smart_04_lints_enabled?: boolean | null;
   // SMART-06 — opt-out toggle for MCP tool discovery.
   smart_06_mcp_discovery_enabled?: boolean | null;
+  // SMART-02 — opt-out toggle for the accepted-patterns library.
+  smart_02_pattern_library_enabled?: boolean | null;
 }
 
 export interface KBChunkOut {
@@ -607,7 +611,11 @@ export type CopilotToolName =
   | "check_draft"
   // SMART-06 — list MCP tools the tenant has connected so the
   // agent can propose relevant ones during drafting.
-  | "discover_mcp_tools";
+  | "discover_mcp_tools"
+  // SMART-02 — recall nearest accepted workflow patterns this
+  // tenant promoted in the past; agent uses them as few-shot
+  // instead of synthesising from scratch.
+  | "recall_patterns";
 
 // SMART-04 — one structured lint finding surfaced by check_draft.
 export type CopilotLintSeverity = "error" | "warn";

@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     # true — discovery is a cached list_tools call, zero-LLM-cost.
     smart_06_mcp_discovery_enabled: bool = True
 
+    # SMART-02 — global default for the accepted-patterns library.
+    # Default true; zero LLM cost (pure DB I/O). Off means the
+    # agent gets no few-shot retrieval from prior promotes, and
+    # promote doesn't persist a pattern row.
+    smart_02_pattern_library_enabled: bool = True
+
     # Optional: process-wide default URL for the AutomationEdge Copilot
     # (a separate product the workflow authoring copilot can hand off to
     # when the user wants to design deterministic RPA steps before wiring

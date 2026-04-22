@@ -19,6 +19,7 @@ This page is the canonical reference. Read §4 before assuming every env knob is
 | `rate_limit_window_seconds` | New — replaces the old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string ("1 minute") | Per-tenant, env fallback | Same middleware |
 | `smart_04_lints_enabled` | — | **Default TRUE.** SMART-04 proactive authoring lints for the copilot. Cost-conscious tenants flip off to skip the lint pass (schema validation still runs). | `copilot/runner_tools.check_draft` |
 | `smart_06_mcp_discovery_enabled` | — | **Default TRUE.** SMART-06 MCP tool discovery path. Off = the `discover_mcp_tools` runner tool returns `{discovery_enabled: false, tools: []}` and the system prompt skips MCP suggestions in narration. | `copilot/runner_tools.discover_mcp_tools` |
+| `smart_02_pattern_library_enabled` | — | **Default TRUE.** SMART-02 accepted-patterns library. Off = `/promote` skips the pattern save and `recall_patterns` returns `{enabled: false, patterns: []}`. Agent falls back to synthesising without tenant-specific few-shot. | `copilot/pattern_library.save_accepted_pattern` + `recall_patterns` |
 
 > **Historical note:** before ADMIN-02 the `slowapi.Limiter` was instantiated with `default_limits` but no middleware was ever installed to apply it. The rate-limit env vars were effectively dead config. ADMIN-02's `TenantRateLimitMiddleware` is the first real enforcement. The old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string setting is deprecated — the new `ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS` int supersedes it.
 

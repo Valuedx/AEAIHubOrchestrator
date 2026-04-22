@@ -102,6 +102,14 @@ class TenantPolicyUpdate(BaseModel):
             "during drafting. False = skip. Null clears the override."
         ),
     )
+    smart_02_pattern_library_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-02 — toggle the accepted-patterns library. True = "
+            "promote saves patterns and recall_patterns returns them. "
+            "False = skip both. Null clears the override."
+        ),
+    )
 
 
 class TenantPolicyOut(BaseModel):
@@ -135,6 +143,7 @@ def get_policy(
         flags={
             "smart_04_lints_enabled": policy.smart_04_lints_enabled,
             "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
+            "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row and row.updated_at else None,
@@ -174,6 +183,8 @@ def update_policy(
         row.smart_04_lints_enabled = body.smart_04_lints_enabled
     if "smart_06_mcp_discovery_enabled" in sent:
         row.smart_06_mcp_discovery_enabled = body.smart_06_mcp_discovery_enabled
+    if "smart_02_pattern_library_enabled" in sent:
+        row.smart_02_pattern_library_enabled = body.smart_02_pattern_library_enabled
 
     db.commit()
     db.refresh(row)
@@ -193,6 +204,7 @@ def update_policy(
         flags={
             "smart_04_lints_enabled": policy.smart_04_lints_enabled,
             "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
+            "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row.updated_at else None,
