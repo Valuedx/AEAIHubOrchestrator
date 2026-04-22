@@ -602,6 +602,73 @@ export interface CopilotPromoteOut {
 }
 
 // ---------------------------------------------------------------------------
+// COPILOT-01b — session + turn streaming types
+// ---------------------------------------------------------------------------
+
+export interface CopilotSessionOut {
+  id: string;
+  tenant_id: string;
+  draft_id: string;
+  provider: string;
+  model: string;
+  /** active | abandoned | completed */
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CopilotTurnOut {
+  id: string;
+  session_id: string;
+  turn_index: number;
+  /** user | assistant | tool */
+  role: string;
+  content_json: Record<string, unknown>;
+  tool_calls_json: Record<string, unknown> | Array<Record<string, unknown>> | null;
+  token_usage_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface CopilotProvidersOut {
+  providers: string[];
+  default_model: Record<string, string>;
+  tools: Array<{
+    name: CopilotToolName | string;
+    description: string;
+    input_schema: Record<string, unknown>;
+  }>;
+}
+
+/**
+ * Every event the agent runner streams over SSE shares this discriminated
+ * union shape. See `backend/app/copilot/agent.py` for the authoritative
+ * contract.
+ */
+export type CopilotAgentEvent =
+  | { type: "assistant_text"; text: string }
+  | {
+      type: "tool_call";
+      id: string;
+      name: CopilotToolName | string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "tool_result";
+      id: string;
+      name: CopilotToolName | string;
+      result: Record<string, unknown>;
+      validation: CopilotDraftValidation | null;
+      draft_version: number;
+      error: string | null;
+    }
+  | { type: "error"; message: string; recoverable: boolean }
+  | {
+      type: "done";
+      turns_added: string[];
+      final_text: string;
+    };
+
+// ---------------------------------------------------------------------------
 // Workflow CRUD
 // ---------------------------------------------------------------------------
 
@@ -1276,5 +1343,113 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     });
+  },
+
+  // --- COPILOT-01b — sessions + turn streaming ---
+
+  getCopilotProviders(): Promise<CopilotProvidersOut> {
+    return request("/api/v1/copilot/sessions/providers");
+  },
+
+  listCopilotSessions(draftId?: string): Promise<CopilotSessionOut[]> {
+    const qs = draftId ? `?draft_id=${encodeURIComponent(draftId)}` : "";
+    return request(`/api/v1/copilot/sessions${qs}`);
+  },
+
+  createCopilotSession(body: {
+    draft_id: string;
+    provider?: string;
+    model?: string;
+  }): Promise<CopilotSessionOut> {
+    return request("/api/v1/copilot/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getCopilotSession(sessionId: string): Promise<CopilotSessionOut> {
+    return request(`/api/v1/copilot/sessions/${sessionId}`);
+  },
+
+  abandonCopilotSession(sessionId: string): Promise<void> {
+    return request(`/api/v1/copilot/sessions/${sessionId}`, { method: "DELETE" });
+  },
+
+  listCopilotTurns(sessionId: string): Promise<CopilotTurnOut[]> {
+    return request(`/api/v1/copilot/sessions/${sessionId}/turns`);
+  },
+
+  /**
+   * Send a user message and stream the agent's response as
+   * {@link CopilotAgentEvent} items. Yields each event as it arrives.
+   *
+   * EventSource isn't used because EventSource can't POST a body.
+   * We open a streaming fetch, parse `data: ...\n\n` frames by hand.
+   */
+  async *sendCopilotTurn(
+    sessionId: string,
+    text: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<CopilotAgentEvent> {
+    const res = await fetch(
+      `${API_BASE}/api/v1/copilot/sessions/${sessionId}/turns`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({ text }),
+        signal,
+      },
+    );
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "");
+      throw new Error(
+        `Copilot turn failed: HTTP ${res.status} ${res.statusText} ${bodyText}`,
+      );
+    }
+    if (!res.body) {
+      throw new Error("Copilot turn response has no body (streaming required)");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE frame boundary is a blank line.
+        let boundary: number;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const payload = frame
+            .split("\n")
+            .filter((l) => l.startsWith("data: "))
+            .map((l) => l.slice(6))
+            .join("\n");
+          if (!payload) continue;
+          try {
+            yield JSON.parse(payload) as CopilotAgentEvent;
+          } catch (err) {
+            // A malformed frame shouldn't kill the stream — emit an
+            // error event the chat pane can surface and keep reading.
+            yield {
+              type: "error",
+              message: `Could not parse agent event: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+              recoverable: true,
+            };
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   },
 };

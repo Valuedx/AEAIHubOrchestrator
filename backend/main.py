@@ -25,6 +25,7 @@ from app.api.tenant_mcp_servers import router as tenant_mcp_servers_router
 from app.api.tenant_policies import router as tenant_policies_router
 from app.api.llm_credentials import router as llm_credentials_router
 from app.api.copilot_drafts import router as copilot_drafts_router
+from app.api.copilot_sessions import router as copilot_sessions_router
 from app.security.rate_limiter import limiter
 from app.security.tenant_rate_limit import TenantRateLimitMiddleware
 
@@ -120,6 +121,7 @@ app.include_router(
     tags=["llm-credentials"],
 )
 app.include_router(copilot_drafts_router)
+app.include_router(copilot_sessions_router)
 
 if settings.oidc_enabled:
     from app.api.auth import router as oidc_router

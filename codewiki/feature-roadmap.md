@@ -48,7 +48,10 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 | # | Feature | Status |
 |---|---------|--------|
 | COPILOT-01a | Draft-workspace model + pure tool layer + API + types | **Done** — see [copilot.md](copilot.md) |
-| COPILOT-01b | Agent runner (LLM chat loop + SSE tool-call streaming) + system-KB RAG ingestion + `test_node` / `execute_draft` | Planned |
+| COPILOT-01b.i | Agent runner (Anthropic tool-calling loop) + session/turn API + SSE streaming | **Done** — see [copilot.md §3/§4](copilot.md) |
+| COPILOT-01b.ii | `test_node` + `execute_draft` + `get_execution_logs` runner-side tools (stateful — separate module from the pure tool layer) | Planned |
+| COPILOT-01b.iii | System-KB RAG ingestion (codewiki + flattened node_registry) + `search_docs` + `get_node_examples` tools | Planned |
+| COPILOT-01b.iv | OpenAI + Google providers + per-session token budget enforcement | Planned |
 | COPILOT-02 | Chat pane, streaming tool-call pills, draft diff overlay on canvas, `PromoteDialog` | Planned |
 | COPILOT-03 | Debug / test-scenario / `suggest_fix` / auto-heal loop | Planned |
 
