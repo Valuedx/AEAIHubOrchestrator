@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     # promote doesn't persist a pattern row.
     smart_02_pattern_library_enabled: bool = True
 
+    # SMART-01 — two flags, BOTH default off. Unlike SMART-02/04/06
+    # these spend real engine tokens, so the cost-conscious default
+    # is opt-in. Per-tenant overrides on
+    # ``tenant_policies.smart_01_*``.
+    #
+    #   scenario_memory:  every successful execute_draft auto-saves
+    #                     a scenario (deduped by payload hash).
+    #   strict_promote_gate: promote refuses with 400 on any failing
+    #                     scenario — no "promote anyway" override.
+    smart_01_scenario_memory_enabled: bool = False
+    smart_01_strict_promote_gate_enabled: bool = False
+
     # Optional: process-wide default URL for the AutomationEdge Copilot
     # (a separate product the workflow authoring copilot can hand off to
     # when the user wants to design deterministic RPA steps before wiring

@@ -490,6 +490,10 @@ export interface TenantPolicyOut {
     smart_04_lints_enabled: boolean;
     smart_06_mcp_discovery_enabled: boolean;
     smart_02_pattern_library_enabled: boolean;
+    // SMART-01 — scenario memory + strict promote-gate. Both
+    // default off (opt-in) because they spend engine tokens.
+    smart_01_scenario_memory_enabled: boolean;
+    smart_01_strict_promote_gate_enabled: boolean;
   };
   source: {
     execution_quota_per_hour: TenantPolicySource;
@@ -501,6 +505,8 @@ export interface TenantPolicyOut {
     smart_04_lints_enabled: TenantPolicySource;
     smart_06_mcp_discovery_enabled: TenantPolicySource;
     smart_02_pattern_library_enabled: TenantPolicySource;
+    smart_01_scenario_memory_enabled: TenantPolicySource;
+    smart_01_strict_promote_gate_enabled: TenantPolicySource;
   };
   updated_at: string | null;
 }
@@ -561,6 +567,14 @@ export interface TenantPolicyUpdate {
   smart_06_mcp_discovery_enabled?: boolean | null;
   // SMART-02 — opt-out toggle for the accepted-patterns library.
   smart_02_pattern_library_enabled?: boolean | null;
+  // SMART-01 — auto-save successful execute_draft as regression
+  // scenarios (deduped by payload hash). Off by default.
+  smart_01_scenario_memory_enabled?: boolean | null;
+  // SMART-01 — strict promote-gate: promote refuses with 400 on
+  // any failing scenario (no "promote anyway" override). Off by
+  // default. When on, the PromoteDialog hides its soft-gate
+  // checkbox and hard-blocks Apply until all scenarios pass.
+  smart_01_strict_promote_gate_enabled?: boolean | null;
 }
 
 export interface KBChunkOut {

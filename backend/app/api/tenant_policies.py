@@ -110,6 +110,26 @@ class TenantPolicyUpdate(BaseModel):
             "False = skip both. Null clears the override."
         ),
     )
+    smart_01_scenario_memory_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-01 — auto-save every successful execute_draft as a "
+            "regression scenario (deduped by payload hash). Off by "
+            "default; enable to grow a scenario library without the "
+            "agent having to remember save_test_scenario calls. Null "
+            "clears the override."
+        ),
+    )
+    smart_01_strict_promote_gate_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-01 — strict promote gate. When true, /promote runs "
+            "every saved scenario and refuses with HTTP 400 on any "
+            "non-pass result (no 'promote anyway' override). Off by "
+            "default — the PromoteDialog's soft gate still shows "
+            "pass/fail badges either way. Null clears the override."
+        ),
+    )
 
 
 class TenantPolicyOut(BaseModel):
@@ -144,6 +164,8 @@ def get_policy(
             "smart_04_lints_enabled": policy.smart_04_lints_enabled,
             "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
             "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
+            "smart_01_scenario_memory_enabled": policy.smart_01_scenario_memory_enabled,
+            "smart_01_strict_promote_gate_enabled": policy.smart_01_strict_promote_gate_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row and row.updated_at else None,
@@ -185,6 +207,10 @@ def update_policy(
         row.smart_06_mcp_discovery_enabled = body.smart_06_mcp_discovery_enabled
     if "smart_02_pattern_library_enabled" in sent:
         row.smart_02_pattern_library_enabled = body.smart_02_pattern_library_enabled
+    if "smart_01_scenario_memory_enabled" in sent:
+        row.smart_01_scenario_memory_enabled = body.smart_01_scenario_memory_enabled
+    if "smart_01_strict_promote_gate_enabled" in sent:
+        row.smart_01_strict_promote_gate_enabled = body.smart_01_strict_promote_gate_enabled
 
     db.commit()
     db.refresh(row)
@@ -205,6 +231,8 @@ def update_policy(
             "smart_04_lints_enabled": policy.smart_04_lints_enabled,
             "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
             "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
+            "smart_01_scenario_memory_enabled": policy.smart_01_scenario_memory_enabled,
+            "smart_01_strict_promote_gate_enabled": policy.smart_01_strict_promote_gate_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row.updated_at else None,

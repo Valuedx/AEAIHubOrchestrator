@@ -390,6 +390,18 @@ class TenantPolicy(Base):
     smart_02_pattern_library_enabled = Column(
         Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
     )
+    # SMART-01 — scenario memory + strict promote-gate. BOTH default
+    # FALSE (opt-in per tenant) because both behaviours spend engine
+    # tokens. scenario_memory auto-saves a regression case after
+    # every successful execute_draft (deduped by payload hash);
+    # strict_promote_gate makes promote refuse on any failing
+    # scenario with no override.
+    smart_01_scenario_memory_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
+    )
+    smart_01_strict_promote_gate_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
+    )
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

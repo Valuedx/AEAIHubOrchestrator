@@ -343,6 +343,17 @@ def promote_draft(
             f"Draft validation failed: {validation['errors']}",
         )
 
+    # SMART-01 — strict promote-gate. Opt-in per tenant; when
+    # enabled the promote endpoint runs every saved scenario first
+    # and refuses with 400 on any non-pass result. No "promote
+    # anyway" override in this mode — the PromoteDialog's soft gate
+    # is replaced by a hard gate at the API layer.
+    from app.engine.tenant_policy_resolver import get_effective_policy
+
+    policy = get_effective_policy(tenant_id)
+    if policy.smart_01_strict_promote_gate_enabled:
+        _enforce_strict_scenario_gate(db, tenant_id, draft)
+
     if draft.base_workflow_id is None:
         workflow = _promote_as_new(db, tenant_id, draft, body)
         created = True
@@ -511,6 +522,64 @@ def run_all_draft_scenarios(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _enforce_strict_scenario_gate(
+    db: Session,
+    tenant_id: str,
+    draft: WorkflowDraft,
+) -> None:
+    """SMART-01 strict gate. Runs every saved scenario on the draft
+    and raises HTTP 400 on any non-pass result.
+
+    No scenarios saved = no-op (you can't fail regressions you
+    haven't written). That's intentional: strict mode is "if you've
+    got tests, they must pass", not "you must have tests".
+    """
+    from app.copilot import runner_tools
+    from app.models.copilot import CopilotTestScenario
+
+    scenarios = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id)
+        .order_by(CopilotTestScenario.created_at)
+        .all()
+    )
+    if not scenarios:
+        return
+
+    failing: list[dict[str, Any]] = []
+    for s in scenarios:
+        raw = runner_tools.run_scenario(
+            db, tenant_id=tenant_id, draft=draft,
+            args={"scenario_id": str(s.id)},
+        )
+        if raw.get("status") != "pass":
+            failing.append({
+                "scenario_id": str(s.id),
+                "name": s.name,
+                "status": raw.get("status") or "error",
+                "message": raw.get("message") or raw.get("error"),
+                "mismatch_count": len(raw.get("mismatches") or []),
+            })
+
+    if failing:
+        # 400 not 409 — this is a request-shape problem (the draft
+        # fails its own regression tests). The client can retry after
+        # either fixing the draft or disabling strict mode.
+        raise HTTPException(
+            400,
+            {
+                "error": "strict promote-gate blocked: scenarios failing",
+                "failing_scenarios": failing,
+                "hint": (
+                    "SMART-01 strict promote-gate is enabled for this "
+                    "tenant. Fix the failing scenarios, or disable the "
+                    "flag via PATCH /api/v1/tenant-policy with "
+                    "smart_01_strict_promote_gate_enabled=false."
+                ),
+            },
+        )
 
 
 def _get_or_404(db: Session, tenant_id: str, draft_id: str) -> WorkflowDraft:

@@ -58,6 +58,12 @@ class EffectivePolicy:
     # doesn't persist a pattern row and ``recall_patterns`` returns
     # an empty list.
     smart_02_pattern_library_enabled: bool
+    # SMART-01 — scenario memory (auto-save execute_draft as test
+    # scenarios) + strict promote-gate (refuse promote on any
+    # failing scenario). BOTH default off per tenant unless
+    # explicitly enabled.
+    smart_01_scenario_memory_enabled: bool
+    smart_01_strict_promote_gate_enabled: bool
     source: dict[str, PolicySource]
 
 
@@ -71,6 +77,8 @@ def _env_defaults() -> EffectivePolicy:
         smart_04_lints_enabled=settings.smart_04_lints_enabled,
         smart_06_mcp_discovery_enabled=settings.smart_06_mcp_discovery_enabled,
         smart_02_pattern_library_enabled=settings.smart_02_pattern_library_enabled,
+        smart_01_scenario_memory_enabled=settings.smart_01_scenario_memory_enabled,
+        smart_01_strict_promote_gate_enabled=settings.smart_01_strict_promote_gate_enabled,
         source={
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
@@ -80,6 +88,8 @@ def _env_defaults() -> EffectivePolicy:
             "smart_04_lints_enabled": "env_default",
             "smart_06_mcp_discovery_enabled": "env_default",
             "smart_02_pattern_library_enabled": "env_default",
+            "smart_01_scenario_memory_enabled": "env_default",
+            "smart_01_strict_promote_gate_enabled": "env_default",
         },
     )
 
@@ -170,6 +180,16 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 getattr(row, "smart_02_pattern_library_enabled", None),
                 settings.smart_02_pattern_library_enabled,
                 "smart_02_pattern_library_enabled",
+            ),
+            smart_01_scenario_memory_enabled=_pick_bool(
+                getattr(row, "smart_01_scenario_memory_enabled", None),
+                settings.smart_01_scenario_memory_enabled,
+                "smart_01_scenario_memory_enabled",
+            ),
+            smart_01_strict_promote_gate_enabled=_pick_bool(
+                getattr(row, "smart_01_strict_promote_gate_enabled", None),
+                settings.smart_01_strict_promote_gate_enabled,
+                "smart_01_strict_promote_gate_enabled",
             ),
             source=source,
         )

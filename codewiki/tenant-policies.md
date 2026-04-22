@@ -20,6 +20,8 @@ This page is the canonical reference. Read §4 before assuming every env knob is
 | `smart_04_lints_enabled` | — | **Default TRUE.** SMART-04 proactive authoring lints for the copilot. Cost-conscious tenants flip off to skip the lint pass (schema validation still runs). | `copilot/runner_tools.check_draft` |
 | `smart_06_mcp_discovery_enabled` | — | **Default TRUE.** SMART-06 MCP tool discovery path. Off = the `discover_mcp_tools` runner tool returns `{discovery_enabled: false, tools: []}` and the system prompt skips MCP suggestions in narration. | `copilot/runner_tools.discover_mcp_tools` |
 | `smart_02_pattern_library_enabled` | — | **Default TRUE.** SMART-02 accepted-patterns library. Off = `/promote` skips the pattern save and `recall_patterns` returns `{enabled: false, patterns: []}`. Agent falls back to synthesising without tenant-specific few-shot. | `copilot/pattern_library.save_accepted_pattern` + `recall_patterns` |
+| `smart_01_scenario_memory_enabled` | — | **Default FALSE (opt-in).** SMART-01 scenario memory. When on, every successful `execute_draft` auto-saves a scenario named `auto-<hash>` deduped by payload hash (no `expected_output_contains` — just "this payload still runs"). Cost: one INSERT per successful run. | `copilot/runner_tools.execute_draft_sync` → `_auto_save_scenario_from_run` |
+| `smart_01_strict_promote_gate_enabled` | — | **Default FALSE (opt-in).** SMART-01 strict promote-gate. When on, `/api/v1/copilot/drafts/{id}/promote` runs every saved scenario and refuses with HTTP 400 on any non-pass result (no "promote anyway" override). Cost: one full draft execution per scenario at promote time. Off = the PromoteDialog's existing soft gate still shows pass/fail badges and allows override. | `api/copilot_drafts.promote_draft` → `_enforce_strict_scenario_gate` |
 
 > **Historical note:** before ADMIN-02 the `slowapi.Limiter` was instantiated with `default_limits` but no middleware was ever installed to apply it. The rate-limit env vars were effectively dead config. ADMIN-02's `TenantRateLimitMiddleware` is the first real enforcement. The old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string setting is deprecated — the new `ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS` int supersedes it.
 
@@ -39,6 +41,9 @@ tenant_policies:
   rate_limit_window_seconds         INTEGER NULL                             (0021)
   smart_04_lints_enabled            BOOLEAN NOT NULL DEFAULT TRUE            (0024)
   smart_06_mcp_discovery_enabled    BOOLEAN NOT NULL DEFAULT TRUE            (0025)
+  smart_02_pattern_library_enabled  BOOLEAN NOT NULL DEFAULT TRUE            (0026)
+  smart_01_scenario_memory_enabled  BOOLEAN NOT NULL DEFAULT FALSE           (0028)
+  smart_01_strict_promote_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE        (0028)
   created_at, updated_at
 ```
 
@@ -67,7 +72,10 @@ Response shape:
   },
   "flags": {
     "smart_04_lints_enabled": true,
-    "smart_06_mcp_discovery_enabled": true
+    "smart_06_mcp_discovery_enabled": true,
+    "smart_02_pattern_library_enabled": true,
+    "smart_01_scenario_memory_enabled": false,
+    "smart_01_strict_promote_gate_enabled": false
   },
   "source": {
     "execution_quota_per_hour": "tenant_policy",
@@ -76,7 +84,10 @@ Response shape:
     "rate_limit_requests_per_window": "env_default",
     "rate_limit_window_seconds": "env_default",
     "smart_04_lints_enabled": "env_default",
-    "smart_06_mcp_discovery_enabled": "env_default"
+    "smart_06_mcp_discovery_enabled": "env_default",
+    "smart_02_pattern_library_enabled": "env_default",
+    "smart_01_scenario_memory_enabled": "env_default",
+    "smart_01_strict_promote_gate_enabled": "env_default"
   },
   "updated_at": "2026-04-22T12:34:56+00:00"
 }

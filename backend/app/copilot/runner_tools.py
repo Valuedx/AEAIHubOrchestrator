@@ -499,7 +499,7 @@ def execute_draft_sync(
     raw_ctx = run_result.get("context_json") or {}
     output = {k: v for k, v in raw_ctx.items() if not str(k).startswith("_")}
 
-    return {
+    result: dict[str, Any] = {
         "instance_id": instance_id,
         "status": run_result.get("status", "unknown"),
         "elapsed_ms": elapsed_ms,
@@ -507,6 +507,34 @@ def execute_draft_sync(
         "started_at": run_result.get("started_at"),
         "completed_at": run_result.get("completed_at"),
     }
+
+    # SMART-01 — auto-save successful runs as regression scenarios
+    # so a regression gate has something to run at promote time.
+    # Deduped by a stable hash of the payload so repeated runs of
+    # the same input don't litter the table. No expected_output is
+    # locked in — the auto-saved scenario just verifies "this
+    # payload still runs without crashing", which is the minimum
+    # viable regression. A user who wants tighter assertions can
+    # call save_test_scenario by hand with expected_output_contains.
+    try:
+        if result["status"] == "completed":
+            from app.engine.tenant_policy_resolver import get_effective_policy
+
+            policy = get_effective_policy(tenant_id)
+            if policy.smart_01_scenario_memory_enabled:
+                _auto_save_scenario_from_run(
+                    db,
+                    tenant_id=tenant_id,
+                    draft=draft,
+                    payload=payload,
+                )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.info(
+            "SMART-01 auto-save skipped for draft=%s (tenant=%s): %s",
+            draft.id, tenant_id, exc,
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1534,6 +1562,82 @@ def get_node_error(
         "started_at": log.started_at.isoformat() if log.started_at else None,
         "completed_at": log.completed_at.isoformat() if log.completed_at else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# SMART-01 — auto-save scenarios from successful execute_draft runs
+# ---------------------------------------------------------------------------
+
+
+def _payload_hash(payload: dict[str, Any]) -> str:
+    """Stable short hash of the trigger payload. Used as the scenario
+    name suffix so the same payload run twice dedupes to one row
+    instead of growing the table."""
+    import hashlib
+    import json as _json
+
+    canonical = _json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:10]
+
+
+def _auto_save_scenario_from_run(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    payload: dict[str, Any],
+) -> None:
+    """Persist an auto-named scenario for a successful execute_draft
+    run when SMART-01 scenario-memory is enabled. Idempotent — a
+    scenario already present with the same payload hash is a no-op
+    so repeated runs of the same input don't balloon the table.
+
+    Errors are swallowed by the caller. This function is best-effort:
+    a scenario save failure must never cost the user their successful
+    execute_draft result.
+    """
+    from app.models.copilot import CopilotTestScenario
+
+    name = f"auto-{_payload_hash(payload)}"
+
+    existing = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id, name=name)
+        .first()
+    )
+    if existing is not None:
+        return
+
+    # Respect the per-draft cap so auto-save can't blow past the
+    # ceiling a manual save path enforces.
+    count = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id)
+        .count()
+    )
+    if count >= MAX_SCENARIOS_PER_DRAFT:
+        logger.info(
+            "SMART-01 auto-save skipped for draft=%s — cap %d reached",
+            draft.id, MAX_SCENARIOS_PER_DRAFT,
+        )
+        return
+
+    scenario = CopilotTestScenario(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        draft_id=draft.id,
+        workflow_id=None,
+        name=name,
+        payload_json=payload,
+        pins_json={},
+        # Intentionally no expected_output_contains — an auto-saved
+        # scenario just verifies "this payload still runs". If the
+        # user wants tighter regression semantics they can call
+        # save_test_scenario by hand with an assertion.
+        expected_output_contains_json=None,
+    )
+    db.add(scenario)
+    db.commit()
 
 
 # ---------------------------------------------------------------------------

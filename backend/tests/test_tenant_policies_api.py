@@ -115,12 +115,18 @@ class TestGetPolicy:
             "smart_04_lints_enabled": "env_default",
             "smart_06_mcp_discovery_enabled": "env_default",
             "smart_02_pattern_library_enabled": "env_default",
+            "smart_01_scenario_memory_enabled": "env_default",
+            "smart_01_strict_promote_gate_enabled": "env_default",
         }
         # SMART-XX feature flags appear under the flags field.
         assert body["flags"] == {
             "smart_04_lints_enabled": True,
             "smart_06_mcp_discovery_enabled": True,
             "smart_02_pattern_library_enabled": True,
+            # SMART-01 defaults off (scenario memory + strict gate
+            # spend engine tokens, so cost-conscious default = off).
+            "smart_01_scenario_memory_enabled": False,
+            "smart_01_strict_promote_gate_enabled": False,
         }
         assert body["updated_at"] is None
 
