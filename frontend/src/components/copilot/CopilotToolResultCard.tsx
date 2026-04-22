@@ -192,6 +192,8 @@ function summariseArgs(name: string, args: Record<string, unknown>): string {
     }
     case "get_node_error":
       return args.node_id ? `node=${args.node_id}` : "";
+    case "suggest_fix":
+      return args.node_id ? `node=${args.node_id}` : "";
     default:
       return "";
   }
@@ -420,6 +422,20 @@ function ResultSummary({
         return <span className="text-amber-700 dark:text-amber-300">{status} (check downstream)</span>;
       }
       return <span className="text-muted-foreground">{status || "unknown"}</span>;
+    }
+    case "suggest_fix": {
+      const patch = (r.proposed_patch ?? {}) as Record<string, unknown>;
+      const keyCount = Object.keys(patch).length;
+      const conf = typeof r.confidence === "string" ? r.confidence : "medium";
+      if (keyCount === 0) {
+        return <span className="text-muted-foreground italic">no patch — LLM couldn't propose one</span>;
+      }
+      const confCls = conf === "high"
+        ? "text-emerald-700 dark:text-emerald-400"
+        : conf === "low"
+          ? "text-amber-700 dark:text-amber-300"
+          : "text-muted-foreground";
+      return <span className={confCls}>patch ({keyCount} field{keyCount === 1 ? "" : "s"}, {conf} conf)</span>;
     }
     default:
       return <span className="text-muted-foreground">ok</span>;

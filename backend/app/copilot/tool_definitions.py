@@ -665,6 +665,49 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "suggest_fix",
+        "description": (
+            "Propose a minimal config patch for ONE failing node. "
+            "Makes a constrained LLM subcall scoped to the node's "
+            "config schema; the result's 'proposed_patch' only "
+            "contains keys that appear in the schema (anything "
+            "else the model suggested is listed in 'dropped_keys' "
+            "for narration). "
+            "NEVER AUTO-APPLIES. Always round-trip the proposal "
+            "through the user: show the patch + rationale + "
+            "confidence, wait for approval, then call "
+            "update_node_config with the fields the user agreed "
+            "to. "
+            "Per-draft cap of 5 suggest_fix calls to prevent a "
+            "runaway auto-heal loop; beyond the cap the tool "
+            "returns an error telling you to hand off to the user "
+            "(structural problem, not a config fix). "
+            "Typical use: after get_node_error shows a failure, "
+            "call suggest_fix to get a proposal you can surface to "
+            "the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["node_id", "error"],
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "description": (
+                        "The failing node's id (must exist in the "
+                        "current draft graph)."
+                    ),
+                },
+                "error": {
+                    "type": "string",
+                    "description": (
+                        "The error message the node raised — "
+                        "typically get_node_error's 'error' field."
+                    ),
+                },
+            },
+        },
+    },
 ]
 
 

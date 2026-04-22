@@ -630,7 +630,12 @@ export type CopilotToolName =
   // that surfaces resolved_config + error text for the failed
   // node. Same ephemeral-only safety gate as get_execution_logs.
   | "run_debug_scenario"
-  | "get_node_error";
+  | "get_node_error"
+  // COPILOT-03.c — node-scoped LLM subcall proposing a config
+  // patch. NEVER auto-applies; user confirms before the agent
+  // calls update_node_config. Per-draft cap of 5 to prevent
+  // runaway auto-heal.
+  | "suggest_fix";
 
 // SMART-04 — one structured lint finding surfaced by check_draft.
 export type CopilotLintSeverity = "error" | "warn";

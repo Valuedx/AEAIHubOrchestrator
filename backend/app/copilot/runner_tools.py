@@ -44,6 +44,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.copilot.tool_layer import get_node_schema  # re-exported so tests can patch runner_tools.get_node_schema
 from app.models.copilot import WorkflowDraft
 
 logger = logging.getLogger(__name__)
@@ -688,6 +689,8 @@ RUNNER_TOOL_NAMES = {
     # COPILOT-03.b
     "run_debug_scenario",
     "get_node_error",
+    # COPILOT-03.c
+    "suggest_fix",
 }
 
 
@@ -934,6 +937,10 @@ def dispatch(
         )
     if tool_name == "get_node_error":
         return get_node_error(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "suggest_fix":
+        return suggest_fix(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
     raise KeyError(tool_name)
@@ -1526,4 +1533,333 @@ def get_node_error(
         "output_json": log.output_json,
         "started_at": log.started_at.isoformat() if log.started_at else None,
         "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-03.c — suggest_fix LLM subcall
+# ---------------------------------------------------------------------------
+#
+# Design contract
+# ---------------
+#
+# * NEVER auto-applies — the agent has to round-trip the user before
+#   calling ``update_node_config`` with the proposed patch. This is a
+#   hard rule baked into the prompt and the tool's result envelope
+#   (``applied: false`` is always returned).
+# * The LLM's patch is filtered to keys that exist in the node's
+#   ``config_schema.properties`` — anything else is dropped with a
+#   ``dropped_keys`` list so the agent can explain "the model also
+#   suggested X, but that's not a valid config field so I didn't
+#   include it".
+# * Per-draft cap (``MAX_SUGGEST_FIX_PER_DRAFT``) to prevent a runaway
+#   auto-heal loop from racking up dozens of LLM calls. Enforced by
+#   counting prior ``suggest_fix`` tool-turns tied to any session on
+#   this draft. Beyond the cap, the agent must hand off to the user.
+# * Uses the tenant's Anthropic credential via the ADMIN-03 resolver —
+#   no per-call provider override in 03.c. OpenAI / Google wiring can
+#   follow the existing provider-adapter pattern when 01b.iv remainder
+#   lands.
+
+
+MAX_SUGGEST_FIX_PER_DRAFT = 5
+
+
+_SUGGEST_FIX_SYSTEM_PROMPT = (
+    "You are a focused node-config-fix assistant embedded inside a "
+    "workflow authoring copilot. You are given ONE failing node, the "
+    "error it raised, the config it currently has, and the full "
+    "config schema for its node type. Propose a minimal patch to the "
+    "config that would plausibly fix the failure.\n\n"
+    "Respond with strict JSON in this shape (no prose, no code "
+    "fences, no preamble):\n"
+    "{\n"
+    "  \"patch\": {<field>: <new value>, ...},\n"
+    "  \"rationale\": \"<one-sentence explanation>\",\n"
+    "  \"confidence\": \"high\" | \"medium\" | \"low\"\n"
+    "}\n\n"
+    "Rules:\n"
+    "- Only set fields that appear in config_schema.properties.\n"
+    "- Prefer the smallest possible patch — don't rewrite unrelated "
+    "fields.\n"
+    "- If you genuinely don't know the fix, set patch to {} and "
+    "explain in rationale.\n"
+    "- Never invent API keys, secrets, or hostnames."
+)
+
+
+def _call_suggest_fix_llm(
+    *,
+    tenant_id: str,
+    node_type: str,
+    node_id: str,
+    error: str,
+    current_config: dict[str, Any],
+    config_schema: dict[str, Any],
+) -> dict[str, Any]:
+    """One-shot Anthropic call. Split out as a module-level function
+    so tests can mock via ``patch.object(runner_tools, "_call_suggest_fix_llm", ...)``.
+    """
+    import json as _json
+
+    from anthropic import Anthropic  # lazy import
+    from app.config import settings
+    from app.engine.llm_credentials_resolver import get_anthropic_api_key
+
+    client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
+    user_message = _json.dumps({
+        "node_id": node_id,
+        "node_type": node_type,
+        "error": error,
+        "current_config": current_config,
+        "config_schema": config_schema,
+    }, default=str)
+
+    resp = client.messages.create(
+        model=getattr(settings, "copilot_default_anthropic_model", "claude-sonnet-4-6"),
+        system=_SUGGEST_FIX_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+        max_tokens=1024,
+        temperature=0.1,
+    )
+
+    raw_text = ""
+    for block in resp.content:
+        as_dict = _block_to_dict_safe(block)
+        if as_dict.get("type") == "text":
+            raw_text += as_dict.get("text", "")
+
+    return {
+        "raw_text": raw_text.strip(),
+        "usage": {
+            "input_tokens": getattr(resp.usage, "input_tokens", 0),
+            "output_tokens": getattr(resp.usage, "output_tokens", 0),
+        },
+    }
+
+
+def _block_to_dict_safe(block: Any) -> dict[str, Any]:
+    """Local copy of agent._block_to_dict to keep this module
+    independent of agent.py (the import cycle would be pointless)."""
+    if isinstance(block, dict):
+        return block
+    if hasattr(block, "model_dump"):
+        return block.model_dump()
+    # Last-resort: try to coax a dict out of __dict__.
+    return {
+        "type": getattr(block, "type", ""),
+        "text": getattr(block, "text", ""),
+    }
+
+
+def _parse_suggest_fix_response(raw_text: str) -> dict[str, Any] | None:
+    """Robustly parse the JSON-only response. Tolerates leading /
+    trailing code fences or a single leading 'json' line — we don't
+    want a single over-cautious LLM to burn the budget."""
+    import json as _json
+
+    text = raw_text.strip()
+    if text.startswith("```"):
+        # Strip leading fence (with optional language hint).
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[: -3]
+        text = text.strip()
+    if not text:
+        return None
+    try:
+        parsed = _json.loads(text)
+    except _json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def suggest_fix(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Propose a config patch for one failing node — never auto-applies.
+
+    Args
+    ----
+    ::
+
+        {
+          "node_id": "node_5",              # required; must exist on draft
+          "error": "no auth configured",    # required
+        }
+
+    Result
+    ------
+
+    Proposal generated::
+
+        {
+          "node_id": "...",
+          "node_type": "llm_agent",
+          "proposed_patch": {"provider": "anthropic"},
+          "rationale": "...",
+          "confidence": "high" | "medium" | "low",
+          "dropped_keys": [],     # keys the LLM proposed that aren't in the schema
+          "applied": false,        # always false — agent must confirm
+          "usage": {...},
+        }
+
+    Cap hit::
+
+        {"error": "suggest_fix cap reached...", "prior_calls": N}
+
+    Bad args / node not found / no schema::
+
+        {"error": "..."}
+    """
+    from sqlalchemy import func
+
+    from app.copilot.tool_layer import UnknownNodeTypeError
+    from app.models.copilot import CopilotSession, CopilotTurn
+
+    node_id = args.get("node_id")
+    error = args.get("error")
+    if not node_id:
+        return {"error": "suggest_fix requires 'node_id'"}
+    if not error or not isinstance(error, str):
+        return {"error": "suggest_fix requires 'error' as a string"}
+
+    graph = draft.graph_json or {}
+    target = next(
+        (n for n in (graph.get("nodes") or []) if n.get("id") == node_id),
+        None,
+    )
+    if target is None:
+        return {"error": f"Node '{node_id}' not in draft graph"}
+
+    node_data = target.get("data") or {}
+    current_config = dict(node_data.get("config") or {})
+    # node_type is stored in a few ways across the schema history —
+    # the agent's add_node writes it to data.nodeType; the validator
+    # looks at data.label. Prefer explicit type fields in order.
+    node_type = (
+        node_data.get("nodeType")
+        or node_data.get("type")
+        or target.get("type")
+    )
+    if not node_type or node_type == "agenticNode":
+        # agenticNode is the React Flow node KIND, not our registry
+        # type. Fall back to the canonical label → registry lookup via
+        # get_node_schema. If we genuinely can't figure out the type,
+        # bail cleanly.
+        label = node_data.get("label")
+        if label:
+            node_type = label
+    if not node_type:
+        return {
+            "error": (
+                f"Could not determine node_type for '{node_id}'. "
+                "Node data has no 'nodeType' / 'type' / 'label' field "
+                "to resolve against the registry."
+            ),
+        }
+
+    try:
+        schema_entry = get_node_schema(node_type)
+    except UnknownNodeTypeError:
+        return {
+            "error": (
+                f"Unknown node_type '{node_type}' on node '{node_id}'. "
+                "Call list_node_types to find a valid type."
+            ),
+        }
+
+    config_schema = schema_entry.get("config_schema") or {}
+
+    # Cap gate — count prior suggest_fix tool turns on any session
+    # tied to this draft. JSONB->>'name' works on Postgres; SQLite in
+    # tests mocks this out entirely, so the path is never exercised
+    # against the SQLite dialect.
+    prior_calls = (
+        db.query(func.count(CopilotTurn.id))
+        .join(CopilotSession, CopilotTurn.session_id == CopilotSession.id)
+        .filter(
+            CopilotSession.draft_id == draft.id,
+            CopilotTurn.role == "tool",
+            CopilotTurn.content_json["name"].astext == "suggest_fix",
+        )
+        .scalar()
+    ) or 0
+    if prior_calls >= MAX_SUGGEST_FIX_PER_DRAFT:
+        return {
+            "error": (
+                f"suggest_fix cap reached ({prior_calls}/"
+                f"{MAX_SUGGEST_FIX_PER_DRAFT} per draft). Hand off to "
+                "the user — too many fix suggestions in one draft "
+                "usually means the underlying issue is structural."
+            ),
+            "prior_calls": prior_calls,
+            "cap": MAX_SUGGEST_FIX_PER_DRAFT,
+        }
+
+    try:
+        llm_result = _call_suggest_fix_llm(
+            tenant_id=tenant_id,
+            node_type=node_type,
+            node_id=node_id,
+            error=error,
+            current_config=current_config,
+            config_schema=config_schema,
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.info(
+            "suggest_fix LLM call failed for node=%s (tenant=%s): %s",
+            node_id, tenant_id, exc,
+        )
+        return {
+            "error": f"LLM call for suggest_fix failed: {exc}",
+        }
+
+    parsed = _parse_suggest_fix_response(llm_result["raw_text"])
+    if parsed is None:
+        return {
+            "error": (
+                "Could not parse suggest_fix LLM response as JSON. "
+                "Raw response: "
+                f"{llm_result['raw_text'][:200]}"
+            ),
+        }
+
+    raw_patch = parsed.get("patch")
+    if not isinstance(raw_patch, dict):
+        raw_patch = {}
+
+    allowed_keys = set((config_schema.get("properties") or {}).keys())
+    proposed_patch: dict[str, Any] = {}
+    dropped_keys: list[str] = []
+    for key, value in raw_patch.items():
+        if allowed_keys and key not in allowed_keys:
+            dropped_keys.append(key)
+            continue
+        proposed_patch[key] = value
+
+    rationale = parsed.get("rationale")
+    if not isinstance(rationale, str):
+        rationale = ""
+    confidence = parsed.get("confidence")
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "medium"
+
+    return {
+        "node_id": node_id,
+        "node_type": node_type,
+        "proposed_patch": proposed_patch,
+        "rationale": rationale,
+        "confidence": confidence,
+        "dropped_keys": dropped_keys,
+        "applied": False,
+        "usage": llm_result.get("usage") or {},
+        "prior_calls": prior_calls,
+        "cap": MAX_SUGGEST_FIX_PER_DRAFT,
     }
