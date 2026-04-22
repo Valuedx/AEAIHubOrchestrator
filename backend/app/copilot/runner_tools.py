@@ -675,7 +675,76 @@ RUNNER_TOOL_NAMES = {
     "get_execution_logs",
     "search_docs",
     "get_node_examples",
+    # SMART-04
+    "check_draft",
 }
+
+
+# ---------------------------------------------------------------------------
+# check_draft — SMART-04 wrapper around validate_graph + lints
+# ---------------------------------------------------------------------------
+
+
+def check_draft(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],  # noqa: ARG001 — tool contract; no args today
+) -> dict[str, Any]:
+    """Return ``{errors, warnings, lints}`` for the current draft.
+
+    Supersedes ``validate_graph`` for agent use — the pure
+    ``tool_layer.validate_graph`` still exists for API-layer callers
+    (the draft's auto-validation on CRUD) but the agent's system
+    prompt directs it here because this version also surfaces the
+    SMART-04 structure lints (no trigger, disconnected node, orphan
+    edge, missing credential).
+
+    When the tenant has ``smart_04_lints_enabled=False``, the lint
+    step is skipped and ``lints`` is an empty list. Schema-level
+    errors and warnings still come through — disabling lints doesn't
+    disable schema validation.
+    """
+    from app.copilot import lints as lints_mod
+    from app.copilot import tool_layer
+    from app.engine.tenant_policy_resolver import get_effective_policy
+
+    graph = draft.graph_json or {"nodes": [], "edges": []}
+    base = tool_layer.validate_graph(graph)
+
+    policy = get_effective_policy(tenant_id)
+    if not policy.smart_04_lints_enabled:
+        return {
+            "errors": base.get("errors", []),
+            "warnings": base.get("warnings", []),
+            "lints": [],
+            "lints_enabled": False,
+        }
+
+    try:
+        findings = lints_mod.run_lints(graph, tenant_id=tenant_id, db=db)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        # Lint failure must not poison the agent turn. Log and
+        # return validation-only.
+        logger.warning(
+            "SMART-04 check_draft: run_lints failed for tenant=%r: %s",
+            tenant_id, exc,
+        )
+        return {
+            "errors": base.get("errors", []),
+            "warnings": base.get("warnings", []),
+            "lints": [],
+            "lints_enabled": True,
+            "lint_runtime_error": str(exc),
+        }
+
+    return {
+        "errors": base.get("errors", []),
+        "warnings": base.get("warnings", []),
+        "lints": [lint.to_dict() for lint in findings],
+        "lints_enabled": True,
+    }
 """Tool names the runner-tool dispatch layer handles. Add to this set
 and register a branch in ``dispatch`` below when shipping more
 stateful tools (``execute_draft`` and ``get_execution_logs`` in
@@ -723,4 +792,8 @@ def dispatch(
         if not node_type:
             return {"error": "get_node_examples requires 'node_type'"}
         return docs_index.get_node_examples(node_type)
+    if tool_name == "check_draft":
+        return check_draft(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
     raise KeyError(tool_name)

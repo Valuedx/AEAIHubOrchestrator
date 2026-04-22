@@ -46,6 +46,10 @@ class EffectivePolicy:
     # ADMIN-02
     rate_limit_requests_per_window: int
     rate_limit_window_seconds: int
+    # SMART-04 — toggle the copilot's proactive authoring lints.
+    # Resolver returns bool; the runner-tool layer reads it and skips
+    # lint computation when off (still runs schema validation).
+    smart_04_lints_enabled: bool
     source: dict[str, PolicySource]
 
 
@@ -56,12 +60,14 @@ def _env_defaults() -> EffectivePolicy:
         mcp_pool_size=settings.mcp_pool_size,
         rate_limit_requests_per_window=settings.rate_limit_requests,
         rate_limit_window_seconds=settings.rate_limit_window_seconds,
+        smart_04_lints_enabled=settings.smart_04_lints_enabled,
         source={
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
             "mcp_pool_size": "env_default",
             "rate_limit_requests_per_window": "env_default",
             "rate_limit_window_seconds": "env_default",
+            "smart_04_lints_enabled": "env_default",
         },
     )
 
@@ -102,6 +108,16 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
             source[field] = "tenant_policy"
             return col_value
 
+        def _pick_bool(col_value: bool | None, env_value: bool, field: str) -> bool:
+            """Boolean variant — SMART-xx feature flags. Null on the
+            row means "inherit env default", which also happens for
+            rows created before the column was added."""
+            if col_value is None:
+                source[field] = "env_default"
+                return env_value
+            source[field] = "tenant_policy"
+            return col_value
+
         return EffectivePolicy(
             execution_quota_per_hour=_pick(
                 row.execution_quota_per_hour,
@@ -127,6 +143,11 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 row.rate_limit_window_seconds,
                 settings.rate_limit_window_seconds,
                 "rate_limit_window_seconds",
+            ),
+            smart_04_lints_enabled=_pick_bool(
+                getattr(row, "smart_04_lints_enabled", None),
+                settings.smart_04_lints_enabled,
+                "smart_04_lints_enabled",
             ),
             source=source,
         )

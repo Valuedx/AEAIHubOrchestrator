@@ -482,12 +482,20 @@ export interface TenantPolicyOut {
     rate_limit_requests_per_window: number;
     rate_limit_window_seconds: number;
   };
+  // SMART-XX feature flags. Each is an opt-out toggle so cost-
+  // conscious tenants can disable subsets. SMART-04 ships today; the
+  // rest of the SMART-XX series adds keys here as they land.
+  flags: {
+    smart_04_lints_enabled: boolean;
+  };
   source: {
     execution_quota_per_hour: TenantPolicySource;
     max_snapshots: TenantPolicySource;
     mcp_pool_size: TenantPolicySource;
     rate_limit_requests_per_window: TenantPolicySource;
     rate_limit_window_seconds: TenantPolicySource;
+    // SMART-04
+    smart_04_lints_enabled: TenantPolicySource;
   };
   updated_at: string | null;
 }
@@ -541,6 +549,9 @@ export interface TenantPolicyUpdate {
   mcp_pool_size?: number | null;
   rate_limit_requests_per_window?: number | null;
   rate_limit_window_seconds?: number | null;
+  // SMART-04 — opt-out toggle for the copilot's proactive authoring
+  // lints. null clears the override so env default takes over.
+  smart_04_lints_enabled?: boolean | null;
 }
 
 export interface KBChunkOut {
@@ -586,11 +597,29 @@ export type CopilotToolName =
   // the agent uses these for concept questions and before
   // proposing a complex config.
   | "search_docs"
-  | "get_node_examples";
+  | "get_node_examples"
+  // SMART-04 — supersedes validate_graph; returns schema + lints.
+  | "check_draft";
+
+// SMART-04 — one structured lint finding surfaced by check_draft.
+export type CopilotLintSeverity = "error" | "warn";
+
+export interface CopilotLint {
+  code: string;
+  severity: CopilotLintSeverity;
+  message: string;
+  fix_hint: string | null;
+  node_id: string | null;
+}
 
 export interface CopilotDraftValidation {
   errors: string[];
   warnings: string[];
+  // SMART-04 additions — present when the tool_result came from
+  // `check_draft` (the agent's preferred validator). Absent /
+  // empty for `validate_graph` calls.
+  lints?: CopilotLint[];
+  lints_enabled?: boolean;
 }
 
 export interface CopilotDraftOut {

@@ -112,7 +112,10 @@ class TestGetPolicy:
             "mcp_pool_size": "env_default",
             "rate_limit_requests_per_window": "env_default",
             "rate_limit_window_seconds": "env_default",
+            "smart_04_lints_enabled": "env_default",
         }
+        # SMART-04 flag appears under the new `flags` field.
+        assert body["flags"] == {"smart_04_lints_enabled": True}
         assert body["updated_at"] is None
 
     def test_partial_override_returns_mixed_sources(self, client_and_session, patched_settings):

@@ -92,8 +92,14 @@ the user has to redo.
   Conversation State?"). If `search_docs` returns weak matches,
   rephrase with different keywords — the search is word-overlap-
   based, not semantic.
-- **Validate before narrating.** Always call validate_graph after a
-  run of mutations. Surface any errors/warnings in your narration.
+- **Validate before narrating.** Always call `check_draft` (preferred)
+  or `validate_graph` (fallback if `check_draft` returned
+  `lints_enabled: false`) after a run of mutations. Surface any
+  errors, warnings, AND lints in your narration — SMART-04 lints
+  catch "the graph is shape-broken" problems (no trigger,
+  disconnected node, missing credential) that the schema validator
+  misses. If `lints_enabled: false` the tenant has opted out; don't
+  pester them.
 - **Keep position tidy.** When adding nodes, leave ~240 px horizontal
   spacing and keep a consistent y. A graph with nodes stacked on
   (0,0) renders unreadable.

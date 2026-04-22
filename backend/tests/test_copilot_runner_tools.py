@@ -870,6 +870,149 @@ def test_runner_tool_names_includes_docs_tools():
     assert "get_node_examples" in runner_tools.RUNNER_TOOL_NAMES
 
 
+# ---------------------------------------------------------------------------
+# SMART-04 — check_draft (validate_graph + lints wrapper)
+# ---------------------------------------------------------------------------
+
+
+def test_check_draft_returns_schema_and_lints_when_flag_on():
+    """Happy path: lints flag on, draft has a real issue — returns
+    {errors, warnings, lints, lints_enabled: true} with the lint
+    surfaced."""
+    from app.engine.tenant_policy_resolver import EffectivePolicy
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={
+            # Single LLM node, no trigger — no_trigger lint fires.
+            "nodes": [{"id": "node_1", "type": "agenticNode",
+                       "data": {"label": "LLM Agent", "nodeCategory": "agent",
+                                "config": {}}}],
+            "edges": [],
+        },
+        version=1,
+    )
+    fake_policy = EffectivePolicy(
+        execution_quota_per_hour=50, max_snapshots=20,
+        mcp_pool_size=4, rate_limit_requests_per_window=100,
+        rate_limit_window_seconds=60,
+        smart_04_lints_enabled=True,
+        source={},
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=fake_policy,
+    ), patch(
+        "app.engine.llm_credentials_resolver.get_credentials_status",
+        return_value={},
+    ):
+        result = runner_tools.check_draft(
+            MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+
+    assert result["lints_enabled"] is True
+    assert isinstance(result["errors"], list)
+    assert isinstance(result["warnings"], list)
+    codes = {l["code"] for l in result["lints"]}
+    assert "no_trigger" in codes
+
+
+def test_check_draft_skips_lints_when_flag_off():
+    """Cost-conscious tenant opts out — check_draft still runs
+    schema validation but lints is []."""
+    from app.engine.tenant_policy_resolver import EffectivePolicy
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={
+            "nodes": [{"id": "node_1", "type": "agenticNode",
+                       "data": {"label": "LLM Agent", "nodeCategory": "agent",
+                                "config": {}}}],
+            "edges": [],
+        },
+        version=1,
+    )
+    fake_policy = EffectivePolicy(
+        execution_quota_per_hour=50, max_snapshots=20,
+        mcp_pool_size=4, rate_limit_requests_per_window=100,
+        rate_limit_window_seconds=60,
+        smart_04_lints_enabled=False,
+        source={},
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=fake_policy,
+    ):
+        result = runner_tools.check_draft(
+            MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["lints_enabled"] is False
+    assert result["lints"] == []
+
+
+def test_check_draft_lint_crash_does_not_poison_turn():
+    """If the lint module itself raises (bug in a rule), the runner
+    must degrade gracefully rather than 500 the agent's turn."""
+    from app.engine.tenant_policy_resolver import EffectivePolicy
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    fake_policy = EffectivePolicy(
+        execution_quota_per_hour=50, max_snapshots=20,
+        mcp_pool_size=4, rate_limit_requests_per_window=100,
+        rate_limit_window_seconds=60,
+        smart_04_lints_enabled=True,
+        source={},
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=fake_policy,
+    ), patch(
+        "app.copilot.lints.run_lints", side_effect=RuntimeError("rule blew up"),
+    ):
+        result = runner_tools.check_draft(
+            MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["lints"] == []
+    assert result["lints_enabled"] is True
+    assert "lint_runtime_error" in result
+    assert "rule blew up" in result["lint_runtime_error"]
+
+
+def test_dispatch_routes_check_draft():
+    from app.engine.tenant_policy_resolver import EffectivePolicy
+
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    fake_policy = EffectivePolicy(
+        execution_quota_per_hour=50, max_snapshots=20,
+        mcp_pool_size=4, rate_limit_requests_per_window=100,
+        rate_limit_window_seconds=60,
+        smart_04_lints_enabled=True,
+        source={},
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=fake_policy,
+    ):
+        result = runner_tools.dispatch(
+            "check_draft",
+            db=MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert "errors" in result
+    assert "warnings" in result
+    assert "lints" in result
+    assert "lints_enabled" in result
+
+
+def test_runner_tool_names_includes_check_draft():
+    assert "check_draft" in runner_tools.RUNNER_TOOL_NAMES
+
+
 def test_dispatch_routes_execute_draft_and_get_execution_logs():
     """The agent's runner-tool dispatch must route both new tool
     names — otherwise the agent would call the tool and get a

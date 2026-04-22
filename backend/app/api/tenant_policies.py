@@ -85,11 +85,24 @@ class TenantPolicyUpdate(BaseModel):
             "60 = 1 minute, 3600 = 1 hour. Null clears the override."
         ),
     )
+    smart_04_lints_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-04 — toggle the copilot's proactive authoring "
+            "lints. True = run lints after every mutation. False = "
+            "skip (cost-conscious tenants). Null clears the override "
+            "so this tenant inherits ORCHESTRATOR_SMART_04_LINTS_ENABLED."
+        ),
+    )
 
 
 class TenantPolicyOut(BaseModel):
     tenant_id: str
+    # ``values`` carries integer knobs (quotas, limits, pool sizes).
+    # SMART-XX feature flags land in ``flags`` so the frontend can
+    # render typed toggles without switching on schema per-key.
     values: dict[str, int]
+    flags: dict[str, bool]
     source: dict[str, str]
     updated_at: str | None
 
@@ -110,6 +123,9 @@ def get_policy(
             "mcp_pool_size": policy.mcp_pool_size,
             "rate_limit_requests_per_window": policy.rate_limit_requests_per_window,
             "rate_limit_window_seconds": policy.rate_limit_window_seconds,
+        },
+        flags={
+            "smart_04_lints_enabled": policy.smart_04_lints_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row and row.updated_at else None,
@@ -145,6 +161,8 @@ def update_policy(
         row.rate_limit_requests_per_window = body.rate_limit_requests_per_window
     if "rate_limit_window_seconds" in sent:
         row.rate_limit_window_seconds = body.rate_limit_window_seconds
+    if "smart_04_lints_enabled" in sent:
+        row.smart_04_lints_enabled = body.smart_04_lints_enabled
 
     db.commit()
     db.refresh(row)
@@ -160,6 +178,9 @@ def update_policy(
             "mcp_pool_size": policy.mcp_pool_size,
             "rate_limit_requests_per_window": policy.rate_limit_requests_per_window,
             "rate_limit_window_seconds": policy.rate_limit_window_seconds,
+        },
+        flags={
+            "smart_04_lints_enabled": policy.smart_04_lints_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row.updated_at else None,

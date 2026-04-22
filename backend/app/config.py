@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # MCP connection pool size
     mcp_pool_size: int = 4
 
+    # SMART-04 — global default for the copilot's proactive authoring
+    # lints. Per-tenant override lives on
+    # ``tenant_policies.smart_04_lints_enabled``; this env default is
+    # the fallback for tenants with no row. Default true — lints are
+    # zero-LLM-cost and strictly additive to UX.
+    smart_04_lints_enabled: bool = True
+
     # Optional: process-wide default URL for the AutomationEdge Copilot
     # (a separate product the workflow authoring copilot can hand off to
     # when the user wants to design deterministic RPA steps before wiring

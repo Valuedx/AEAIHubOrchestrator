@@ -77,7 +77,7 @@ Deliberately NOT in the schema:
 
 Lives in `backend/app/copilot/tool_layer.py`. Every function is pure: takes a graph dict, returns a new one plus a small result payload. The HTTP dispatch path (§4) is the only stateful caller today; the agent runner lands in 01b.
 
-Fourteen tools ship today — eight pure tools (01a) and six runner tools (01b.ii.a + AE-handoff + 01b.ii.b + 01b.iii):
+Fifteen tools ship today — eight pure tools (01a) + seven runner tools (01b.ii.a + AE-handoff + 01b.ii.b + 01b.iii + SMART-04):
 
 | Tool | Kind | Family | Notes |
 |---|---|---|---|
@@ -95,6 +95,7 @@ Fourteen tools ship today — eight pure tools (01a) and six runner tools (01b.i
 | `get_execution_logs(instance_id, node_id?)` | Read | Runner | Per-node logs for a prior `execute_draft` run. Returns `{instance_id, status, log_count, logs: [{node_id, node_type, status, output_json, error, started_at, completed_at}]}`. **Safety:** only ephemeral instances are accessible — arbitrary production `instance_id` values are refused so the LLM can't be used to leak execution history from other workflows. |
 | `search_docs(query, top_k?)` | Read | Runner | **Non-vector** word-overlap search over `codewiki/*.md` + a flattened view of `shared/node_registry.json`. Returns `{query, match_count, results: [{source_path, title, anchor, score, excerpt}]}`, capped at `top_k` (default 5, max 20). Index loads from disk on first call and caches in-process; `docs_index.reset_cache()` forces reload. Deliberately **not** hooked into the vector RAG pipeline — the docs are small, change on git commits, and a simple file-backed index avoids ingestion infrastructure. Vector-backed follow-up keeps the same tool surface. |
 | `get_node_examples(node_type)` | Read | Runner | Targeted lookup for one registry `type` id. Returns `{node_type, registry_entry, related_sections}` — `registry_entry` is the registry's own chunk (config schema + defaults + enums); `related_sections` is the top 3 codewiki sections most relevant to this node. `registry_entry` is `null` when the type isn't in the registry, signalling the agent to call `list_node_types` and pick a real one. |
+| `check_draft()` | Read | Runner | **SMART-04** — supersedes `validate_graph` for agent use. Returns `{errors, warnings, lints, lints_enabled}` where each lint has `{code, severity, message, fix_hint, node_id}`. Four rules today: `no_trigger` (error), `disconnected_node` (warn), `orphan_edge` (error), `missing_credential` (error — checks the LLM-family node's provider against the ADMIN-03 credential resolver). Zero LLM calls. Per-tenant opt-out via `tenant_policies.smart_04_lints_enabled`; when off, the lint step skips and `lints` is `[]` (schema validation still runs). |
 
 **Pure vs. runner tool families.** Pure tools live in `app/copilot/tool_layer.py` — graph dict in, graph dict out, no DB access. Runner tools live in `app/copilot/runner_tools.py` — they need a DB session and tenant scope because they call node handlers (which touch credentials, MCP, LLM providers). The agent's `_dispatch_tool` routes to the pure dispatch by default and falls through to `runner_tools.dispatch` when the name is in `RUNNER_TOOL_NAMES`. Runner tools don't mutate the draft graph, so `validation` is always `null` and `draft_version` is unchanged in their `tool_result` events.
 

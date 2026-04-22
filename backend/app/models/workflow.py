@@ -368,6 +368,14 @@ class TenantPolicy(Base):
     # ADMIN-02 — per-tenant API rate limit. Null = env default.
     rate_limit_requests_per_window = Column(Integer, nullable=True)
     rate_limit_window_seconds = Column(Integer, nullable=True)
+    # SMART-04 — proactive authoring lints run after every copilot
+    # mutation (no_trigger / disconnected_node / orphan_edge /
+    # missing_credential). Default TRUE because lints are zero-LLM-
+    # cost and strictly additive to UX. Cost-conscious tenants can
+    # opt out via PATCH /api/v1/tenant-policy.
+    smart_04_lints_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

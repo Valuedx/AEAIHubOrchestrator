@@ -8,13 +8,20 @@
  * at a glance and that are easy to regress when adding a new tool.
  */
 
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { describe, it, expect, afterEach } from "vitest";
 import type { CopilotAgentEvent } from "@/lib/api";
 import { CopilotEventCard } from "./CopilotToolResultCard";
 
 
 describe("CopilotEventCard", () => {
+  // Vitest's default config doesn't register testing-library's
+  // auto-cleanup, so DOM from a previous `render` leaks into the
+  // next test. Two tests that both render a tool_result for
+  // "check_draft" would produce two "Expand tool result for
+  // check_draft" buttons without explicit cleanup — hence this.
+  afterEach(cleanup);
+
   it("renders assistant text", () => {
     const event: CopilotAgentEvent = {
       type: "assistant_text",
@@ -149,5 +156,121 @@ describe("CopilotEventCard", () => {
     };
     render(<CopilotEventCard event={event} />);
     expect(screen.getByText(/7 matches/)).toBeInTheDocument();
+  });
+
+  // SMART-04 — lint rendering.
+  it("surfaces lint counts on the collapsed tool_result summary", () => {
+    const event: CopilotAgentEvent = {
+      type: "tool_result",
+      id: "toolu_1",
+      name: "check_draft",
+      result: {
+        errors: [],
+        warnings: [],
+        lints: [
+          { code: "no_trigger", severity: "error", message: "no trigger",
+            fix_hint: "add one", node_id: null },
+          { code: "disconnected_node", severity: "warn", message: "floater",
+            fix_hint: null, node_id: "node_3" },
+        ],
+        lints_enabled: true,
+      },
+      validation: {
+        errors: [],
+        warnings: [],
+        lints: [
+          { code: "no_trigger", severity: "error", message: "no trigger",
+            fix_hint: "add one", node_id: null },
+          { code: "disconnected_node", severity: "warn", message: "floater",
+            fix_hint: null, node_id: "node_3" },
+        ],
+        lints_enabled: true,
+      },
+      draft_version: 2,
+      error: null,
+    };
+    render(<CopilotEventCard event={event} />);
+    // Counts visible on the collapsed summary row.
+    expect(screen.getByText(/1 lint error/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 lint warning/i)).toBeInTheDocument();
+  });
+
+  it("expands lint cards with severity, code, node_id, message, and fix_hint", () => {
+    const event: CopilotAgentEvent = {
+      type: "tool_result",
+      id: "toolu_1",
+      name: "check_draft",
+      result: {
+        errors: [],
+        warnings: [],
+        lints: [
+          {
+            code: "missing_credential",
+            severity: "error",
+            message: "Node node_2 uses provider google but no key is set.",
+            fix_hint: "Open the LLM Credentials dialog.",
+            node_id: "node_2",
+          },
+        ],
+        lints_enabled: true,
+      },
+      validation: {
+        errors: [],
+        warnings: [],
+        lints: [
+          {
+            code: "missing_credential",
+            severity: "error",
+            message: "Node node_2 uses provider google but no key is set.",
+            fix_hint: "Open the LLM Credentials dialog.",
+            node_id: "node_2",
+          },
+        ],
+        lints_enabled: true,
+      },
+      draft_version: 1,
+      error: null,
+    };
+    render(<CopilotEventCard event={event} />);
+    // Expand the tool_result card.
+    const toggle = screen.getByRole("button", {
+      name: /Expand tool result for check_draft/i,
+    });
+    fireEvent.click(toggle);
+    expect(screen.getByText(/Lints \(SMART-04\)/i)).toBeInTheDocument();
+    // Lint fields appear in the lint-card AND in the raw JSON pre
+    // when expanded — getAllByText + length check is the stable way
+    // to assert "the lint card rendered" without being fragile to
+    // the JSON dump also containing the same strings.
+    expect(screen.getAllByText(/missing_credential/).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Node node_2 uses provider google but no key is set\./i).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Open the LLM Credentials dialog\./i).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("shows a lints-disabled hint when tenant opted out", () => {
+    const event: CopilotAgentEvent = {
+      type: "tool_result",
+      id: "toolu_1",
+      name: "check_draft",
+      result: { errors: [], warnings: [], lints: [], lints_enabled: false },
+      validation: {
+        errors: [],
+        warnings: [],
+        lints: [],
+        lints_enabled: false,
+      },
+      draft_version: 1,
+      error: null,
+    };
+    render(<CopilotEventCard event={event} />);
+    const toggle = screen.getByRole("button", {
+      name: /Expand tool result for check_draft/i,
+    });
+    fireEvent.click(toggle);
+    expect(screen.getByText(/lints disabled per tenant policy/i)).toBeInTheDocument();
   });
 });

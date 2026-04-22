@@ -173,12 +173,31 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "check_draft",
+        "description": (
+            "Preferred post-mutation check. Returns {errors, "
+            "warnings, lints, lints_enabled} — the schema-validator's "
+            "output PLUS the SMART-04 proactive structure lints "
+            "(no_trigger, disconnected_node, orphan_edge, "
+            "missing_credential). Call this after every run of "
+            "mutations and before narrating the draft to the user "
+            "so the narration can call out fix-before-promote "
+            "issues. Each lint has {code, severity, message, "
+            "fix_hint, node_id}. If `lints_enabled` is false the "
+            "tenant has opted out of lints (cost-conscious config); "
+            "schema validation still runs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "validate_graph",
         "description": (
-            "Run the same validator the live workflow-save path uses. "
-            "Returns {errors, warnings}. Call this after a run of "
-            "mutations before you narrate the draft to the user — a "
-            "validation failure is something the user needs to know."
+            "Schema-only validator (no SMART-04 lints). Prefer "
+            "`check_draft` instead — it returns schema validation "
+            "AND structure lints in one call. Kept for back-compat."
         ),
         "input_schema": {
             "type": "object",

@@ -29,7 +29,11 @@ import {
   TriangleAlert,
   Wrench,
 } from "lucide-react";
-import type { CopilotAgentEvent, CopilotDraftValidation } from "@/lib/api";
+import type {
+  CopilotAgentEvent,
+  CopilotDraftValidation,
+  CopilotLint,
+} from "@/lib/api";
 
 interface Props {
   event: CopilotAgentEvent;
@@ -226,6 +230,28 @@ function ToolResultCard({
               {event.validation.warnings.length === 1 ? "" : "s"}
             </p>
           )}
+          {event.validation?.lints && event.validation.lints.length > 0 && (
+            <p className="mt-0.5">
+              {(() => {
+                const errs = event.validation.lints.filter((l) => l.severity === "error").length;
+                const warns = event.validation.lints.filter((l) => l.severity === "warn").length;
+                return (
+                  <>
+                    {errs > 0 && (
+                      <span className="text-destructive mr-2">
+                        {errs} lint error{errs === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {warns > 0 && (
+                      <span className="text-amber-700 dark:text-amber-300">
+                        {warns} lint warning{warns === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
+            </p>
+          )}
         </div>
         {open ? (
           <ChevronDown className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
@@ -337,23 +363,86 @@ function DetailSection({
 
 
 function ValidationSection({ v }: { v: CopilotDraftValidation }) {
-  if (!v.errors.length && !v.warnings.length) {
+  const hasSchemaIssues = v.errors.length > 0 || v.warnings.length > 0;
+  const hasLints = (v.lints?.length ?? 0) > 0;
+  if (!hasSchemaIssues && !hasLints) {
     return (
-      <p className="text-[11px] text-muted-foreground">Validation: clean</p>
+      <p className="text-[11px] text-muted-foreground">
+        Validation: clean
+        {v.lints_enabled === false && (
+          <span className="ml-1 italic">
+            (lints disabled per tenant policy)
+          </span>
+        )}
+      </p>
     );
   }
   return (
-    <DetailSection label="Validation">
-      <ul className="space-y-0.5 text-[11px]">
-        {v.errors.map((e, i) => (
-          <li key={`err-${i}`} className="text-destructive">• {e}</li>
-        ))}
-        {v.warnings.map((w, i) => (
-          <li key={`warn-${i}`} className="text-amber-700 dark:text-amber-300">
-            • {w}
-          </li>
-        ))}
-      </ul>
-    </DetailSection>
+    <div className="space-y-2">
+      {hasSchemaIssues && (
+        <DetailSection label="Validation">
+          <ul className="space-y-0.5 text-[11px]">
+            {v.errors.map((e, i) => (
+              <li key={`err-${i}`} className="text-destructive">• {e}</li>
+            ))}
+            {v.warnings.map((w, i) => (
+              <li
+                key={`warn-${i}`}
+                className="text-amber-700 dark:text-amber-300"
+              >
+                • {w}
+              </li>
+            ))}
+          </ul>
+        </DetailSection>
+      )}
+      {hasLints && (
+        <DetailSection label="Lints (SMART-04)">
+          <ul className="space-y-1.5 text-[11px]">
+            {v.lints!.map((l, i) => (
+              <LintCard key={`lint-${i}`} lint={l} />
+            ))}
+          </ul>
+        </DetailSection>
+      )}
+    </div>
+  );
+}
+
+
+function LintCard({ lint }: { lint: CopilotLint }) {
+  const isError = lint.severity === "error";
+  return (
+    <li
+      className={`rounded border px-2 py-1.5 ${
+        isError
+          ? "border-destructive/40 bg-destructive/5"
+          : "border-amber-500/30 bg-amber-50 dark:bg-amber-950/20"
+      }`}
+    >
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span
+          className={`text-[9px] font-mono uppercase px-1 py-0.5 rounded ${
+            isError
+              ? "bg-destructive/20 text-destructive"
+              : "bg-amber-500/20 text-amber-900 dark:text-amber-100"
+          }`}
+        >
+          {lint.severity}
+        </span>
+        <span className="font-mono text-[10px] opacity-80">{lint.code}</span>
+        {lint.node_id && (
+          <span className="font-mono text-[10px] text-muted-foreground">
+            · {lint.node_id}
+          </span>
+        )}
+      </div>
+      <p className="mt-0.5">{lint.message}</p>
+      {lint.fix_hint && (
+        <p className="mt-0.5 text-muted-foreground">
+          <span className="font-medium">Fix:</span> {lint.fix_hint}
+        </p>
+      )}
+    </li>
   );
 }

@@ -93,6 +93,22 @@ Ranked by impact-in-our-context:
 
 Deferred: sampling (MCP-11), resources / prompts primitives (MCP-12). See [mcp-audit.md §6](mcp-audit.md) for full rationale.
 
+### Copilot intelligence upgrades — SMART-01 … SMART-06
+
+Six follow-ups that turn the copilot from "reads + writes workflows" into "learns, warns, and improves over time." All six ship as **opt-out per-tenant feature flags** stored on `tenant_policies` so cost-conscious tenants can disable any subset (the flag is the single control — no scattered env vars). Default is on for zero-cost features (lints, telemetry reads, pattern retrieval), off for net-new cost features (regression re-runs, embedding indexing).
+
+| # | Title | Default | Extra cost per turn | Payoff |
+|---|-------|---------|---------------------|--------|
+| SMART-01 | Scenario memory + promote-gate regression — every accepted `execute_draft` run becomes a saved test case; Promote re-runs them and refuses on regression | **off** (user opts in) | LLM + engine tokens per scenario at every Promote | Stops "I built it once, then broke it" — biggest reliability jump. Pairs naturally with COPILOT-03's auto-heal. |
+| SMART-02 | Per-tenant accepted-patterns library — every Promote stores the accepted `graph_json` + NL intent; next draft retrieves nearest 2–3 as few-shot examples | **on** | Two extra DB queries; negligible | Agent learns the tenant's conventions (naming, preferred MCP servers, memory profiles) without a prompt change. |
+| SMART-03 | Production-telemetry feedback loop — when a copilot-authored workflow shows anomalies in prod (timeouts ×3, error spike, cost outlier), surface the issue + a proposed fix at the top of the next chat | **on** | Aggregator runs on Beat schedule, not per-turn; surfacing is a single DB read | Closes the loop from authoring → operation; the copilot notices what the user would have taken days to flag. |
+| SMART-04 | Proactive authoring lints — after every mutation, run cheap graph checks (no-trigger, disconnected-node, orphan-edge, missing-credential) + surface inline in the tool_result; `check_draft` runner tool supersedes `validate_graph` | **on** | Zero LLM calls; O(nodes + edges) graph pass | Catches the common shape bugs (dangling nodes, missing keys) before the first test run — huge authoring UX win. **Done** — see [copilot.md §3](copilot.md). |
+| SMART-05 | Vector-backed docs upgrade — swap SMART-01b.iii's word-overlap `search_docs` for pgvector semantic retrieval so rephrasings and synonyms match; index via existing RAG pipeline under a reserved "system" tenant | **off** | Embedding cost at reindex (one-off per deploy); query is cheap | Semantic match — "classify incoming messages" finds Intent Classifier without exact-word overlap. Internals-only change; tool surface untouched. |
+| SMART-06 | MCP tool discovery for the agent — agent can call `list_tools` on the tenant's connected MCP servers (MCP-02 registry) and surface relevant ones proactively: "You're wiring a SOC analyst flow — `threat_intel.enrich_ip` on your connected MCP looks useful." | **on** | One cached `list_tools` call per session; zero LLM cost | Turns the MCP-02 registry into an agent capability, not just a config screen. Pairs with MCP-08 cache invalidation. |
+
+Design rule for the flag column: each SMART ticket adds one named boolean (e.g. `smart_04_lints_enabled`) to `tenant_policies` with `DEFAULT TRUE` or `DEFAULT FALSE` matching the table above. Resolver pattern mirrors ADMIN-01/02's `EffectivePolicy` dataclass so the runner's "is this feature on for this tenant?" check is a single method call.
+
+
 ### Workflow Authoring Copilot — COPILOT-01 … COPILOT-03
 
 Expands roadmap entry [#24](#24-workflow-authoring-copilot-nl--draft-workflow--planned) into three shippable tickets. A Claude-Code-style conversational agent that can create, modify, test, and debug workflows through tool-calling — with a safety boundary so the copilot never mutates a live workflow directly.
