@@ -13,9 +13,14 @@
  *      body shape and forward the response to ``onPromoted``.
  */
 
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import type { CopilotDraftOut, CopilotPromoteOut } from "@/lib/api";
+import type {
+  CopilotDraftOut,
+  CopilotPromoteOut,
+  CopilotScenarioOut,
+  CopilotScenariosRunAllOut,
+} from "@/lib/api";
 import { api } from "@/lib/api";
 import { PromoteDialog } from "./PromoteDialog";
 
@@ -39,6 +44,12 @@ function makeDraft(overrides: Partial<CopilotDraftOut> = {}): CopilotDraftOut {
 
 
 describe("PromoteDialog", () => {
+  beforeEach(() => {
+    // Default: no saved scenarios. Tests that need scenarios
+    // override this with a specific mockResolvedValue.
+    vi.spyOn(api, "listDraftScenarios").mockResolvedValue([]);
+  });
+
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
@@ -188,5 +199,157 @@ describe("PromoteDialog", () => {
 
     expect(spy).toHaveBeenCalledWith("draft-1", { expected_version: 5 });
     expect(onPromoted).toHaveBeenCalledWith(promoted);
+  });
+
+  // -------------------------------------------------------------------------
+  // COPILOT-03.e — scenarios section + gate
+  // -------------------------------------------------------------------------
+
+  it("hides the scenarios section when no scenarios are saved", async () => {
+    const draft = makeDraft();
+    render(
+      <PromoteDialog
+        open={true}
+        onClose={vi.fn()}
+        draft={draft}
+        baseWorkflowName="Slack summariser"
+        onPromoted={vi.fn()}
+      />,
+    );
+    // Let the listDraftScenarios promise resolve.
+    await Promise.resolve();
+    expect(screen.queryByText(/Saved scenarios/i)).not.toBeInTheDocument();
+  });
+
+  it("renders saved scenarios with a Run all button", async () => {
+    const scenarios: CopilotScenarioOut[] = [
+      {
+        scenario_id: "s-1",
+        name: "empty payload",
+        payload: {},
+        has_expected: true,
+        created_at: "2026-04-20T00:00:00Z",
+      },
+      {
+        scenario_id: "s-2",
+        name: "oversized attachment",
+        payload: {},
+        has_expected: false,
+        created_at: "2026-04-21T00:00:00Z",
+      },
+    ];
+    vi.spyOn(api, "listDraftScenarios").mockResolvedValue(scenarios);
+
+    render(
+      <PromoteDialog
+        open={true}
+        onClose={vi.fn()}
+        draft={makeDraft()}
+        baseWorkflowName="Slack summariser"
+        onPromoted={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/Saved scenarios \(2\)/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("empty payload")).toBeInTheDocument();
+    expect(screen.getByText("oversized attachment")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /run all scenarios/i })).toBeInTheDocument();
+  });
+
+  it("blocks promote after failed scenarios until 'promote anyway' is checked", async () => {
+    const scenarios: CopilotScenarioOut[] = [
+      {
+        scenario_id: "s-1",
+        name: "empty payload",
+        payload: {},
+        has_expected: true,
+        created_at: "2026-04-20T00:00:00Z",
+      },
+    ];
+    const runResult: CopilotScenariosRunAllOut = {
+      count: 1,
+      pass_count: 0,
+      fail_count: 1,
+      stale_count: 0,
+      error_count: 0,
+      results: [
+        {
+          scenario_id: "s-1",
+          name: "empty payload",
+          status: "fail",
+          mismatches: [{ path: "$.status", expected: "ok", actual: "failed" }],
+          actual_output: null,
+          message: null,
+        },
+      ],
+    };
+    vi.spyOn(api, "listDraftScenarios").mockResolvedValue(scenarios);
+    vi.spyOn(api, "runAllDraftScenarios").mockResolvedValue(runResult);
+
+    render(
+      <PromoteDialog
+        open={true}
+        onClose={vi.fn()}
+        draft={makeDraft()}
+        baseWorkflowName="Slack summariser"
+        onPromoted={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("empty payload")).toBeInTheDocument(),
+    );
+
+    const runBtn = screen.getByRole("button", { name: /run all scenarios/i });
+    fireEvent.click(runBtn);
+    await waitFor(() => expect(screen.getAllByText("fail").length).toBeGreaterThan(0));
+
+    // Apply is disabled until user confirms.
+    const confirmBtn = screen.getByRole("button", { name: /save new version/i });
+    expect(confirmBtn).toBeDisabled();
+
+    // Checking the "promote anyway" box re-enables it.
+    const confirmCheckbox = screen.getByRole("checkbox");
+    fireEvent.click(confirmCheckbox);
+    expect(confirmBtn).not.toBeDisabled();
+  });
+
+  it("leaves Apply enabled when all scenarios pass", async () => {
+    const scenarios: CopilotScenarioOut[] = [
+      {
+        scenario_id: "s-1", name: "a", payload: {},
+        has_expected: true, created_at: "2026-04-20T00:00:00Z",
+      },
+    ];
+    vi.spyOn(api, "listDraftScenarios").mockResolvedValue(scenarios);
+    vi.spyOn(api, "runAllDraftScenarios").mockResolvedValue({
+      count: 1, pass_count: 1, fail_count: 0, stale_count: 0, error_count: 0,
+      results: [
+        { scenario_id: "s-1", name: "a", status: "pass", mismatches: [], actual_output: null, message: null },
+      ],
+    });
+
+    render(
+      <PromoteDialog
+        open={true}
+        onClose={vi.fn()}
+        draft={makeDraft()}
+        baseWorkflowName="Slack summariser"
+        onPromoted={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("a")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /run all scenarios/i }));
+    await waitFor(() => expect(screen.getAllByText("pass").length).toBeGreaterThan(0));
+
+    const confirmBtn = screen.getByRole("button", { name: /save new version/i });
+    expect(confirmBtn).not.toBeDisabled();
+    // No "promote anyway" checkbox rendered when all scenarios pass.
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 });

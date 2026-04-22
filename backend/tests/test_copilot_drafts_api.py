@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -426,3 +426,112 @@ def test_promote_refuses_invalid_graph(client_and_session):
         assert "validation failed" in resp.json()["detail"].lower()
     finally:
         tool_layer.validate_graph = original
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-03.e — scenario list + run-all endpoints
+# ---------------------------------------------------------------------------
+
+
+def _mock_scenario(name: str, *, has_expected: bool = False):
+    s = MagicMock()
+    s.id = uuid.uuid4()
+    s.name = name
+    s.payload_json = {"trigger": name}
+    s.expected_output_contains_json = {"ok": True} if has_expected else None
+    s.created_at = datetime.now(timezone.utc)
+    return s
+
+
+def test_list_draft_scenarios_returns_ordered_list(client_and_session):
+    client, session = client_and_session
+    draft = _mock_draft()
+
+    s1 = _mock_scenario("empty payload", has_expected=True)
+    s2 = _mock_scenario("oversized attachment")
+    # Two query() calls: draft lookup (.first()), scenarios (.all()).
+    session.query.return_value.filter_by.return_value.first.return_value = draft
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = [s1, s2]
+
+    resp = client.get(f"/api/v1/copilot/drafts/{draft.id}/scenarios")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 2
+    assert body[0]["name"] == "empty payload"
+    assert body[0]["has_expected"] is True
+    assert body[1]["has_expected"] is False
+
+
+def test_list_draft_scenarios_empty(client_and_session):
+    client, session = client_and_session
+    draft = _mock_draft()
+    session.query.return_value.filter_by.return_value.first.return_value = draft
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = []
+
+    resp = client.get(f"/api/v1/copilot/drafts/{draft.id}/scenarios")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_run_all_draft_scenarios_aggregates_pass_fail(client_and_session):
+    """03.e — run_all hits runner_tools.run_scenario per row and
+    buckets the results by status. Mocks run_scenario to return a
+    canned status per call."""
+    from app.copilot import runner_tools
+
+    client, session = client_and_session
+    draft = _mock_draft()
+
+    rows = [
+        _mock_scenario("a"),
+        _mock_scenario("b"),
+        _mock_scenario("c"),
+    ]
+    session.query.return_value.filter_by.return_value.first.return_value = draft
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = rows
+
+    # run_scenario is called 3× — canned: pass, fail, error.
+    canned = [
+        {"scenario_id": str(rows[0].id), "name": "a", "status": "pass", "mismatches": []},
+        {"scenario_id": str(rows[1].id), "name": "b", "status": "fail",
+         "mismatches": [{"path": "$.count", "expected": 5, "actual": 3}]},
+        {"scenario_id": str(rows[2].id), "name": "c", "status": "error",
+         "message": "Draft validation failed", "execution": {"error": "x"}},
+    ]
+
+    with patch.object(runner_tools, "run_scenario", side_effect=canned):
+        resp = client.post(
+            f"/api/v1/copilot/drafts/{draft.id}/scenarios/run_all",
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 3
+    assert body["pass_count"] == 1
+    assert body["fail_count"] == 1
+    assert body["stale_count"] == 0
+    assert body["error_count"] == 1
+    assert [r["status"] for r in body["results"]] == ["pass", "fail", "error"]
+    # Fail result carries mismatches through.
+    assert len(body["results"][1]["mismatches"]) == 1
+
+
+def test_run_all_draft_scenarios_empty_draft(client_and_session):
+    client, session = client_and_session
+    draft = _mock_draft()
+    session.query.return_value.filter_by.return_value.first.return_value = draft
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = []
+
+    resp = client.post(f"/api/v1/copilot/drafts/{draft.id}/scenarios/run_all")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 0
+    assert body["results"] == []
+
+
+def test_list_scenarios_404_on_missing_draft(client_and_session):
+    client, session = client_and_session
+    session.query.return_value.filter_by.return_value.first.return_value = None
+
+    resp = client.get(f"/api/v1/copilot/drafts/{uuid.uuid4()}/scenarios")
+    assert resp.status_code == 404

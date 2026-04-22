@@ -121,6 +121,38 @@ class PromoteOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# COPILOT-03.e — scenario list + run-all endpoints
+# ---------------------------------------------------------------------------
+
+
+class ScenarioOut(BaseModel):
+    scenario_id: str
+    name: str
+    payload: dict[str, Any]
+    has_expected: bool
+    created_at: str
+
+
+class ScenarioRunOut(BaseModel):
+    scenario_id: str
+    name: str
+    # "pass" | "fail" | "stale" | "error"
+    status: str
+    mismatches: list[dict[str, Any]] = Field(default_factory=list)
+    actual_output: dict[str, Any] | None = None
+    message: str | None = None
+
+
+class ScenariosRunAllOut(BaseModel):
+    count: int
+    pass_count: int
+    fail_count: int
+    stale_count: int
+    error_count: int
+    results: list[ScenarioRunOut]
+
+
+# ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
 
@@ -339,6 +371,23 @@ def promote_draft(
         graph_json=workflow.graph_json or {"nodes": [], "edges": []},
     )
 
+    # COPILOT-03.e — migrate test scenarios from draft_id →
+    # workflow_id so regression cases survive the draft lifecycle.
+    # Done INSIDE the transaction (before the draft delete below so
+    # the FK cascade can't reach them) and via bulk UPDATE to keep
+    # it O(1) round-trips regardless of scenario count.
+    from app.models.copilot import CopilotTestScenario
+
+    db.query(CopilotTestScenario).filter_by(
+        tenant_id=tenant_id, draft_id=draft.id,
+    ).update(
+        {
+            CopilotTestScenario.draft_id: None,
+            CopilotTestScenario.workflow_id: workflow.id,
+        },
+        synchronize_session=False,
+    )
+
     # Draft is consumed once promoted. Deleting it in the same
     # transaction keeps the invariant "a promoted draft no longer
     # exists" simple to reason about.
@@ -358,6 +407,104 @@ def promote_draft(
         workflow_id=str(workflow.id),
         version=workflow.version,
         created=created,
+    )
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-03.e — scenario list + run-all
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{draft_id}/scenarios", response_model=list[ScenarioOut])
+def list_draft_scenarios(
+    draft_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_tenant_db),
+):
+    """List saved regression scenarios bound to this draft. The
+    PromoteDialog fetches this on open so it can show scenario names
+    + status badges without running anything yet."""
+    from app.models.copilot import CopilotTestScenario
+
+    draft = _get_or_404(db, tenant_id, draft_id)
+    rows = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id)
+        .order_by(CopilotTestScenario.created_at)
+        .all()
+    )
+    return [
+        ScenarioOut(
+            scenario_id=str(r.id),
+            name=r.name,
+            payload=r.payload_json or {},
+            has_expected=r.expected_output_contains_json is not None,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+        for r in rows
+    ]
+
+
+@router.post(
+    "/{draft_id}/scenarios/run_all",
+    response_model=ScenariosRunAllOut,
+)
+def run_all_draft_scenarios(
+    draft_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_tenant_db),
+):
+    """Run every saved scenario on this draft sequentially and return
+    pass/fail/stale/error counts + per-scenario results. The
+    PromoteDialog calls this before showing the Apply button so the
+    user sees regressions before promoting.
+
+    Each scenario runs via the same ``run_scenario`` runner tool the
+    agent uses — identical pass/fail semantics guaranteed by calling
+    the same code path. Runs are sequential (not parallel) so the
+    ephemeral-workflow rows don't step on each other and cost stays
+    predictable.
+    """
+    from app.copilot import runner_tools
+    from app.models.copilot import CopilotTestScenario
+
+    draft = _get_or_404(db, tenant_id, draft_id)
+    scenarios = (
+        db.query(CopilotTestScenario)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id)
+        .order_by(CopilotTestScenario.created_at)
+        .all()
+    )
+
+    results: list[ScenarioRunOut] = []
+    counts = {"pass": 0, "fail": 0, "stale": 0, "error": 0}
+    for s in scenarios:
+        raw = runner_tools.run_scenario(
+            db, tenant_id=tenant_id, draft=draft,
+            args={"scenario_id": str(s.id)},
+        )
+        status = raw.get("status") or "error"
+        if status not in counts:
+            status = "error"
+        counts[status] += 1
+        results.append(
+            ScenarioRunOut(
+                scenario_id=str(s.id),
+                name=s.name,
+                status=status,
+                mismatches=list(raw.get("mismatches") or []),
+                actual_output=raw.get("actual_output"),
+                message=raw.get("message") or raw.get("error"),
+            )
+        )
+
+    return ScenariosRunAllOut(
+        count=len(results),
+        pass_count=counts["pass"],
+        fail_count=counts["fail"],
+        stale_count=counts["stale"],
+        error_count=counts["error"],
+        results=results,
     )
 
 

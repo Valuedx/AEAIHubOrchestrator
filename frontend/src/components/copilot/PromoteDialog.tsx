@@ -23,9 +23,15 @@
  * cramping on a 1366×768 viewport.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, CircleCheck, Loader2, TriangleAlert } from "lucide-react";
-import { api, type CopilotDraftOut, type CopilotPromoteOut } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CircleAlert, CircleCheck, Loader2, PlayCircle, TriangleAlert } from "lucide-react";
+import {
+  api,
+  type CopilotDraftOut,
+  type CopilotPromoteOut,
+  type CopilotScenarioOut,
+  type CopilotScenarioRunOut,
+} from "@/lib/api";
 import {
   Dialog,
   DialogContent,
@@ -77,6 +83,16 @@ export function PromoteDialog({
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // COPILOT-03.e — saved scenarios + latest run results. On open
+  // we fetch the list (cheap, one DB read) but never auto-run — the
+  // user triggers a run explicitly because each scenario ticks
+  // through the engine, which costs real tokens / API calls.
+  const [scenarios, setScenarios] = useState<CopilotScenarioOut[]>([]);
+  const [runResults, setRunResults] = useState<CopilotScenarioRunOut[] | null>(null);
+  const [scenarioRunInFlight, setScenarioRunInFlight] = useState(false);
+  const [scenariosLoadError, setScenariosLoadError] = useState<string | null>(null);
+  const [confirmedFailingPromote, setConfirmedFailingPromote] = useState(false);
+
   // Seed the name from the draft's title whenever a new draft is
   // opened. Net-new drafts' titles are "New workflow draft" by
   // default — ok as a placeholder, user will normally rename.
@@ -86,8 +102,48 @@ export function PromoteDialog({
       setDescription("");
       setErrorMessage(null);
       setSubmitting(false);
+      setRunResults(null);
+      setConfirmedFailingPromote(false);
     }
   }, [open, draft, isNetNew, baseWorkflowName]);
+
+  // Load scenario list on open. Runs are explicit (the "Run all"
+  // button) — listing is cheap and lets us show "0 saved" vs.
+  // "3 saved — run before promote".
+  useEffect(() => {
+    if (!open || !draft) return;
+    let cancelled = false;
+    setScenariosLoadError(null);
+    (async () => {
+      try {
+        const list = await api.listDraftScenarios(draft.id);
+        if (!cancelled) setScenarios(list);
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setScenariosLoadError(msg);
+        setScenarios([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, draft]);
+
+  const runAllScenarios = useCallback(async () => {
+    if (!draft || scenarioRunInFlight) return;
+    setScenarioRunInFlight(true);
+    setErrorMessage(null);
+    try {
+      const result = await api.runAllDraftScenarios(draft.id);
+      setRunResults(result.results);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMessage(`Scenario run failed: ${msg}`);
+    } finally {
+      setScenarioRunInFlight(false);
+    }
+  }, [draft, scenarioRunInFlight]);
 
   const nodeCount = draft?.graph_json.nodes.length ?? 0;
   const edgeCount = draft?.graph_json.edges.length ?? 0;
@@ -107,12 +163,45 @@ export function PromoteDialog({
   const lintErrorCount = lints.filter((l) => l.severity === "error").length;
   const lintWarnCount = lints.filter((l) => l.severity === "warn").length;
 
+  // COPILOT-03.e — derive scenario gate. If the user ran all
+  // scenarios and any failed (or surfaced as stale / error), the
+  // Apply button is suppressed behind a "promote anyway" confirm.
+  // Scenarios that haven't been run yet don't block — we show a
+  // suggestion but let the user bypass, which matches the
+  // "promote gate warns, doesn't enforce" philosophy SMART-01
+  // will eventually replace with a strict mode.
+  const scenarioSummary = useMemo(() => {
+    if (runResults === null) {
+      return {
+        passCount: 0,
+        failCount: 0,
+        staleCount: 0,
+        errorCount: 0,
+        hasRun: false,
+      };
+    }
+    return {
+      passCount: runResults.filter((r) => r.status === "pass").length,
+      failCount: runResults.filter((r) => r.status === "fail").length,
+      staleCount: runResults.filter((r) => r.status === "stale").length,
+      errorCount: runResults.filter((r) => r.status === "error").length,
+      hasRun: true,
+    };
+  }, [runResults]);
+
+  const scenariosBlockPromote =
+    scenarioSummary.hasRun &&
+    (scenarioSummary.failCount > 0 ||
+      scenarioSummary.staleCount > 0 ||
+      scenarioSummary.errorCount > 0);
+
   const canSubmit =
     !!draft &&
     !submitting &&
     errors.length === 0 &&
     lintErrorCount === 0 &&
-    (!isNetNew || name.trim().length > 0);
+    (!isNetNew || name.trim().length > 0) &&
+    (!scenariosBlockPromote || confirmedFailingPromote);
 
   const handleSubmit = async () => {
     if (!draft || !canSubmit) return;
@@ -233,6 +322,18 @@ export function PromoteDialog({
                   Validation clean
                 </div>
               )}
+
+            {/* COPILOT-03.e — saved scenarios + run gate */}
+            <ScenariosBlock
+              scenarios={scenarios}
+              loadError={scenariosLoadError}
+              runResults={runResults}
+              runInFlight={scenarioRunInFlight}
+              onRunAll={runAllScenarios}
+              blocksPromote={scenariosBlockPromote}
+              confirmed={confirmedFailingPromote}
+              onToggleConfirm={() => setConfirmedFailingPromote((v) => !v)}
+            />
 
             {/* API error from the promote call */}
             {errorMessage && (
@@ -397,5 +498,182 @@ function ValidationBlock({
         </p>
       )}
     </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// COPILOT-03.e — saved scenarios + run-all gate
+// ---------------------------------------------------------------------------
+
+
+function ScenariosBlock({
+  scenarios,
+  loadError,
+  runResults,
+  runInFlight,
+  onRunAll,
+  blocksPromote,
+  confirmed,
+  onToggleConfirm,
+}: {
+  scenarios: CopilotScenarioOut[];
+  loadError: string | null;
+  runResults: CopilotScenarioRunOut[] | null;
+  runInFlight: boolean;
+  onRunAll: () => void;
+  blocksPromote: boolean;
+  confirmed: boolean;
+  onToggleConfirm: () => void;
+}) {
+  // Nothing to show — tidy hide, don't clutter the dialog.
+  if (scenarios.length === 0 && !loadError) {
+    return null;
+  }
+
+  if (loadError) {
+    return (
+      <div
+        role="alert"
+        className="rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-950/20 p-2.5 text-xs"
+      >
+        <p className="font-medium text-amber-700 dark:text-amber-300">
+          Couldn't load saved scenarios
+        </p>
+        <p className="mt-0.5 break-words text-muted-foreground">{loadError}</p>
+      </div>
+    );
+  }
+
+  // Map results by scenario_id so the list renders in scenario order
+  // (created_at) rather than run-result order.
+  const resultById = new Map(
+    (runResults ?? []).map((r) => [r.scenario_id, r]),
+  );
+
+  const passCount = (runResults ?? []).filter((r) => r.status === "pass").length;
+  const failCount = (runResults ?? []).filter((r) => r.status === "fail").length;
+  const staleCount = (runResults ?? []).filter((r) => r.status === "stale").length;
+  const errorCount = (runResults ?? []).filter((r) => r.status === "error").length;
+
+  return (
+    <div className="rounded-md border p-2.5 text-xs space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="font-medium">
+          Saved scenarios ({scenarios.length})
+        </div>
+        <button
+          type="button"
+          onClick={onRunAll}
+          disabled={runInFlight}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] hover:bg-accent disabled:opacity-50"
+          aria-label="Run all scenarios"
+        >
+          {runInFlight ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <PlayCircle className="h-3 w-3" />
+          )}
+          Run all
+        </button>
+      </div>
+
+      {runResults !== null && (
+        <p className="text-[11px] text-muted-foreground">
+          {passCount} pass · {failCount} fail
+          {staleCount > 0 && ` · ${staleCount} stale`}
+          {errorCount > 0 && ` · ${errorCount} error`}
+        </p>
+      )}
+
+      <ul className="space-y-1">
+        {scenarios.map((s) => {
+          const r = resultById.get(s.scenario_id);
+          return (
+            <li
+              key={s.scenario_id}
+              className="flex items-start justify-between gap-2"
+            >
+              <div className="min-w-0">
+                <div className="truncate font-mono text-[11px]">{s.name}</div>
+                {r && r.status === "fail" && r.mismatches.length > 0 && (
+                  <div className="text-[10px] text-muted-foreground truncate">
+                    {r.mismatches.length} mismatch
+                    {r.mismatches.length === 1 ? "" : "es"}
+                  </div>
+                )}
+                {r && r.status === "error" && r.message && (
+                  <div className="text-[10px] text-destructive truncate">
+                    {r.message}
+                  </div>
+                )}
+              </div>
+              {r ? <ScenarioStatusBadge status={r.status} /> : (
+                <Badge variant="outline" className="text-muted-foreground">
+                  not run
+                </Badge>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {blocksPromote && (
+        <label className="flex items-start gap-2 pt-2 border-t cursor-pointer">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={onToggleConfirm}
+            className="mt-0.5"
+          />
+          <span className="text-[11px] leading-relaxed">
+            Promote anyway — I've reviewed the{" "}
+            {failCount + staleCount + errorCount} failing scenario
+            {failCount + staleCount + errorCount === 1 ? "" : "s"} and
+            still want to promote. Use this sparingly.
+          </span>
+        </label>
+      )}
+    </div>
+  );
+}
+
+
+function ScenarioStatusBadge({
+  status,
+}: {
+  status: "pass" | "fail" | "stale" | "error";
+}) {
+  if (status === "pass") {
+    return (
+      <Badge
+        variant="outline"
+        className="text-emerald-700 border-emerald-300 dark:text-emerald-300 dark:border-emerald-800"
+      >
+        pass
+      </Badge>
+    );
+  }
+  if (status === "fail") {
+    return (
+      <Badge variant="outline" className="text-destructive border-destructive/40">
+        fail
+      </Badge>
+    );
+  }
+  if (status === "stale") {
+    return (
+      <Badge
+        variant="outline"
+        className="text-amber-700 border-amber-300 dark:text-amber-300 dark:border-amber-800"
+      >
+        stale
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline" className="text-muted-foreground">
+      error
+    </Badge>
   );
 }

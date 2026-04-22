@@ -688,6 +688,35 @@ export interface CopilotPromoteOut {
   created: boolean;
 }
 
+// COPILOT-03.e — scenario list + run-all shapes surfaced by PromoteDialog.
+export interface CopilotScenarioOut {
+  scenario_id: string;
+  name: string;
+  payload: Record<string, unknown>;
+  has_expected: boolean;
+  created_at: string;
+}
+
+export type CopilotScenarioStatus = "pass" | "fail" | "stale" | "error";
+
+export interface CopilotScenarioRunOut {
+  scenario_id: string;
+  name: string;
+  status: CopilotScenarioStatus;
+  mismatches: Array<Record<string, unknown>>;
+  actual_output: Record<string, unknown> | null;
+  message: string | null;
+}
+
+export interface CopilotScenariosRunAllOut {
+  count: number;
+  pass_count: number;
+  fail_count: number;
+  stale_count: number;
+  error_count: number;
+  results: CopilotScenarioRunOut[];
+}
+
 // ---------------------------------------------------------------------------
 // COPILOT-01b — session + turn streaming types
 // ---------------------------------------------------------------------------
@@ -1429,6 +1458,18 @@ export const api = {
     return request(`/api/v1/copilot/drafts/${draftId}/promote`, {
       method: "POST",
       body: JSON.stringify(body),
+    });
+  },
+
+  // --- COPILOT-03.e — scenario list + run-all for PromoteDialog ---
+
+  listDraftScenarios(draftId: string): Promise<CopilotScenarioOut[]> {
+    return request(`/api/v1/copilot/drafts/${draftId}/scenarios`);
+  },
+
+  runAllDraftScenarios(draftId: string): Promise<CopilotScenariosRunAllOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}/scenarios/run_all`, {
+      method: "POST",
     });
   },
 
