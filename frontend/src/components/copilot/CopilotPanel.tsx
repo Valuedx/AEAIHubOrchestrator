@@ -1,5 +1,5 @@
 /**
- * COPILOT-02.i — the chat panel.
+ * COPILOT-02.i + 02.ii — the chat panel.
  *
  * Layout
  * ------
@@ -14,50 +14,61 @@
  *
  * Three rows::
  *
- *   header      → copilot branding + draft title + close button
+ *   header      → branding + draft title + Stop/Apply/Close buttons
  *   messages    → scrollable chat history + event stream
  *   composer    → textarea + send
  *
- * Draft + session lifecycle
- * -------------------------
+ * Draft + session lifecycle (02.ii adds resume)
+ * ---------------------------------------------
  *
- * On mount (every time the panel opens) we ensure there's a draft
- * and a session bound to it:
+ * On each open, bootstrap looks for:
  *
- *   - If the user has a currently-loaded workflow, create a draft
- *     with ``base_workflow_id`` set so a promote path will land as
- *     a new version of that workflow.
- *   - Otherwise create a net-new blank draft; promote will ask for
- *     a workflow name.
+ *   1. a draft we can resume — most-recent active draft matching the
+ *      current workflow (or the most-recent net-new draft if no
+ *      workflow is loaded). If none, create a fresh one.
+ *   2. an active session on that draft. If none, create a fresh
+ *      session.
+ *   3. the prior turns on the resumed session and replay them into
+ *      the message list via ``turnsToChatItems`` so the user sees
+ *      their conversation continue exactly where they left off.
  *
- * The draft + session are created on the backend via the existing
- * ``/api/v1/copilot/drafts`` and ``/api/v1/copilot/sessions`` APIs
- * (01a + 01b.i). When the user closes the panel and reopens it,
- * this component currently creates a fresh session against the
- * same draft — chat history from prior sessions on the same draft
- * is still queryable via ``listCopilotTurns`` but not replayed
- * into the UI yet (kept for 02.ii).
- *
- * Streaming
- * ---------
+ * Streaming + stop
+ * ----------------
  *
  * ``api.sendCopilotTurn`` is an async generator that yields
  * ``CopilotAgentEvent`` items. We append each yielded event to
  * ``items`` as it arrives; React re-renders on every state update
- * so the chat reveals token-free but event-by-event. On ``done`` we
- * flip ``streaming`` back off.
+ * so the chat reveals event-by-event. On ``done`` we flip
+ * ``streaming`` back off.
  *
- * AbortController is wired up so navigation away from the panel (or
- * a rapid close/reopen) cancels the in-flight fetch. Follow-up
- * (02.ii) adds an explicit "stop generating" button.
+ * The AbortController on ``abortRef`` is now wired to an explicit
+ * "Stop" button in the header (02.ii) in addition to the
+ * close-panel/unmount path.
+ *
+ * Apply / Promote (02.ii)
+ * -----------------------
+ *
+ * The header's "Apply" button is enabled once the draft has at least
+ * one mutation (``draft.version > 0`` since fork). It opens a
+ * ``PromoteDialog`` that shows diff summary + validation + name
+ * field for net-new drafts. On successful promote we reload the
+ * workflow store, open the promoted workflow, and close the panel.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Sparkles, X } from "lucide-react";
-import { api, type CopilotAgentEvent, type CopilotDraftOut, type CopilotSessionOut } from "@/lib/api";
+import { CircleCheck, Loader2, Sparkles, Square, X } from "lucide-react";
+import {
+  api,
+  type CopilotAgentEvent,
+  type CopilotDraftOut,
+  type CopilotPromoteOut,
+  type CopilotSessionOut,
+  type CopilotTurnOut,
+} from "@/lib/api";
 import { useWorkflowStore } from "@/store/workflowStore";
 import { CopilotMessageList, type ChatItem } from "./CopilotMessageList";
 import { CopilotComposer } from "./CopilotComposer";
+import { PromoteDialog } from "./PromoteDialog";
 
 
 interface Props {
@@ -71,6 +82,9 @@ interface Props {
 
 export function CopilotPanel({ open, onClose, width = 460 }: Props) {
   const currentWorkflow = useWorkflowStore((s) => s.currentWorkflow);
+  const loadWorkflow = useWorkflowStore((s) => s.loadWorkflow);
+  const fetchWorkflows = useWorkflowStore((s) => s.fetchWorkflows);
+
   const [draft, setDraft] = useState<CopilotDraftOut | null>(null);
   const [session, setSession] = useState<CopilotSessionOut | null>(null);
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -79,6 +93,7 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
     "idle" | "loading" | "ready" | "error"
   >("idle");
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [promoteOpen, setPromoteOpen] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -96,25 +111,55 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
 
     (async () => {
       try {
-        // Build a sensible default draft title. If the user has a
-        // workflow open, fork it; otherwise "Untitled draft".
-        const title = currentWorkflow?.name
-          ? `Edits on "${currentWorkflow.name}"`
-          : "New workflow draft";
-        const created = await api.createDraft({
-          title,
-          base_workflow_id: currentWorkflow?.id,
-        });
+        // Look for the most-recent active draft this user already
+        // has open for the current workflow. If we find one, resume
+        // it; otherwise create a fresh draft. This is the
+        // session-resume path so closing and reopening the panel
+        // doesn't lose context.
+        const existingDrafts = await api.listDrafts();
         if (cancelled) return;
-        setDraft(created);
+        const resumableDraft = currentWorkflow?.id
+          ? existingDrafts.find((d) => d.base_workflow_id === currentWorkflow.id)
+          : existingDrafts.find((d) => d.base_workflow_id === null);
 
-        // Start a chat session against the draft. Provider defaults
-        // to anthropic server-side; 02.ii will surface a picker.
-        const newSession = await api.createCopilotSession({
-          draft_id: created.id,
-        });
+        let loadedDraft: CopilotDraftOut;
+        if (resumableDraft) {
+          loadedDraft = resumableDraft;
+        } else {
+          const title = currentWorkflow?.name
+            ? `Edits on "${currentWorkflow.name}"`
+            : "New workflow draft";
+          loadedDraft = await api.createDraft({
+            title,
+            base_workflow_id: currentWorkflow?.id,
+          });
+          if (cancelled) return;
+        }
+        setDraft(loadedDraft);
+
+        // Find the most-recent session for this draft; if none,
+        // create a fresh one. Reuse is what makes "close + reopen
+        // keeps my conversation" work.
+        const existingSessions = await api.listCopilotSessions(loadedDraft.id);
         if (cancelled) return;
-        setSession(newSession);
+        const activeSession = existingSessions.find(
+          (s) => s.status === "active",
+        );
+
+        let loadedSession: CopilotSessionOut;
+        let replayTurns: CopilotTurnOut[] = [];
+        if (activeSession) {
+          loadedSession = activeSession;
+          replayTurns = await api.listCopilotTurns(activeSession.id);
+          if (cancelled) return;
+        } else {
+          loadedSession = await api.createCopilotSession({
+            draft_id: loadedDraft.id,
+          });
+          if (cancelled) return;
+        }
+        setSession(loadedSession);
+        setItems(turnsToChatItems(replayTurns));
         setBootstrap("ready");
       } catch (err) {
         if (cancelled) return;
@@ -215,6 +260,36 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
   );
 
   // ----------------------------------------------------------------
+  // Stop / promote handlers
+  // ----------------------------------------------------------------
+
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const handlePromoted = useCallback(
+    async (result: CopilotPromoteOut) => {
+      setPromoteOpen(false);
+      try {
+        await fetchWorkflows();
+        await loadWorkflow(result.workflow_id);
+      } finally {
+        onClose();
+      }
+    },
+    [fetchWorkflows, loadWorkflow, onClose],
+  );
+
+  // Apply button becomes clickable once the draft has at least one
+  // mutation since fork — version > 0 is our proxy for "something
+  // changed". Net-new drafts start at 0 and bump to 1 after the first
+  // tool call; forks inherit their base-workflow's version.
+  const hasDraftChanges = (draft?.version ?? 0) > 0;
+
+  const baseNodeCount = currentWorkflow?.graph_json?.nodes?.length;
+  const baseEdgeCount = currentWorkflow?.graph_json?.edges?.length;
+
+  // ----------------------------------------------------------------
   // Render
   // ----------------------------------------------------------------
 
@@ -228,7 +303,12 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
       className="flex flex-col h-full border-l bg-sidebar shrink-0"
       aria-label="Workflow authoring copilot"
     >
-      <PanelHeader draftTitle={draft?.title} onClose={onClose} />
+      <PanelHeader
+        draftTitle={draft?.title}
+        onClose={onClose}
+        onApply={draft && hasDraftChanges ? () => setPromoteOpen(true) : undefined}
+        onStop={streaming ? handleStop : undefined}
+      />
 
       {bootstrap === "loading" && <BootstrapLoading />}
 
@@ -245,6 +325,16 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
           <CopilotComposer onSend={handleSend} streaming={streaming} />
         </>
       )}
+
+      <PromoteDialog
+        open={promoteOpen}
+        onClose={() => setPromoteOpen(false)}
+        draft={draft}
+        baseWorkflowName={currentWorkflow?.name ?? null}
+        baseNodeCount={baseNodeCount}
+        baseEdgeCount={baseEdgeCount}
+        onPromoted={handlePromoted}
+      />
     </div>
   );
 }
@@ -258,9 +348,17 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
 function PanelHeader({
   draftTitle,
   onClose,
+  onApply,
+  onStop,
 }: {
   draftTitle: string | undefined;
   onClose: () => void;
+  /** When set, renders an "Apply" button that opens PromoteDialog.
+   * Undefined = no pending changes, button hidden. */
+  onApply?: () => void;
+  /** When set (i.e. a turn is streaming), renders a "Stop" button
+   * that aborts the in-flight request. */
+  onStop?: () => void;
 }) {
   return (
     <div className="flex items-center gap-2 px-4 py-3 border-b">
@@ -276,6 +374,30 @@ function PanelHeader({
           </p>
         )}
       </div>
+      {onStop && (
+        <button
+          type="button"
+          onClick={onStop}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-destructive/40 text-destructive text-[11px] hover:bg-destructive/10 transition-colors"
+          aria-label="Stop generating"
+          title="Stop generating"
+        >
+          <Square className="h-3 w-3" />
+          Stop
+        </button>
+      )}
+      {onApply && (
+        <button
+          type="button"
+          onClick={onApply}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-primary text-primary-foreground text-[11px] hover:opacity-90 transition-opacity"
+          aria-label="Apply draft"
+          title="Review and promote draft"
+        >
+          <CircleCheck className="h-3 w-3" />
+          Apply
+        </button>
+      )}
       <button
         type="button"
         onClick={onClose}
@@ -338,4 +460,81 @@ function eventId(event: CopilotAgentEvent, fallbackIndex: number): string {
     return `${event.type}-${event.id}`;
   }
   return `${event.type}-${fallbackIndex}-${Date.now()}`;
+}
+
+
+/**
+ * Replay prior ``copilot_turns`` rows as ``ChatItem`` entries so the
+ * panel reopens with the conversation already on screen. The backend
+ * stores three shapes (see ``_persist_turn`` in agent.py):
+ *
+ *   user      → ``{text}``
+ *   assistant → ``{text, blocks: [{type:"text"} | {type:"tool_use"}]}``
+ *                plus normalised ``tool_calls_json`` list
+ *   tool      → ``{tool_use_id, name, args, result, error?}``
+ *
+ * We fan each turn out into one or more ``ChatItem`` entries so the
+ * live-stream rendering path can be reused verbatim — user text lands
+ * as a right-aligned bubble and every assistant/tool artifact becomes
+ * a dispatched ``CopilotEventCard``. Tool turns have no per-turn
+ * validation or draft_version snapshot persisted, so the replayed
+ * ``tool_result`` event uses ``validation: null`` and ``draft_version: 0``
+ * — live streams continue to carry the real values.
+ */
+export function turnsToChatItems(turns: CopilotTurnOut[]): ChatItem[] {
+  const items: ChatItem[] = [];
+  for (const turn of turns) {
+    const content = (turn.content_json ?? {}) as Record<string, unknown>;
+    if (turn.role === "user") {
+      items.push({
+        id: `replay-user-${turn.id}`,
+        kind: "user",
+        userText: typeof content.text === "string" ? content.text : "",
+      });
+    } else if (turn.role === "assistant") {
+      const text = typeof content.text === "string" ? content.text : "";
+      if (text) {
+        items.push({
+          id: `replay-text-${turn.id}`,
+          kind: "event",
+          event: { type: "assistant_text", text },
+        });
+      }
+      const toolCalls = Array.isArray(turn.tool_calls_json)
+        ? (turn.tool_calls_json as Array<Record<string, unknown>>)
+        : [];
+      for (const tc of toolCalls) {
+        const id = typeof tc.id === "string" ? tc.id : `tc-${turn.id}`;
+        const name = typeof tc.name === "string" ? tc.name : "";
+        const input = (tc.input ?? tc.args ?? {}) as Record<string, unknown>;
+        items.push({
+          id: `replay-toolcall-${id}`,
+          kind: "event",
+          event: { type: "tool_call", id, name, args: input },
+        });
+      }
+    } else if (turn.role === "tool") {
+      const id =
+        typeof content.tool_use_id === "string"
+          ? content.tool_use_id
+          : `tr-${turn.id}`;
+      const name = typeof content.name === "string" ? content.name : "";
+      const result = (content.result ?? {}) as Record<string, unknown>;
+      const error = typeof content.error === "string" ? content.error : null;
+      items.push({
+        id: `replay-toolresult-${id}`,
+        kind: "event",
+        event: {
+          type: "tool_result",
+          id,
+          name,
+          result,
+          validation: null,
+          draft_version: 0,
+          error,
+        },
+      });
+    }
+  }
+  return items;
 }

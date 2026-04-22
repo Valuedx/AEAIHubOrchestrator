@@ -56,7 +56,8 @@ VERTEX-02 moves the Vertex project + location off the process-global env vars on
 | COPILOT-01b.iv (Google/Vertex) | Google AI Studio + Vertex AI providers in the agent runner (shared adapter via unified `google-genai` SDK; Vertex per-tenant project via VERTEX-02). Default model `gemini-3.1-pro-preview-customtools`. | **Done** — see [copilot.md §3](copilot.md) |
 | COPILOT-01b.iv (OpenAI + budget) | OpenAI provider adapter + per-session token budget enforcement | Planned |
 | COPILOT-02.i | Chat pane + streaming message list + composer + toolbar Sparkles toggle + mutually-exclusive-with-PropertyInspector layout | **Done** — see [copilot.md §6](copilot.md) |
-| COPILOT-02.ii | DraftDiffOverlay on canvas (sparkle badges on copilot-added nodes) + `PromoteDialog` side-by-side diff + stop-generating button + session history replay | Planned |
+| COPILOT-02.ii | `PromoteDialog` (diff summary + validation surface + name/description) + stop-generating button + session history replay | **Partially done** — `PromoteDialog`, stop button, history replay shipped; canvas `DraftDiffOverlay` (ghost nodes + sparkle badges) deferred to 02.ii.b because it needs `FlowCanvas` to accept a preview-graph override. See [copilot.md §6](copilot.md) |
+| COPILOT-02.ii.b | `DraftDiffOverlay` on canvas — ghost-rendered copilot-added/modified nodes + sparkle badges + accept-per-node affordance | Planned |
 | COPILOT-03 | Debug / test-scenario / `suggest_fix` / auto-heal loop | Planned |
 
 ### Sprint 2D in flight — Multi-tenant admin knobs
