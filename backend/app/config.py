@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     google_project: str = ""
     google_location: str = "us-central1"
+    google_application_credentials: str = ""
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"

@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.models.tenant import TenantToolOverride
 from app.api.schemas import ToolOut
@@ -55,7 +55,7 @@ def invalidate_cache(tenant_id: str = Depends(get_tenant_id)):
 @router.get("", response_model=list[ToolOut])
 def list_tools(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     server_label: str | None = None,
 ):
     """Return MCP tools filtered by tenant overrides.

@@ -13,6 +13,7 @@ and returns a standardized dict:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from app.config import settings
@@ -208,6 +209,10 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
     from google import genai
 
     if backend == "vertex":
+        # Ensure SDK can find the JSON key if provided in .env
+        if settings.google_application_credentials and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+
         project, location = _resolve_vertex_target(tenant_id)
         if not project:
             raise ValueError("ORCHESTRATOR_VERTEX_PROJECT is not configured")
@@ -218,11 +223,21 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
         )
     if backend == "genai":
         # ADMIN-03 — per-tenant Google AI Studio key via the LLM
-        # credentials resolver (tenant_secrets → env fallback). Raises
-        # a remediation-bearing ValueError if neither is set.
+        # credentials resolver (tenant_secrets → env fallback). 
         from app.engine.llm_credentials_resolver import get_google_api_key
 
-        return genai.Client(api_key=get_google_api_key(tenant_id))
+        try:
+            api_key = get_google_api_key(tenant_id)
+            return genai.Client(api_key=api_key)
+        except ValueError as exc:
+            # Smart Fallback: if no API key is found but Vertex is configured,
+            # use Vertex instead of failing. This satisfies "it should use 
+            # my .env vertex configuration".
+            project, _ = _resolve_vertex_target(tenant_id)
+            if project:
+                logger.info("No Google AI Studio key found; falling back to Vertex AI backend.")
+                return _google_client("vertex", tenant_id=tenant_id)
+            raise exc
     raise ValueError(f"Unknown google backend: {backend!r}")
 
 

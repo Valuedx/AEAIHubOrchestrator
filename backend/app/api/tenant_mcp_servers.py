@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.models.workflow import TenantMcpServer
 
@@ -121,7 +121,7 @@ class TenantMcpServerOut(BaseModel):
 def create_server(
     body: TenantMcpServerCreate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     existing = (
         db.query(TenantMcpServer)
@@ -155,7 +155,7 @@ def create_server(
 @router.get("", response_model=list[TenantMcpServerOut])
 def list_servers(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     rows = (
         db.query(TenantMcpServer)
@@ -170,7 +170,7 @@ def list_servers(
 def get_server(
     server_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     return _to_out(_get_or_404(db, tenant_id, server_id))
 
@@ -180,7 +180,7 @@ def update_server(
     server_id: str,
     body: TenantMcpServerUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     row = _get_or_404(db, tenant_id, server_id)
 
@@ -218,7 +218,7 @@ def update_server(
 def delete_server(
     server_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     row = _get_or_404(db, tenant_id, server_id)
     db.delete(row)

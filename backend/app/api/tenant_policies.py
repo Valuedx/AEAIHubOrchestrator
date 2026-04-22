@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, get_tenant_db
 from app.security.tenant import get_tenant_id
 from app.models.workflow import TenantPolicy
 from app.engine.tenant_policy_resolver import get_effective_policy
@@ -97,7 +97,7 @@ class TenantPolicyOut(BaseModel):
 @router.get("", response_model=TenantPolicyOut)
 def get_policy(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """Return the tenant's effective policy (overrides merged with env)."""
     policy = get_effective_policy(tenant_id)
@@ -120,7 +120,7 @@ def get_policy(
 def update_policy(
     body: TenantPolicyUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     """UPSERT the tenant's policy row.
 

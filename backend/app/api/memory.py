@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, get_tenant_db
 from app.models.memory import ConversationMessage, EntityFact, MemoryProfile, MemoryRecord
 from app.models.workflow import ExecutionLog, WorkflowInstance
 from app.security.tenant import get_tenant_id
@@ -237,7 +237,7 @@ def _apply_profile_defaults(
 @router.get("/api/v1/memory-profiles", response_model=list[MemoryProfileOut])
 def list_memory_profiles(
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     profiles = (
         db.query(MemoryProfile)
@@ -252,7 +252,7 @@ def list_memory_profiles(
 def create_memory_profile(
     body: MemoryProfileCreate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     if body.is_default:
         _apply_profile_defaults(
@@ -274,7 +274,7 @@ def create_memory_profile(
 def get_memory_profile(
     profile_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     profile = db.query(MemoryProfile).filter_by(id=profile_id, tenant_id=tenant_id).first()
     if not profile:
@@ -287,7 +287,7 @@ def update_memory_profile(
     profile_id: uuid.UUID,
     body: MemoryProfileUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     profile = db.query(MemoryProfile).filter_by(id=profile_id, tenant_id=tenant_id).first()
     if not profile:
@@ -314,7 +314,7 @@ def update_memory_profile(
 def delete_memory_profile(
     profile_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     profile = db.query(MemoryProfile).filter_by(id=profile_id, tenant_id=tenant_id).first()
     if not profile:
@@ -334,7 +334,7 @@ def list_memory_records(
     source_instance_id: uuid.UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     query = db.query(MemoryRecord).filter(MemoryRecord.tenant_id == tenant_id)
     if scope:
@@ -362,7 +362,7 @@ def list_entity_facts(
     include_inactive: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     query = db.query(EntityFact).filter(EntityFact.tenant_id == tenant_id)
     if entity_type:
@@ -379,7 +379,7 @@ def list_entity_facts(
 def resolve_instance_memory(
     instance_id: uuid.UUID,
     tenant_id: str = Depends(get_tenant_id),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
 ):
     instance = db.query(WorkflowInstance).filter_by(id=instance_id, tenant_id=tenant_id).first()
     if not instance:
