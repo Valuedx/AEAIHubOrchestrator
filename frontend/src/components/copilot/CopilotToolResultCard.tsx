@@ -168,6 +168,8 @@ function summariseArgs(name: string, args: Record<string, unknown>): string {
         : `instance=${short(String(args.instance_id ?? ""))}`;
     case "get_automationedge_handoff_info":
       return "AE fork";
+    case "discover_mcp_tools":
+      return args.server_label ? `server=${args.server_label}` : "default server";
     default:
       return "";
   }
@@ -337,6 +339,13 @@ function ResultSummary({
     case "get_automationedge_handoff_info": {
       const conns = Array.isArray(r.existing_connections) ? r.existing_connections.length : 0;
       return <span className="text-muted-foreground">{conns} connection{conns === 1 ? "" : "s"}</span>;
+    }
+    case "discover_mcp_tools": {
+      if (r.discovery_enabled === false) {
+        return <span className="text-muted-foreground italic">disabled</span>;
+      }
+      const tools = Array.isArray(r.tools) ? r.tools.length : 0;
+      return <span className="text-muted-foreground">{tools} MCP tool{tools === 1 ? "" : "s"}</span>;
     }
     default:
       return <span className="text-muted-foreground">ok</span>;

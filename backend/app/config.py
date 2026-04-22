@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # zero-LLM-cost and strictly additive to UX.
     smart_04_lints_enabled: bool = True
 
+    # SMART-06 — global default for the copilot's proactive MCP tool
+    # discovery (agent calls list_tools on tenant-registered MCP
+    # servers). Per-tenant override on
+    # ``tenant_policies.smart_06_mcp_discovery_enabled``. Default
+    # true — discovery is a cached list_tools call, zero-LLM-cost.
+    smart_06_mcp_discovery_enabled: bool = True
+
     # Optional: process-wide default URL for the AutomationEdge Copilot
     # (a separate product the workflow authoring copilot can hand off to
     # when the user wants to design deterministic RPA steps before wiring

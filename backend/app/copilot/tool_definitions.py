@@ -210,6 +210,36 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # pure tool_layer.py; the agent's dispatcher routes by tool name.
     # ----------------------------------------------------------------------
     {
+        "name": "discover_mcp_tools",
+        "description": (
+            "List the tools available on the tenant's connected MCP "
+            "servers so you can surface relevant ones to the user "
+            "during drafting (e.g. 'this tenant has threat_intel."
+            "enrich_ip on their SOC MCP — consider adding an MCP "
+            "Tool node for it'). Returns {discovery_enabled, "
+            "server_label, tools: [{name, title, description, "
+            "category, safety_tier, tags}]}. When "
+            "`discovery_enabled` is false the tenant opted out — "
+            "don't mention MCP tools in the narration. List is "
+            "cached server-side for 5 minutes per (tenant, "
+            "server) — calling more than once a turn is cheap."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "server_label": {
+                    "type": "string",
+                    "description": (
+                        "Optional — which tenant_mcp_servers label "
+                        "to query. Omit for the tenant's default "
+                        "server (or the ORCHESTRATOR_MCP_SERVER_URL "
+                        "env fallback when no per-tenant row exists)."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "get_automationedge_handoff_info",
         "description": (
             "Use when the user's request (or a sub-workflow within it) "

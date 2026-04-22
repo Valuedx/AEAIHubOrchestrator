@@ -50,6 +50,10 @@ class EffectivePolicy:
     # Resolver returns bool; the runner-tool layer reads it and skips
     # lint computation when off (still runs schema validation).
     smart_04_lints_enabled: bool
+    # SMART-06 — toggle the copilot's MCP tool discovery path.
+    # When off, the ``discover_mcp_tools`` runner tool returns an
+    # empty list with ``discovery_enabled: false``.
+    smart_06_mcp_discovery_enabled: bool
     source: dict[str, PolicySource]
 
 
@@ -61,6 +65,7 @@ def _env_defaults() -> EffectivePolicy:
         rate_limit_requests_per_window=settings.rate_limit_requests,
         rate_limit_window_seconds=settings.rate_limit_window_seconds,
         smart_04_lints_enabled=settings.smart_04_lints_enabled,
+        smart_06_mcp_discovery_enabled=settings.smart_06_mcp_discovery_enabled,
         source={
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
@@ -68,6 +73,7 @@ def _env_defaults() -> EffectivePolicy:
             "rate_limit_requests_per_window": "env_default",
             "rate_limit_window_seconds": "env_default",
             "smart_04_lints_enabled": "env_default",
+            "smart_06_mcp_discovery_enabled": "env_default",
         },
     )
 
@@ -148,6 +154,11 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 getattr(row, "smart_04_lints_enabled", None),
                 settings.smart_04_lints_enabled,
                 "smart_04_lints_enabled",
+            ),
+            smart_06_mcp_discovery_enabled=_pick_bool(
+                getattr(row, "smart_06_mcp_discovery_enabled", None),
+                settings.smart_06_mcp_discovery_enabled,
+                "smart_06_mcp_discovery_enabled",
             ),
             source=source,
         )

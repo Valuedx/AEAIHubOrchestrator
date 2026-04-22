@@ -376,6 +376,13 @@ class TenantPolicy(Base):
     smart_04_lints_enabled = Column(
         Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
     )
+    # SMART-06 — proactive MCP tool discovery: the agent can call
+    # list_tools on the tenant's registered MCP servers to surface
+    # relevant tools during drafting. Cached per session, zero-LLM-
+    # cost. Default TRUE.
+    smart_06_mcp_discovery_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

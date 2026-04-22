@@ -251,6 +251,37 @@ describe("CopilotEventCard", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("renders discover_mcp_tools summary with tool count and disabled state", () => {
+    const enabled: CopilotAgentEvent = {
+      type: "tool_result",
+      id: "toolu_1",
+      name: "discover_mcp_tools",
+      result: {
+        discovery_enabled: true,
+        server_label: null,
+        tools: [{ name: "enrich_ip" }, { name: "create_ticket" }],
+      },
+      validation: null,
+      draft_version: 1,
+      error: null,
+    };
+    const { unmount } = render(<CopilotEventCard event={enabled} />);
+    expect(screen.getByText(/2 MCP tools/)).toBeInTheDocument();
+    unmount();
+
+    const disabled: CopilotAgentEvent = {
+      type: "tool_result",
+      id: "toolu_1",
+      name: "discover_mcp_tools",
+      result: { discovery_enabled: false, server_label: null, tools: [] },
+      validation: null,
+      draft_version: 1,
+      error: null,
+    };
+    render(<CopilotEventCard event={disabled} />);
+    expect(screen.getByText("disabled")).toBeInTheDocument();
+  });
+
   it("shows a lints-disabled hint when tenant opted out", () => {
     const event: CopilotAgentEvent = {
       type: "tool_result",

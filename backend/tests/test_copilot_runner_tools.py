@@ -897,6 +897,7 @@ def test_check_draft_returns_schema_and_lints_when_flag_on():
         mcp_pool_size=4, rate_limit_requests_per_window=100,
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=True,
+        smart_06_mcp_discovery_enabled=True,
         source={},
     )
     with patch(
@@ -937,6 +938,7 @@ def test_check_draft_skips_lints_when_flag_off():
         mcp_pool_size=4, rate_limit_requests_per_window=100,
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=False,
+        smart_06_mcp_discovery_enabled=True,
         source={},
     )
     with patch(
@@ -964,6 +966,7 @@ def test_check_draft_lint_crash_does_not_poison_turn():
         mcp_pool_size=4, rate_limit_requests_per_window=100,
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=True,
+        smart_06_mcp_discovery_enabled=True,
         source={},
     )
     with patch(
@@ -993,6 +996,7 @@ def test_dispatch_routes_check_draft():
         mcp_pool_size=4, rate_limit_requests_per_window=100,
         rate_limit_window_seconds=60,
         smart_04_lints_enabled=True,
+        smart_06_mcp_discovery_enabled=True,
         source={},
     )
     with patch(
@@ -1011,6 +1015,146 @@ def test_dispatch_routes_check_draft():
 
 def test_runner_tool_names_includes_check_draft():
     assert "check_draft" in runner_tools.RUNNER_TOOL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# SMART-06 — discover_mcp_tools
+# ---------------------------------------------------------------------------
+
+
+def _policy_with(smart_06: bool = True, smart_04: bool = True):
+    from app.engine.tenant_policy_resolver import EffectivePolicy
+    return EffectivePolicy(
+        execution_quota_per_hour=50, max_snapshots=20,
+        mcp_pool_size=4, rate_limit_requests_per_window=100,
+        rate_limit_window_seconds=60,
+        smart_04_lints_enabled=smart_04,
+        smart_06_mcp_discovery_enabled=smart_06,
+        source={},
+    )
+
+
+def test_discover_mcp_tools_returns_tenant_tools_when_flag_on():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    raw = [
+        {"name": "enrich_ip", "title": "Enrich IP", "description": "Look up threat intel",
+         "category": "security", "safety_tier": "safe_read", "tags": ["threat", "ip"]},
+        {"name": "create_ticket", "description": "Open a ticket"},
+    ]
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=_policy_with(smart_06=True),
+    ), patch("app.engine.mcp_client.list_tools", return_value=raw):
+        result = runner_tools.discover_mcp_tools(
+            MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["discovery_enabled"] is True
+    assert result["server_label"] is None
+    assert len(result["tools"]) == 2
+    # Normalisation: missing fields default to "" or [].
+    assert result["tools"][1]["title"] == "create_ticket"
+    assert result["tools"][1]["tags"] == []
+    assert result["tools"][0]["category"] == "security"
+
+
+def test_discover_mcp_tools_returns_empty_when_flag_off():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=_policy_with(smart_06=False),
+    ), patch("app.engine.mcp_client.list_tools") as mock_list:
+        result = runner_tools.discover_mcp_tools(
+            MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["discovery_enabled"] is False
+    assert result["tools"] == []
+    # Never queries MCP when the flag is off.
+    assert not mock_list.called
+
+
+def test_discover_mcp_tools_honours_server_label():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=_policy_with(smart_06=True),
+    ), patch("app.engine.mcp_client.list_tools", return_value=[]) as mock_list:
+        result = runner_tools.discover_mcp_tools(
+            MagicMock(), tenant_id=TENANT, draft=draft,
+            args={"server_label": "prod-mcp"},
+        )
+    assert result["server_label"] == "prod-mcp"
+    call_kwargs = mock_list.call_args.kwargs
+    assert call_kwargs["server_label"] == "prod-mcp"
+
+
+def test_discover_mcp_tools_rejects_non_string_label():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=_policy_with(smart_06=True),
+    ):
+        result = runner_tools.discover_mcp_tools(
+            MagicMock(), tenant_id=TENANT, draft=draft,
+            args={"server_label": 42},
+        )
+    assert "error" in result
+
+
+def test_discover_mcp_tools_list_tools_crash_degrades_gracefully():
+    """If the MCP server is unreachable, don't blow up the agent
+    turn — return discovery_enabled=true, tools=[], error=msg so
+    the LLM can tell the user why MCP discovery is empty."""
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=_policy_with(smart_06=True),
+    ), patch(
+        "app.engine.mcp_client.list_tools",
+        side_effect=RuntimeError("connection refused"),
+    ):
+        result = runner_tools.discover_mcp_tools(
+            MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["discovery_enabled"] is True
+    assert result["tools"] == []
+    assert "error" in result
+    assert "connection refused" in result["error"]
+
+
+def test_dispatch_routes_discover_mcp_tools():
+    draft = _FakeDraft(
+        id=uuid.uuid4(), tenant_id=TENANT,
+        graph_json={"nodes": [], "edges": []}, version=1,
+    )
+    with patch(
+        "app.engine.tenant_policy_resolver.get_effective_policy",
+        return_value=_policy_with(smart_06=True),
+    ), patch("app.engine.mcp_client.list_tools", return_value=[]):
+        result = runner_tools.dispatch(
+            "discover_mcp_tools",
+            db=MagicMock(), tenant_id=TENANT, draft=draft, args={},
+        )
+    assert result["discovery_enabled"] is True
+    assert result["tools"] == []
+
+
+def test_runner_tool_names_includes_discover_mcp_tools():
+    assert "discover_mcp_tools" in runner_tools.RUNNER_TOOL_NAMES
 
 
 def test_dispatch_routes_execute_draft_and_get_execution_logs():

@@ -483,10 +483,12 @@ export interface TenantPolicyOut {
     rate_limit_window_seconds: number;
   };
   // SMART-XX feature flags. Each is an opt-out toggle so cost-
-  // conscious tenants can disable subsets. SMART-04 ships today; the
-  // rest of the SMART-XX series adds keys here as they land.
+  // conscious tenants can disable subsets. SMART-04 + SMART-06 ship
+  // today; the rest of the SMART-XX series adds keys here as they
+  // land.
   flags: {
     smart_04_lints_enabled: boolean;
+    smart_06_mcp_discovery_enabled: boolean;
   };
   source: {
     execution_quota_per_hour: TenantPolicySource;
@@ -494,8 +496,9 @@ export interface TenantPolicyOut {
     mcp_pool_size: TenantPolicySource;
     rate_limit_requests_per_window: TenantPolicySource;
     rate_limit_window_seconds: TenantPolicySource;
-    // SMART-04
+    // SMART-XX flags
     smart_04_lints_enabled: TenantPolicySource;
+    smart_06_mcp_discovery_enabled: TenantPolicySource;
   };
   updated_at: string | null;
 }
@@ -552,6 +555,8 @@ export interface TenantPolicyUpdate {
   // SMART-04 — opt-out toggle for the copilot's proactive authoring
   // lints. null clears the override so env default takes over.
   smart_04_lints_enabled?: boolean | null;
+  // SMART-06 — opt-out toggle for MCP tool discovery.
+  smart_06_mcp_discovery_enabled?: boolean | null;
 }
 
 export interface KBChunkOut {
@@ -599,7 +604,10 @@ export type CopilotToolName =
   | "search_docs"
   | "get_node_examples"
   // SMART-04 — supersedes validate_graph; returns schema + lints.
-  | "check_draft";
+  | "check_draft"
+  // SMART-06 — list MCP tools the tenant has connected so the
+  // agent can propose relevant ones during drafting.
+  | "discover_mcp_tools";
 
 // SMART-04 — one structured lint finding surfaced by check_draft.
 export type CopilotLintSeverity = "error" | "warn";

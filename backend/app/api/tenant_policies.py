@@ -94,6 +94,14 @@ class TenantPolicyUpdate(BaseModel):
             "so this tenant inherits ORCHESTRATOR_SMART_04_LINTS_ENABLED."
         ),
     )
+    smart_06_mcp_discovery_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-06 — toggle the copilot's MCP tool discovery. "
+            "True = agent can call list_tools on tenant MCP servers "
+            "during drafting. False = skip. Null clears the override."
+        ),
+    )
 
 
 class TenantPolicyOut(BaseModel):
@@ -126,6 +134,7 @@ def get_policy(
         },
         flags={
             "smart_04_lints_enabled": policy.smart_04_lints_enabled,
+            "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row and row.updated_at else None,
@@ -163,6 +172,8 @@ def update_policy(
         row.rate_limit_window_seconds = body.rate_limit_window_seconds
     if "smart_04_lints_enabled" in sent:
         row.smart_04_lints_enabled = body.smart_04_lints_enabled
+    if "smart_06_mcp_discovery_enabled" in sent:
+        row.smart_06_mcp_discovery_enabled = body.smart_06_mcp_discovery_enabled
 
     db.commit()
     db.refresh(row)
@@ -181,6 +192,7 @@ def update_policy(
         },
         flags={
             "smart_04_lints_enabled": policy.smart_04_lints_enabled,
+            "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row.updated_at else None,

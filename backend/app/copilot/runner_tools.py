@@ -677,7 +677,104 @@ RUNNER_TOOL_NAMES = {
     "get_node_examples",
     # SMART-04
     "check_draft",
+    # SMART-06
+    "discover_mcp_tools",
 }
+
+
+# ---------------------------------------------------------------------------
+# discover_mcp_tools — SMART-06
+# ---------------------------------------------------------------------------
+
+
+def discover_mcp_tools(
+    db: Session,  # noqa: ARG001 — part of runner-tool contract
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,  # noqa: ARG001 — current draft not needed today
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """List the tools available on the tenant's MCP server(s) so the
+    agent can surface relevant ones proactively during drafting.
+
+    Returns
+    -------
+
+    ::
+
+        {
+          "discovery_enabled": bool,
+          "server_label": str | null,       # the server that was queried
+          "tools": [
+            {"name", "title", "description", "category",
+             "safety_tier", "tags"},
+            ...
+          ]
+        }
+
+    ``discovery_enabled: false`` means the tenant has opted out via
+    ``tenant_policies.smart_06_mcp_discovery_enabled``; ``tools`` is
+    ``[]`` in that case. ``server_label`` is ``None`` when the
+    tenant has no configured MCP server (the underlying resolver
+    still returns the env-fallback server, but the agent should
+    frame its narration accordingly).
+
+    Caching: ``engine.mcp_client.list_tools`` already memoises per
+    ``(tenant_id, pool_key)`` with a 5-minute TTL, so every call
+    across turns within a session hits warm cache. No further
+    layering needed here.
+    """
+    from app.engine.tenant_policy_resolver import get_effective_policy
+
+    policy = get_effective_policy(tenant_id)
+    if not policy.smart_06_mcp_discovery_enabled:
+        return {
+            "discovery_enabled": False,
+            "server_label": None,
+            "tools": [],
+        }
+
+    server_label = args.get("server_label") or None
+    if server_label is not None and not isinstance(server_label, str):
+        return {"error": "discover_mcp_tools 'server_label' must be a string"}
+
+    from app.engine.mcp_client import list_tools
+
+    try:
+        raw_tools = list_tools(tenant_id=tenant_id, server_label=server_label)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.warning(
+            "SMART-06 discover_mcp_tools: list_tools failed for tenant=%r "
+            "label=%r: %s",
+            tenant_id, server_label, exc,
+        )
+        return {
+            "discovery_enabled": True,
+            "server_label": server_label,
+            "tools": [],
+            "error": f"list_tools failed: {exc}",
+        }
+
+    # Normalise shape so the agent + UI don't have to guess at
+    # optional fields on the MCP side. Everything except name is
+    # best-effort; missing → empty string / None.
+    tools = [
+        {
+            "name": t.get("name", ""),
+            "title": t.get("title") or t.get("name", ""),
+            "description": t.get("description", ""),
+            "category": t.get("category", ""),
+            "safety_tier": t.get("safety_tier", ""),
+            "tags": list(t.get("tags") or []),
+        }
+        for t in raw_tools
+    ]
+
+    return {
+        "discovery_enabled": True,
+        "server_label": server_label,
+        "tools": tools,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -794,6 +891,10 @@ def dispatch(
         return docs_index.get_node_examples(node_type)
     if tool_name == "check_draft":
         return check_draft(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "discover_mcp_tools":
+        return discover_mcp_tools(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
     raise KeyError(tool_name)

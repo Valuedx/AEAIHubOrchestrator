@@ -38,6 +38,7 @@ def _row(
     rate_limit_requests_per_window: int | None = None,
     rate_limit_window_seconds: int | None = None,
     smart_04_lints_enabled: bool | None = None,
+    smart_06_mcp_discovery_enabled: bool | None = None,
 ):
     row = MagicMock()
     row.execution_quota_per_hour = execution_quota_per_hour
@@ -45,10 +46,11 @@ def _row(
     row.mcp_pool_size = mcp_pool_size
     row.rate_limit_requests_per_window = rate_limit_requests_per_window
     row.rate_limit_window_seconds = rate_limit_window_seconds
-    # SMART-04 — None means "column exists on the row but no value
-    # was set for the override", matching nullable-column semantics
-    # (resolver should treat it as env fallback).
+    # SMART-XX flags — None means "column exists on the row but no
+    # value was set for the override", matching nullable-column
+    # semantics (resolver should treat it as env fallback).
     row.smart_04_lints_enabled = smart_04_lints_enabled
+    row.smart_06_mcp_discovery_enabled = smart_06_mcp_discovery_enabled
     return row
 
 
@@ -75,8 +77,10 @@ class TestEnvFallback:
             "mcp_pool_size": "env_default",
             "rate_limit_requests_per_window": "env_default",
             "rate_limit_window_seconds": "env_default",
-            # SMART-04
+            # SMART-04 / SMART-06 flags (every SMART-XX ticket that
+            # ships adds its key here).
             "smart_04_lints_enabled": "env_default",
+            "smart_06_mcp_discovery_enabled": "env_default",
         }
 
     def test_no_row_for_tenant_returns_env_defaults(self, patched_settings):
@@ -129,9 +133,10 @@ class TestRowOverrides:
             "mcp_pool_size": "tenant_policy",
             "rate_limit_requests_per_window": "tenant_policy",
             "rate_limit_window_seconds": "tenant_policy",
-            # SMART-04 — row fixture doesn't set this, so it falls
-            # through to env_default.
+            # SMART-XX flags — row fixture doesn't set them so they
+            # fall through to env_default.
             "smart_04_lints_enabled": "env_default",
+            "smart_06_mcp_discovery_enabled": "env_default",
         }
 
     def test_partial_override_inherits_missing_fields_from_env(self, patched_settings):
