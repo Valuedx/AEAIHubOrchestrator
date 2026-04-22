@@ -553,6 +553,55 @@ export interface KBChunkOut {
 }
 
 // ---------------------------------------------------------------------------
+// COPILOT-01 — draft workspace + tool-layer types
+// ---------------------------------------------------------------------------
+
+export type CopilotToolName =
+  | "list_node_types"
+  | "get_node_schema"
+  | "add_node"
+  | "update_node_config"
+  | "delete_node"
+  | "connect_nodes"
+  | "disconnect_edge"
+  | "validate_graph";
+
+export interface CopilotDraftValidation {
+  errors: string[];
+  warnings: string[];
+}
+
+export interface CopilotDraftOut {
+  id: string;
+  tenant_id: string;
+  base_workflow_id: string | null;
+  base_version_at_fork: number | null;
+  title: string;
+  graph_json: { nodes: unknown[]; edges: unknown[] };
+  /** Optimistic-concurrency token — include as expected_version on mutations. */
+  version: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  validation: CopilotDraftValidation;
+}
+
+export interface CopilotToolCallOut {
+  tool: CopilotToolName;
+  draft_version: number;
+  result: Record<string, unknown>;
+  /** Populated on mutation tools; null for read-only tools. */
+  validation: CopilotDraftValidation | null;
+}
+
+export interface CopilotPromoteOut {
+  workflow_id: string;
+  version: number;
+  /** True = net-new workflow; false = new version of existing. */
+  created: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Workflow CRUD
 // ---------------------------------------------------------------------------
 
@@ -1155,5 +1204,77 @@ export const api = {
       headers: { ...getAuthHeaders() },
     });
     return (await res.json()) as HealthReadyOut;
+  },
+
+  // ---------------------------------------------------------------------------
+  // COPILOT-01 — workflow authoring copilot (draft workspace + tool layer)
+  //
+  // The UI surface lands in COPILOT-02; these typed bindings exist now so
+  // the chat pane can be a pure frontend change against a stable contract.
+  // ---------------------------------------------------------------------------
+
+  listDrafts(): Promise<CopilotDraftOut[]> {
+    return request("/api/v1/copilot/drafts");
+  },
+
+  createDraft(body: {
+    title: string;
+    base_workflow_id?: string;
+  }): Promise<CopilotDraftOut> {
+    return request("/api/v1/copilot/drafts", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getDraft(draftId: string): Promise<CopilotDraftOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}`);
+  },
+
+  updateDraft(
+    draftId: string,
+    body: {
+      title?: string;
+      graph_json?: { nodes: unknown[]; edges: unknown[] };
+      expected_version?: number;
+    },
+  ): Promise<CopilotDraftOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteDraft(draftId: string): Promise<void> {
+    return request(`/api/v1/copilot/drafts/${draftId}`, { method: "DELETE" });
+  },
+
+  callCopilotTool(
+    draftId: string,
+    toolName: CopilotToolName,
+    args: Record<string, unknown>,
+    expectedVersion?: number,
+  ): Promise<CopilotToolCallOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}/tools/${toolName}`, {
+      method: "POST",
+      body: JSON.stringify({
+        args,
+        expected_version: expectedVersion,
+      }),
+    });
+  },
+
+  promoteDraft(
+    draftId: string,
+    body: {
+      name?: string;
+      description?: string;
+      expected_version?: number;
+    },
+  ): Promise<CopilotPromoteOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}/promote`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   },
 };

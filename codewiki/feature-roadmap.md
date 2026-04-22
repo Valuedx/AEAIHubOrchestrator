@@ -43,6 +43,15 @@ VERTEX-01 adds `vertex` to every LLM node's `provider` enum, reusing the unified
 
 VERTEX-02 moves the Vertex project + location off the process-global env vars onto per-tenant rows in `tenant_integrations` (`system='vertex'`). Each tenant can bill to their own GCP project. No migration — rides the existing table. New `VertexProjectsDialog` behind the toolbar Cloud icon. ADC stays process-global (service-account identity can't be tenant-scoped without runtime ADC swapping + tenant_secrets storage — a separate, larger feature). **Full scope caveat + future-work sketch** lives in [vertex.md §5](vertex.md).
 
+### Sprint 2E in flight — Workflow Authoring Copilot
+
+| # | Feature | Status |
+|---|---------|--------|
+| COPILOT-01a | Draft-workspace model + pure tool layer + API + types | **Done** — see [copilot.md](copilot.md) |
+| COPILOT-01b | Agent runner (LLM chat loop + SSE tool-call streaming) + system-KB RAG ingestion + `test_node` / `execute_draft` | Planned |
+| COPILOT-02 | Chat pane, streaming tool-call pills, draft diff overlay on canvas, `PromoteDialog` | Planned |
+| COPILOT-03 | Debug / test-scenario / `suggest_fix` / auto-heal loop | Planned |
+
 ### Sprint 2D in flight — Multi-tenant admin knobs
 
 | # | Feature | Status |
@@ -449,13 +458,13 @@ No searchable/filterable audit log across all workflow executions. No execution 
 
 Closely related to #14 (RBAC / Team Collaboration) but distinct: RBAC is *static* — who may edit. Collaboration is *live* — two editors see each other's cursors, per-node comment threads that persist across saves, "someone else is editing this node" locks. Requires a WebSocket broadcast layer (the SSE path is one-way) and per-node presence/comment storage. Would layer cleanly on top of the `workflow_snapshots` history — threads could anchor to a node id + version.
 
-#### 24. Workflow Authoring Copilot (NL → draft workflow) — Planned
+#### 24. Workflow Authoring Copilot (NL → draft workflow) — Partial
 
 > Dify's AI Agent copilot can draft and refine workflows from a natural-language prompt. Anthropic's Claude Code has begun embedding this pattern for tool-chain generation.
 
-Today, authoring is drag-and-drop only. A copilot that accepts "build me a classifier that routes refund requests to AE and everything else to an LLM reply" and produces a draft graph would shorten the ramp for non-builder users.
+**Progress (COPILOT-01a done, 2026-04-22):** Draft-workspace safety boundary + pure tool layer + API surface shipped. Migration `0022` adds `workflow_drafts`, `copilot_sessions`, `copilot_turns` (all tenant-scoped RLS). The tool layer at `app/copilot/tool_layer.py` exposes eight pure functions the (future) agent runner will call. Optimistic-concurrency `version` column guards concurrent tool calls; `base_version_at_fork` guards the promote race against a colleague editing the base. Full architecture + schema in [codewiki/copilot.md](copilot.md).
 
-**Scoped as COPILOT-01 / 02 / 03** — see the [detailed breakdown](#workflow-authoring-copilot--copilot-01--copilot-03) under Pending backlog. Architecture in one line: a draft-workspace model (safety boundary) + Claude-Code-style tool surface over the existing workflow API + chat pane + debug/test-scenario loop. High-leverage combined with existing **Test single node** (DV-02) and **Data pinning** (DV-01) — the copilot iterates on a node's config without end-to-end runs.
+**Remaining (COPILOT-01b / 02 / 03):** agent runner + system-KB RAG ingestion (01b), chat pane + diff-apply UI (02), debug / test-scenario / auto-heal loop (03). See the [detailed breakdown](#workflow-authoring-copilot--copilot-01--copilot-03) above.
 
 #### 25. MCP Server Catalogue — Planned
 
