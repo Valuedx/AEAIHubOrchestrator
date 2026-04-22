@@ -263,3 +263,167 @@ def test_unknown_method_returns_jsonrpc_error(client_and_session):
     body = resp.json()
     assert "error" in body
     assert body["error"]["code"] == -32601
+
+
+# ---------------------------------------------------------------------------
+# A2A-01.b — agent card completeness
+# ---------------------------------------------------------------------------
+
+
+def test_agent_card_declares_bearer_security_scheme(client_and_session):
+    """v1.0 clients discover auth requirements from the card's
+    securitySchemes + security blocks. Without this they 401 and
+    guess — we ship the bearer scheme explicitly."""
+    client, session = client_and_session
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = []
+
+    resp = client.get(f"/tenants/{TENANT}/.well-known/agent-card.json")
+    assert resp.status_code == 200
+    card = resp.json()
+
+    assert "securitySchemes" in card
+    bearer = card["securitySchemes"]["bearer"]
+    assert bearer["type"] == "http"
+    assert bearer["scheme"] == "bearer"
+    # Top-level security must reference the declared scheme.
+    assert {"bearer": []} in card["security"]
+
+
+def test_agent_card_declares_default_input_output_modes(client_and_session):
+    client, session = client_and_session
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = []
+
+    resp = client.get(f"/tenants/{TENANT}/.well-known/agent-card.json")
+    card = resp.json()
+    assert card["defaultInputModes"] == ["text"]
+    assert card["defaultOutputModes"] == ["text", "data"]
+
+
+def test_agent_card_declares_provider_from_settings(client_and_session):
+    from app.config import settings
+
+    client, session = client_and_session
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = []
+
+    with patch.object(settings, "a2a_provider_organization", "Acme Corp"), \
+         patch.object(settings, "a2a_provider_url", "https://acme.example"), \
+         patch.object(settings, "a2a_provider_email", "platform@acme.example"), \
+         patch.object(settings, "a2a_documentation_url", "https://acme.example/agent-docs"):
+        resp = client.get(f"/tenants/{TENANT}/.well-known/agent-card.json")
+
+    card = resp.json()
+    assert card["provider"]["organization"] == "Acme Corp"
+    assert card["provider"]["url"] == "https://acme.example"
+    assert card["provider"]["email"] == "platform@acme.example"
+    assert card["documentationUrl"] == "https://acme.example/agent-docs"
+
+
+def test_agent_card_omits_optional_fields_when_unset(client_and_session):
+    """A minimally-configured deployment (no provider URL, no docs
+    URL) must still produce a spec-valid card — we suppress the
+    optional keys instead of emitting empty strings."""
+    from app.config import settings
+
+    client, session = client_and_session
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = []
+
+    with patch.object(settings, "a2a_provider_organization", "AE AI Hub"), \
+         patch.object(settings, "a2a_provider_url", ""), \
+         patch.object(settings, "a2a_provider_email", ""), \
+         patch.object(settings, "a2a_documentation_url", ""):
+        resp = client.get(f"/tenants/{TENANT}/.well-known/agent-card.json")
+
+    card = resp.json()
+    assert card["provider"] == {"organization": "AE AI Hub"}
+    assert "documentationUrl" not in card
+
+
+def test_agent_card_declares_extended_agent_card_false(client_and_session):
+    client, session = client_and_session
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = []
+
+    resp = client.get(f"/tenants/{TENANT}/.well-known/agent-card.json")
+    # We don't split public vs. extended cards, so clients must not
+    # try to call agent/getExtendedAgentCard against us.
+    assert resp.json()["capabilities"]["extendedAgentCard"] is False
+
+
+def test_agent_card_skills_echo_default_output_modes(client_and_session):
+    client, session = client_and_session
+    wf = _stub_workflow()
+    session.query.return_value.filter_by.return_value.order_by.return_value.all.return_value = [wf]
+
+    resp = client.get(f"/tenants/{TENANT}/.well-known/agent-card.json")
+    skill = resp.json()["skills"][0]
+    # Every published workflow today consumes text and emits both
+    # text and data (structured context) — match the card default.
+    assert skill["inputModes"] == ["text"]
+    assert set(skill["outputModes"]) == {"text", "data"}
+
+
+# ---------------------------------------------------------------------------
+# A2A-01.b — task-state mapping coverage
+# ---------------------------------------------------------------------------
+
+
+def _fake_instance(*, status: str, suspended_reason: str | None = None,
+                    context_json: dict | None = None):
+    inst = MagicMock()
+    inst.id = uuid.uuid4()
+    inst.status = status
+    inst.suspended_reason = suspended_reason
+    inst.context_json = context_json or {}
+    return inst
+
+
+def test_map_a2a_state_covers_active_states():
+    from app.api.a2a import _map_a2a_state
+    assert _map_a2a_state(_fake_instance(status="queued")) == "submitted"
+    assert _map_a2a_state(_fake_instance(status="running")) == "working"
+
+
+def test_map_a2a_state_covers_terminal_states():
+    from app.api.a2a import _map_a2a_state
+    assert _map_a2a_state(_fake_instance(status="completed")) == "completed"
+    assert _map_a2a_state(_fake_instance(status="failed")) == "failed"
+    assert _map_a2a_state(_fake_instance(status="cancelled")) == "canceled"
+
+
+def test_map_a2a_state_routes_suspended_by_reason():
+    """A suspended instance can be HITL (no reason), async-external
+    (``async_external``), or auth-required (``auth_required``). Only
+    the last maps to the v1.0 auth-required state; the others fit
+    input-required."""
+    from app.api.a2a import _map_a2a_state
+
+    assert _map_a2a_state(_fake_instance(status="suspended")) == "input-required"
+    assert _map_a2a_state(
+        _fake_instance(status="suspended", suspended_reason="async_external"),
+    ) == "input-required"
+    assert _map_a2a_state(
+        _fake_instance(status="suspended", suspended_reason="auth_required"),
+    ) == "auth-required"
+
+
+def test_map_a2a_state_recognises_rejected():
+    """Pre-execution validation refusal is semantically different
+    from a runtime failure; the ``failed + rejected`` combo routes
+    to the spec's ``rejected`` terminal state."""
+    from app.api.a2a import _map_a2a_state
+    assert _map_a2a_state(
+        _fake_instance(status="failed", suspended_reason="rejected"),
+    ) == "rejected"
+
+
+def test_map_a2a_state_falls_back_to_unknown_not_working():
+    """A bug that invents a new status shouldn't silently masquerade
+    as ``working`` — the spec requires a valid enum and ``unknown``
+    tells the client "we genuinely don't know"."""
+    from app.api.a2a import _map_a2a_state
+    assert _map_a2a_state(_fake_instance(status="some-future-state")) == "unknown"
+    # None status (e.g. freshly-constructed instance before any
+    # persist) also goes to unknown instead of leaking a false
+    # lifecycle claim.
+    inst = _fake_instance(status="running")
+    inst.status = None
+    assert _map_a2a_state(inst) == "unknown"

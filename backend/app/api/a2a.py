@@ -80,18 +80,72 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["a2a"])
 
 # ---------------------------------------------------------------------------
-# State mapping
+# State mapping (A2A-01.a + 01.b)
 # ---------------------------------------------------------------------------
+#
+# A2A v1.0 defines 8 task states:
+#
+#   Active:      submitted, working
+#   Terminal:    completed, failed, canceled, rejected
+#   Interrupted: input-required, auth-required
+#   Unknown:     unknown (explicit "we don't know what state this is in")
+#
+# Our WorkflowInstance status field is coarser — we track lifecycle
+# mostly via ``queued / running / completed / suspended / failed /
+# cancelled``. The mapping below bridges the two, using
+# ``suspended_reason`` to disambiguate the *kind* of suspension:
+#
+#   suspended + reason=None             → input-required  (HITL approval)
+#   suspended + reason="async_external" → input-required  (waiting on
+#                                          an external system —
+#                                          AutomationEdge, webhook,
+#                                          etc. Closest spec fit.)
+#   suspended + reason="auth_required"  → auth-required   (reserved for
+#                                          a future slice where a node
+#                                          flags missing creds to the
+#                                          caller; the string is
+#                                          recognised here so the
+#                                          producer side can land
+#                                          without a matching A2A
+#                                          change)
+#   failed    + reason="rejected"       → rejected        (validation or
+#                                          policy refused the draft
+#                                          before execution; distinct
+#                                          from a runtime failure)
+
 
 _STATUS_MAP: dict[str, str] = {
     "queued":    "submitted",
     "running":   "working",
     "completed": "completed",
-    "suspended": "input-required",
     "failed":    "failed",
     "cancelled": "canceled",
     "paused":    "input-required",
 }
+
+
+def _map_a2a_state(instance: WorkflowInstance) -> str:
+    """Translate a WorkflowInstance's persisted status + suspend
+    reason into an A2A v1.0 task state string.
+
+    See the table above for the full mapping. Anything we don't
+    recognise returns ``"unknown"`` — the spec requires a valid
+    enum value so defaulting to ``working`` would be a lie.
+    """
+    status = instance.status or "unknown"
+    reason = instance.suspended_reason
+
+    if status == "suspended":
+        if reason == "auth_required":
+            return "auth-required"
+        # async_external + None (HITL) both surface as input-required;
+        # the caller distinguishes via the message payload.
+        return "input-required"
+
+    if status == "failed" and reason == "rejected":
+        return "rejected"
+
+    return _STATUS_MAP.get(status, "unknown")
 
 
 def _utcnow() -> datetime:
@@ -137,7 +191,7 @@ def _instance_to_task(
     session_id: str | None = None,
 ) -> dict:
     """Convert a WorkflowInstance into an A2A Task dict."""
-    state = _STATUS_MAP.get(instance.status, "working")
+    state = _map_a2a_state(instance)
     timestamp = _utcnow().isoformat()
 
     status: dict = {"state": state, "timestamp": timestamp}
@@ -237,7 +291,16 @@ def agent_card_legacy(
 def _build_agent_card(
     tenant_id: str, db: Session, request: Request,
 ) -> dict:
-    """Shared agent-card body used by both discovery paths."""
+    """Shared agent-card body used by both discovery paths.
+
+    Layout follows A2A v1.0 (A2A-01.b): provider + securitySchemes +
+    security + defaultInputModes + defaultOutputModes + capabilities
+    + skills. Optional fields (provider fields + documentationUrl)
+    suppress themselves when unset so a minimally-configured card is
+    still spec-valid.
+    """
+    from app.config import settings
+
     set_tenant_context(db, tenant_id)
     # Ephemeral rows default is_published=False so the filter below
     # already excludes them, but pin the invariant explicitly — a
@@ -260,23 +323,65 @@ def _build_agent_card(
             "name": wf.name,
             "description": wf.description or "",
             "inputModes": ["text"],
-            "outputModes": ["text"],
+            "outputModes": ["text", "data"],
         }
         for wf in workflows
     ]
 
-    return {
+    card: dict = {
         "name": f"AE Orchestrator — {tenant_id}",
         "description": "Agentic workflow orchestration engine",
         "url": agent_url,
         "version": "1.0",
+        # Input / output modes the agent accepts by default at the
+        # skill level. Individual skills can override (we echo the
+        # same defaults per skill today since every published
+        # workflow consumes text and emits text+data).
+        "defaultInputModes": ["text"],
+        "defaultOutputModes": ["text", "data"],
         "capabilities": {
             "streaming": True,
             "pushNotifications": False,
             "stateTransitionHistory": False,
+            # We don't split public vs. extended cards today — the
+            # same card body is returned regardless of auth — so
+            # extendedAgentCard is false and we don't implement
+            # ``agent/getExtendedAgentCard``.
+            "extendedAgentCard": False,
         },
+        # Bearer is the only scheme today. Declared here so v1.0
+        # clients' security negotiation picks it automatically
+        # rather than 401-ing and guessing.
+        "securitySchemes": {
+            "bearer": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": (
+                    "A2A API key issued via POST /api/v1/a2a/keys. "
+                    "Send as Authorization: Bearer <key>."
+                ),
+            },
+        },
+        "security": [{"bearer": []}],
         "skills": skills,
     }
+
+    # ---- Optional fields (suppress when unset) ----
+
+    provider: dict = {}
+    if settings.a2a_provider_organization:
+        provider["organization"] = settings.a2a_provider_organization
+    if settings.a2a_provider_url:
+        provider["url"] = settings.a2a_provider_url
+    if settings.a2a_provider_email:
+        provider["email"] = settings.a2a_provider_email
+    if provider:
+        card["provider"] = provider
+
+    if settings.a2a_documentation_url:
+        card["documentationUrl"] = settings.a2a_documentation_url
+
+    return card
 
 
 # ---------------------------------------------------------------------------

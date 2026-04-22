@@ -118,6 +118,20 @@ class Settings(BaseSettings):
     # / ``google`` / ``vertex``.
     copilot_default_provider: str = "anthropic"
 
+    # A2A-01.b — provider info surfaced on the public agent card so
+    # remote agents know which org is answering. None of these are
+    # secret; set via env so ops can brand the card per deployment.
+    # Empty strings suppress the respective field in the card body
+    # so a minimal configuration still produces a spec-valid card.
+    a2a_provider_organization: str = "AE AI Hub Orchestrator"
+    a2a_provider_url: str = ""
+    a2a_provider_email: str = ""
+    # Optional — points at a human-readable "how to use this agent"
+    # page. Our API reference at /api/v1/playground is a reasonable
+    # default for the orchestrator itself; operators can override for
+    # a customer-facing URL.
+    a2a_documentation_url: str = ""
+
     # Optional: process-wide default URL for the AutomationEdge Copilot
     # (a separate product the workflow authoring copilot can hand off to
     # when the user wants to design deterministic RPA steps before wiring

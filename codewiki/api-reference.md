@@ -443,6 +443,32 @@ We serve the agent card at **both** paths so A2A v0.2.x and v1.0 clients both di
 | `GET` | `/tenants/{tenant_id}/.well-known/agent-card.json` | **A2A v1.0** agent card (spec-required path) |
 | `GET` | `/tenants/{tenant_id}/.well-known/agent.json` | **A2A v0.2.x** legacy alias — identical body |
 
+**Card body (A2A-01.b — v1.0 complete):**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | `AE Orchestrator — {tenant_id}` |
+| `description` | string | Short blurb |
+| `url` | string | JSON-RPC dispatch endpoint |
+| `version` | string | Currently `1.0` |
+| `defaultInputModes` | `["text"]` | v1.0 required |
+| `defaultOutputModes` | `["text", "data"]` | v1.0 required — workflows can emit structured context plus prose |
+| `capabilities` | object | `{streaming: true, pushNotifications: false, stateTransitionHistory: false, extendedAgentCard: false}` |
+| `securitySchemes` | object | `{bearer: {type: "http", scheme: "bearer"}}` — v1.0 clients auto-negotiate from here |
+| `security` | array | `[{bearer: []}]` — bearer required on the main endpoint |
+| `provider` | object | `{organization, url?, email?}` — sourced from `ORCHESTRATOR_A2A_PROVIDER_*` env vars; optional fields suppressed when unset |
+| `documentationUrl` | string? | `ORCHESTRATOR_A2A_DOCUMENTATION_URL` env, omitted when empty |
+| `skills` | array | One entry per published workflow: `{id, name, description, inputModes, outputModes}` |
+
+**Operator config (all optional):**
+
+```bash
+ORCHESTRATOR_A2A_PROVIDER_ORGANIZATION="Your Org"      # default: "AE AI Hub Orchestrator"
+ORCHESTRATOR_A2A_PROVIDER_URL="https://your.example"
+ORCHESTRATOR_A2A_PROVIDER_EMAIL="platform@your.example"
+ORCHESTRATOR_A2A_DOCUMENTATION_URL="https://your.example/docs"
+```
+
 ### JSON-RPC endpoint (A2A API key auth)
 
 | Method | Path | Description |
@@ -468,6 +494,22 @@ We serve the agent card at **both** paths so A2A v0.2.x and v1.0 clients both di
 | `tasks/cancel` | — | `id` (instance UUID) | Request cancellation |
 
 **Skill routing note:** v1.0's `message/send` has no top-level `skillId`; the Google ADK / LangGraph convention puts the id inside `message.metadata.skillId`. Our dispatcher reads from both locations so either param shape works.
+
+**Task state mapping (A2A-01.b):** A2A v1.0 defines 8 states. Our `WorkflowInstance.status + suspended_reason` pair maps onto them:
+
+| WorkflowInstance `status` | `suspended_reason` | A2A state |
+|---|---|---|
+| `queued` | — | `submitted` |
+| `running` | — | `working` |
+| `completed` | — | `completed` |
+| `failed` | `rejected` | `rejected` (pre-execution policy refusal) |
+| `failed` | anything else | `failed` |
+| `cancelled` | — | `canceled` |
+| `suspended` | None or `async_external` | `input-required` |
+| `suspended` | `auth_required` | `auth-required` |
+| anything else / null | — | `unknown` |
+
+`unknown` is the intentional fallback — a spec-required enum is better than silently claiming `working`.
 
 ### A2A API key management — `/api/v1/a2a/keys`
 
