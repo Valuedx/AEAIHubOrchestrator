@@ -30,13 +30,38 @@ import { TEMPLATE_TIER_FAST } from "@/lib/modelTiers";
  */
 export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
+    // TMPL-05 — business-framing sticky note. Sits above the trigger
+    // so it's the first thing the author sees on load. Numbers are
+    // parameterised by the 1,000 tickets/day assumption below.
+    {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 540,
+      height: 196,
+      data: {
+        text:
+          "HELPDESK AUTO-TRIAGE\n" +
+          "Route every inbound ticket to the right specialist in < 2 seconds, with a human gate on risky technical replies.\n" +
+          "\n" +
+          "For: support ops · customer experience · IT leadership\n" +
+          "\n" +
+          "At 1,000 tickets/day:\n" +
+          "• Triage time: ~20 min → < 2 s per ticket  (saves ~330 agent-hours/day)\n" +
+          "• First-response SLA on technical queue: 4 h → ~8 min\n" +
+          "• Escalation accuracy: ~65% → ~92% with the L2 HITL review gate\n" +
+          "\n" +
+          "Needs: Slack/Teams webhook · MCP runbook server · HITL approver allowlist",
+        color: "blue",
+      },
+    },
     {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 220 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Helpdesk intake",
+        displayName: "Receive ticket from customer",
         nodeCategory: "trigger",
         config: {
           icon: "webhook",
@@ -67,7 +92,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 500, y: 220 },
       data: {
         label: "Intent Classifier",
-        displayName: "Classify: orders / technical / general",
+        displayName: "Understand what the customer needs",
         nodeCategory: "nlp",
         config: {
           icon: "target",
@@ -125,7 +150,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 760, y: 220 },
       data: {
         label: "Switch",
-        displayName: "Route by intent",
+        displayName: "Hand off to the right team",
         nodeCategory: "logic",
         config: {
           icon: "git-fork",
@@ -152,7 +177,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 1020, y: 20 },
       data: {
         label: "LLM Agent",
-        displayName: "Orders & billing assistant",
+        displayName: "Answer orders / billing / shipping",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -176,7 +201,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 1240, y: 140 },
       data: {
         label: "ReAct Agent",
-        displayName: "L1 technical support (ReAct + tools)",
+        displayName: "Diagnose technical issue (L1 + tools)",
         nodeCategory: "agent",
         config: {
           icon: "repeat",
@@ -210,7 +235,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 1240, y: 360 },
       data: {
         label: "LLM Agent",
-        displayName: "General & deflection assistant",
+        displayName: "Answer general / small-talk",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -233,7 +258,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 240, y: 440 },
       data: {
         label: "ForEach",
-        displayName: "Parallel SLA checklist",
+        displayName: "Check SLA items in parallel",
         nodeCategory: "logic",
         config: {
           icon: "repeat",
@@ -253,7 +278,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 520, y: 440 },
       data: {
         label: "LLM Agent",
-        displayName: "Internal note per checklist step",
+        displayName: "Draft internal note for this SLA step",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -325,7 +350,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 1480, y: 140 },
       data: {
         label: "Human Approval",
-        displayName: "L2 review before customer send",
+        displayName: "L2 reviews before sending to customer",
         nodeCategory: "action",
         config: {
           icon: "user-check",

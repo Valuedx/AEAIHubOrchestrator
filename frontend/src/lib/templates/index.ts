@@ -41,12 +41,34 @@ export interface WorkflowTemplate {
 const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 540,
+      height: 196,
+      data: {
+        text:
+          "GOVERNED DOCUMENT REVIEW\n" +
+          "AI summarises + flags legal/policy risks, then a named approver (legal / manager) signs off before anything reaches the customer. Every submit captured by the audit log.\n" +
+          "\n" +
+          "For: legal · compliance · customer success · risk\n" +
+          "\n" +
+          "At ~50 documents/day:\n" +
+          "• Initial review: ~25 min → ~2 min (BALANCED tier for legal reasoning)\n" +
+          "• Approval turnaround: ~2 h → ~15 min via the pending-approvals toolbar badge\n" +
+          "• Compliance trail: 100 % of submits captured (approver · reason · patch)\n" +
+          "\n" +
+          "Needs: Slack/email channel for the final reply · HITL approver process",
+        color: "pink",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 200 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Document review intake",
+        displayName: "Receive document for review",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/review/document" },
         status: "idle",
@@ -70,7 +92,7 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 500, y: 200 },
       data: {
         label: "LLM Agent",
-        displayName: "Summarize & risk flags",
+        displayName: "Summarize doc + flag legal/policy risks",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -96,7 +118,7 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 760, y: 200 },
       data: {
         label: "Human Approval",
-        displayName: "Legal / manager sign-off",
+        displayName: "Approver reviews & signs off",
         nodeCategory: "action",
         config: {
           icon: "user-check",
@@ -166,12 +188,33 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
 const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 540,
+      height: 180,
+      data: {
+        text:
+          "MULTI-AGENT RESEARCH — PARALLEL RESEARCHER + CRITIC\n" +
+          "Researcher drafts an answer while a Critic independently lists gaps + overclaims — in parallel. A BALANCED-tier Synthesizer reconciles them into one clean answer.\n" +
+          "\n" +
+          "For: analyst desks · product research · competitive intel · exec briefings\n" +
+          "\n" +
+          "At ~50 questions/day:\n" +
+          "• Draft-then-review time: ~45 min → ~30 s end-to-end\n" +
+          "• Fact-check coverage: 100 % (parallel path, not optional)\n" +
+          "\n" +
+          "Needs: a good research prompt — consider pairing with a KB or A2A researcher",
+        color: "yellow",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 240 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Research request",
+        displayName: "Receive a research question",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/research/query" },
         status: "idle",
@@ -183,7 +226,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 280, y: 80 },
       data: {
         label: "LLM Agent",
-        displayName: "Researcher",
+        displayName: "Draft a research answer",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -204,7 +247,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 280, y: 400 },
       data: {
         label: "LLM Agent",
-        displayName: "Critic / fact-check",
+        displayName: "Critique & fact-check (in parallel)",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -225,7 +268,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 560, y: 240 },
       data: {
         label: "Merge",
-        displayName: "Wait for both agents",
+        displayName: "Wait for both before synthesising",
         nodeCategory: "logic",
         config: { icon: "git-merge", strategy: "waitAll" },
         status: "idle",
@@ -237,7 +280,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 820, y: 240 },
       data: {
         label: "LLM Agent",
-        displayName: "Synthesize final answer",
+        displayName: "Synthesise a single final answer",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -271,12 +314,31 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
 const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -200 },
+      width: 540,
+      height: 170,
+      data: {
+        text:
+          "PERSONALISED WELCOMES — NEW VS RETURNING\n" +
+          "Signup / login event triggers a Condition branch on customer segment, a tailored LLM welcome for each path, and persistence so the next visit picks up the thread.\n" +
+          "\n" +
+          "For: growth · product-led onboarding · customer success\n" +
+          "\n" +
+          "At ~500 events/day:\n" +
+          "• Hand-crafted welcome template maintenance time: 0 (one prompt covers both paths)\n" +
+          "• Activation lift from personalisation: typically +15–25% vs generic welcomes",
+        color: "blue",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 220 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Signup / login event",
+        displayName: "Signup / login event arrives",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/onboarding/event" },
         status: "idle",
@@ -300,7 +362,7 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 500, y: 220 },
       data: {
         label: "Condition",
-        displayName: "New customer?",
+        displayName: "First time with us?",
         nodeCategory: "logic",
         config: {
           icon: "git-branch",
@@ -317,7 +379,7 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 760, y: 80 },
       data: {
         label: "LLM Agent",
-        displayName: "Welcome · first-time",
+        displayName: "Welcome a brand-new customer",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -338,7 +400,7 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 760, y: 360 },
       data: {
         label: "LLM Agent",
-        displayName: "Welcome · returning",
+        displayName: "Welcome back a returning customer",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -359,7 +421,7 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1020, y: 80 },
       data: {
         label: "Save Conversation State",
-        displayName: "Save · new customer path",
+        displayName: "Save the new-customer turn",
         nodeCategory: "action",
         config: {
           icon: "save",
@@ -376,7 +438,7 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1020, y: 360 },
       data: {
         label: "Save Conversation State",
-        displayName: "Save · returning path",
+        displayName: "Save the returning-customer turn",
         nodeCategory: "action",
         config: {
           icon: "save",
@@ -418,12 +480,27 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
 const GETTING_STARTED_MINIMAL: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -160 },
+      width: 520,
+      height: 130,
+      data: {
+        text:
+          "START HERE — YOUR FIRST AGENT\n" +
+          "The smallest runnable DAG: an HTTP webhook hands the message to one LLM agent, which replies. Load it, click Run with a JSON payload like {\"message\":\"hi\"}, and you're live.\n" +
+          "\n" +
+          "Next step: add Load/Save Conversation State for multi-turn memory, or pick a richer template from the gallery.",
+        color: "grey",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 200 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Start here",
+        displayName: "Receive a message (HTTP POST)",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/hello" },
         status: "idle",
@@ -435,7 +512,7 @@ const GETTING_STARTED_MINIMAL: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 280, y: 200 },
       data: {
         label: "LLM Agent",
-        displayName: "Echo assistant",
+        displayName: "Reply with a helpful answer",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -456,12 +533,34 @@ const GETTING_STARTED_MINIMAL: { nodes: Node[]; edges: Edge[] } = {
 const RAG_KNOWLEDGE_QA: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 540,
+      height: 196,
+      data: {
+        text:
+          "GROUNDED Q&A ON YOUR KNOWLEDGE BASE\n" +
+          "Fetches the top-K relevant chunks from your docs / KB then answers with cited context + multi-turn memory. Swap the KB's embedding to gemini-embedding-2 for mixed-media corpora (text + images + PDFs + audio).\n" +
+          "\n" +
+          "For: customer support · internal help-desk · sales enablement\n" +
+          "\n" +
+          "At ~500 questions/day:\n" +
+          "• Answer latency: ~3–8 s end-to-end (topK=5, scoreThreshold=0.3)\n" +
+          "• Agent deflection: ~40–60 % of tier-1 questions resolved without escalation\n" +
+          "• Citation coverage: 100 % (answers cite the chunk ids retrieved)\n" +
+          "\n" +
+          "Needs: at least one populated Knowledge Base · embedding provider configured",
+        color: "yellow",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 200 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Question intake",
+        displayName: "Receive a question",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/kb/ask" },
         status: "idle",
@@ -485,7 +584,7 @@ const RAG_KNOWLEDGE_QA: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 500, y: 200 },
       data: {
         label: "Knowledge Retrieval",
-        displayName: "Search knowledge base",
+        displayName: "Find relevant passages in the KB",
         nodeCategory: "knowledge",
         config: {
           icon: "database",
@@ -511,7 +610,7 @@ const RAG_KNOWLEDGE_QA: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 760, y: 200 },
       data: {
         label: "LLM Agent",
-        displayName: "Grounded answer",
+        displayName: "Answer the question using those passages",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -572,12 +671,29 @@ const RAG_KNOWLEDGE_QA: { nodes: Node[]; edges: Edge[] } = {
 const SCHEDULED_NOTIFICATION: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -170 },
+      width: 500,
+      height: 150,
+      data: {
+        text:
+          "DAILY BRIEFING — SCHEDULED DIGEST TO SLACK\n" +
+          "Cron fires weekdays at 9 AM UTC, an LLM summarises the day's brief, and a Slack notification posts it to the team channel.\n" +
+          "\n" +
+          "For: team huddles · exec briefings · status updates\n" +
+          "• Swap the LLM prompt for your context (yesterday's commits, metrics, tickets)\n" +
+          "• Retarget by changing cron or adding a Switch to multi-team-alias destinations",
+        color: "grey",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 200 },
       data: {
         label: "Schedule Trigger",
-        displayName: "Daily at 9 AM UTC",
+        displayName: "Fire weekdays at 9 AM UTC",
         nodeCategory: "trigger",
         config: { icon: "clock", cron: "0 9 * * 1-5" },
         status: "idle",
@@ -611,7 +727,7 @@ const SCHEDULED_NOTIFICATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 560, y: 200 },
       data: {
         label: "Notification",
-        displayName: "Post to Slack",
+        displayName: "Post the digest to Slack",
         nodeCategory: "notification",
         config: {
           icon: "bell",
@@ -635,12 +751,32 @@ const SCHEDULED_NOTIFICATION: { nodes: Node[]; edges: Edge[] } = {
 const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 560,
+      height: 180,
+      data: {
+        text:
+          "STRUCTURED INTENT + SLOT ROUTING\n" +
+          "Hybrid Intent Classifier (lexical + embedding + LLM fallback) figures out what the user wants; an Entity Extractor pulls the slots (dates, reference IDs) scoped by intent; specialist agents handle each path.\n" +
+          "\n" +
+          "For: bookings · status checks · cancellations · self-service chat\n" +
+          "\n" +
+          "At ~800 messages/day:\n" +
+          "• Classification latency: ~80 ms (heuristic) / ~700 ms (LLM fallback)\n" +
+          "• Slot-filling accuracy: ~95 % with hybrid mode + LLM fallback on misses\n" +
+          "• Production-grade upgrade over plain LLM Router when you need confidence scores + slots",
+        color: "purple",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 240 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Chat message intake",
+        displayName: "Receive a chat message",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/chat/message" },
         status: "idle",
@@ -709,7 +845,7 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 760, y: 240 },
       data: {
         label: "Entity Extractor",
-        displayName: "Extract key entities",
+        displayName: "Pull slots (dates, ref IDs)",
         nodeCategory: "nlp",
         config: {
           icon: "list-filter",
@@ -747,7 +883,7 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1020, y: 240 },
       data: {
         label: "Condition",
-        displayName: "If booking intent",
+        displayName: "Is this a booking?",
         nodeCategory: "logic",
         config: {
           icon: "git-branch",
@@ -764,7 +900,7 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1280, y: 80 },
       data: {
         label: "LLM Agent",
-        displayName: "Booking assistant",
+        displayName: "Handle the booking",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -871,12 +1007,32 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
 const EPISODE_ARCHIVE_SUPPORT: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 540,
+      height: 180,
+      data: {
+        text:
+          "SUPPORT CHAT WITH MEMORY — ARCHIVE RESOLVED ISSUES\n" +
+          "Multi-turn support assistant that notices when the user marks an issue as resolved, archives that episode into episodic memory (so next visit starts clean), and otherwise keeps the conversation going.\n" +
+          "\n" +
+          "For: customer support · long-running case management · per-issue context\n" +
+          "\n" +
+          "At ~300 active chats/day:\n" +
+          "• Episode archive triggers automatically on resolved intent (no manual end button)\n" +
+          "• Memory hygiene: last-N active-episode context · closed episodes searchable via semantic recall\n" +
+          "• Reduces prompt-context size ~40% for long-running conversations",
+        color: "blue",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 260 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Support message intake",
+        displayName: "Receive a support message",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/support/chat" },
         status: "idle",
@@ -1065,6 +1221,24 @@ const EPISODE_ARCHIVE_SUPPORT: { nodes: Node[]; edges: Edge[] } = {
 const PRIORITY_ROUTING_SWITCH: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -180 },
+      width: 520,
+      height: 160,
+      data: {
+        text:
+          "WHEN TO USE THIS PATTERN — SWITCH FROM A STRUCTURED FIELD\n" +
+          "Reach for Switch (not Condition chains) when the payload ALREADY tells you where to go — priority, plan tier, channel, country code. No classifier needed.\n" +
+          "\n" +
+          "Production impact at 500 events/day:\n" +
+          "• Routing latency: ~2 s (classifier path) → ~10 ms (direct Switch)\n" +
+          "• Mis-routes: ~0 — matchMode=equals_ci handles 'p1' vs 'P1'\n" +
+          "• Amber default handle guarantees no event falls through the cracks",
+        color: "purple",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 220 },
@@ -1241,12 +1415,30 @@ const PRIORITY_ROUTING_SWITCH: { nodes: Node[]; edges: Edge[] } = {
 const RETRY_UNTIL_SUCCESS_WHILE: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -180 },
+      width: 520,
+      height: 160,
+      data: {
+        text:
+          "WHEN TO USE THIS PATTERN — WHILE LOOP WITH HARD CAP\n" +
+          "Flaky upstream? Use While to keep calling until success OR the iteration cap hits. _loop_index is available inside the condition for 'at-least-N-tries' style guards.\n" +
+          "\n" +
+          "Production impact on a flaky upstream (~5% transient-failure rate):\n" +
+          "• Single-attempt success: ~95 % → retry-until-success: ~99.99 % (≤5 tries)\n" +
+          "• Runaway protection: hard cap 5 enforced by engine\n" +
+          "• Ideal for: provisioning calls · webhook deliveries · third-party APIs",
+        color: "purple",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 200 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Start retry flow",
+        displayName: "Start the retry flow",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/flaky-api/retry" },
         status: "idle",
@@ -1332,6 +1524,24 @@ const RETRY_UNTIL_SUCCESS_WHILE: { nodes: Node[]; edges: Edge[] } = {
  *  when you want per-step observability, data pins, or custom gating. */
 const AGENT_TOOL_LOOPBACK: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
+    {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -180 },
+      width: 540,
+      height: 160,
+      data: {
+        text:
+          "WHEN TO USE THIS PATTERN — EXPLICIT AGENT + TOOL LOOP\n" +
+          "Pick this over a bare ReAct Agent when you want per-step observability, data pins, or custom gating. Each planner turn and each tool call is a first-class node you can inspect + pin.\n" +
+          "\n" +
+          "Production reasons to reach for this shape:\n" +
+          "• Regulated flows: every tool call must be auditable in ExecutionLogs\n" +
+          "• Tool call requires its own HITL gate before firing\n" +
+          "• Hard per-call max-iterations cap enforced by engine (5 here)",
+        color: "purple",
+      },
+    },
     {
       id: "node_1",
       type: "agenticNode",
@@ -1491,12 +1701,34 @@ const AGENT_TOOL_LOOPBACK: { nodes: Node[]; edges: Edge[] } = {
 const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 540,
+      height: 196,
+      data: {
+        text:
+          "INVOICE AUTO-POST TO ERP (RPA)\n" +
+          "Entity Extractor pulls invoice fields (number, amount, vendor, due date), AutomationEdge posts them to the ERP workflow, and a post-AE branch confirms to Slack or escalates failures to finance ops by email.\n" +
+          "\n" +
+          "For: accounts-payable · finance ops · controllership\n" +
+          "\n" +
+          "At ~200 invoices/day:\n" +
+          "• Keying time: ~4 min/invoice → ~20 s  (saves ~12 AP-hours/day)\n" +
+          "• Posting errors: ~5 % → ~1 % (back-office workflow runs unchanged)\n" +
+          "• Exception handling: failures auto-escalated with full AE request id trail\n" +
+          "\n" +
+          "Needs: AutomationEdge integration configured · ERP workflow name · Slack/email destinations",
+        color: "green",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 220 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Invoice intake",
+        displayName: "Receive invoice payload",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/ap/invoice" },
         status: "idle",
@@ -1508,7 +1740,7 @@ const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 260, y: 220 },
       data: {
         label: "Entity Extractor",
-        displayName: "Extract invoice fields",
+        displayName: "Pull fields from the invoice",
         nodeCategory: "nlp",
         config: {
           icon: "list-filter",
@@ -1554,7 +1786,7 @@ const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 560, y: 220 },
       data: {
         label: "AutomationEdge",
-        displayName: "Post invoice to ERP",
+        displayName: "Post the invoice to the ERP (RPA)",
         nodeCategory: "action",
         config: {
           icon: "bot",
@@ -1607,7 +1839,7 @@ const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 220 },
       data: {
         label: "Condition",
-        displayName: "ERP job succeeded?",
+        displayName: "Did the ERP accept it?",
         nodeCategory: "logic",
         config: {
           icon: "git-branch",
@@ -1627,7 +1859,7 @@ const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1160, y: 100 },
       data: {
         label: "Notification",
-        displayName: "Confirm to AP team · Slack",
+        displayName: "Confirm posting to AP team (Slack)",
         nodeCategory: "notification",
         config: {
           icon: "bell",
@@ -1647,7 +1879,7 @@ const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1160, y: 340 },
       data: {
         label: "Notification",
-        displayName: "Escalate failure · email ops",
+        displayName: "Escalate failure to finance ops (email)",
         nodeCategory: "notification",
         config: {
           icon: "bell",
@@ -1700,12 +1932,34 @@ const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
 const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -240 },
+      width: 580,
+      height: 210,
+      data: {
+        text:
+          "INCIDENT AUTO-REMEDIATION (RPA + HITL)\n" +
+          "Every inbound alert is classified, then routed: auto-remediation gets a Human Approval BEFORE the runbook executes via AutomationEdge, investigations get a diagnostic plan, everything else pages on-call.\n" +
+          "\n" +
+          "For: SRE · platform-ops · incident commanders · compliance\n" +
+          "\n" +
+          "At ~20 incidents/day (mixed severity):\n" +
+          "• MTTR on runbook-covered: 45 min → ~8 min (one human tap, then RPA)\n" +
+          "• Unauthorised destructive actions: always 0 — HITL gate on record\n" +
+          "• Post-mortem narrative: ~30 min manual write-up → ~30 s BALANCED-tier\n" +
+          "\n" +
+          "Needs: AutomationEdge · PagerDuty routing key · Slack incident channel · HITL approvers",
+        color: "pink",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 260 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Alert intake",
+        displayName: "Receive an alert",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/incidents/alert" },
         status: "idle",
@@ -1717,7 +1971,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 260, y: 260 },
       data: {
         label: "Intent Classifier",
-        displayName: "Classify incident action",
+        displayName: "What action does this alert need?",
         nodeCategory: "nlp",
         config: {
           icon: "target",
@@ -1772,7 +2026,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 560, y: 260 },
       data: {
         label: "Switch",
-        displayName: "Route by action class",
+        displayName: "Route to the right response",
         nodeCategory: "logic",
         config: {
           icon: "git-fork",
@@ -1794,7 +2048,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 80 },
       data: {
         label: "Human Approval",
-        displayName: "Approve automated remediation",
+        displayName: "Approve before remediation runs",
         nodeCategory: "action",
         config: {
           icon: "user-check",
@@ -1813,7 +2067,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1160, y: 80 },
       data: {
         label: "AutomationEdge",
-        displayName: "Run approved remediation",
+        displayName: "Execute the runbook (RPA)",
         nodeCategory: "action",
         config: {
           icon: "bot",
@@ -1859,7 +2113,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1460, y: 80 },
       data: {
         label: "LLM Agent",
-        displayName: "Narrate remediation outcome",
+        displayName: "Summarise what happened",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -1882,7 +2136,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1760, y: 80 },
       data: {
         label: "Notification",
-        displayName: "Post to incident channel",
+        displayName: "Post the outcome to the incident channel",
         nodeCategory: "notification",
         config: {
           icon: "bell",
@@ -1901,7 +2155,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 260 },
       data: {
         label: "LLM Agent",
-        displayName: "Draft diagnostic plan",
+        displayName: "Draft a diagnostic plan for on-call",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -1923,7 +2177,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1160, y: 260 },
       data: {
         label: "Notification",
-        displayName: "Send diagnostic plan · Slack",
+        displayName: "Send diagnostic plan to Slack",
         nodeCategory: "notification",
         config: {
           icon: "bell",
@@ -1943,7 +2197,7 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 440 },
       data: {
         label: "Notification",
-        displayName: "Page oncall · PagerDuty",
+        displayName: "Page on-call (PagerDuty)",
         nodeCategory: "notification",
         config: {
           icon: "bell",
@@ -2032,12 +2286,34 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
 const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 560,
+      height: 196,
+      data: {
+        text:
+          "SELF-REVIEWING DRAFTS — AI CRITIC REFINES UNTIL ACCEPTED\n" +
+          "Drafter writes, a strict Critic scores & feeds back, and the cycle repeats (max 3 passes) until the draft passes the quality bar — or the cap is hit. Both run on BALANCED tier so the gate actually catches mistakes.\n" +
+          "\n" +
+          "For: legal · policy · proposals · customer-facing comms · product marketing\n" +
+          "\n" +
+          "At ~80 drafts/day:\n" +
+          "• Drafting + review time: 35 min → ~90 s end-to-end\n" +
+          "• Revision loops until accepted: typically 1–2 (3 is the hard cap)\n" +
+          "• Accepted-first-try rate: ~60 % with the critic tuned strict\n" +
+          "\n" +
+          "Needs: Slack review channel · pair with Knowledge Retrieval if you want grounded answers",
+        color: "yellow",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 220 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Drafting request",
+        displayName: "Receive a drafting request",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/drafts/refine" },
         status: "idle",
@@ -2049,7 +2325,7 @@ const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 260, y: 220 },
       data: {
         label: "LLM Agent",
-        displayName: "Drafter · produce / revise",
+        displayName: "Write the draft (or revise it)",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -2073,7 +2349,7 @@ const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 560, y: 220 },
       data: {
         label: "Reflection",
-        displayName: "Critic · gate on quality",
+        displayName: "Score the draft & suggest edits",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -2102,7 +2378,7 @@ const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 220 },
       data: {
         label: "Condition",
-        displayName: "Needs revision?",
+        displayName: "Does the critic want a rewrite?",
         nodeCategory: "logic",
         config: {
           icon: "git-branch",
@@ -2119,7 +2395,7 @@ const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1160, y: 220 },
       data: {
         label: "LLM Agent",
-        displayName: "Finalizer · polish for send",
+        displayName: "Polish for publication",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -2141,7 +2417,7 @@ const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1460, y: 220 },
       data: {
         label: "Notification",
-        displayName: "Publish to review channel",
+        displayName: "Post the accepted draft to the review channel",
         nodeCategory: "notification",
         config: {
           icon: "bell",
@@ -2218,12 +2494,30 @@ const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
 const A2A_RESEARCH_SWARM: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -180 },
+      width: 540,
+      height: 160,
+      data: {
+        text:
+          "WHEN TO USE THIS PATTERN — CHAIN TWO A2A AGENTS\n" +
+          "One external agent's output becomes the next one's input via a composed messageExpression. Great when specialist agents must run sequentially (research then fact-check; summarise then translate).\n" +
+          "\n" +
+          "Production reasons to reach for this shape:\n" +
+          "• Independent vendors / partner agents with their own agent-card URLs\n" +
+          "• Separate API keys / rate limits / audit trails per call (each node is its own row)\n" +
+          "• Orchestrator composes the input string from trigger + prior agent's response",
+        color: "purple",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 220 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Research request",
+        displayName: "Receive a research question",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/research/ask" },
         status: "idle",
@@ -2350,12 +2644,34 @@ const A2A_RESEARCH_SWARM: { nodes: Node[]; edges: Edge[] } = {
 const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
     {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -240 },
+      width: 580,
+      height: 210,
+      data: {
+        text:
+          "ROUTE TO THE RIGHT EXPERT TEAM\n" +
+          "Intent Classifier understands the question in <2s, then a Switch fans it to external finance / legal / technical A2A specialists. A local general-purpose LLM catches everything else so no caller hits a dead end, even if every partner A2A is offline.\n" +
+          "\n" +
+          "For: internal help-desks · customer support · partner-federated agent networks\n" +
+          "\n" +
+          "At ~400 questions/day:\n" +
+          "• First-response time: ~2 min triage + email → ~3 s end-to-end\n" +
+          "• Mis-routes: ~15 % (manual triage) → ~5 % (hybrid Intent Classifier)\n" +
+          "• Coverage: 100 % — local fallback ensures every question gets answered\n" +
+          "\n" +
+          "Needs: A2A agent cards + API keys per specialist · optional OpenAI/Vertex key for local fallback",
+        color: "purple",
+      },
+    },
+    {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 320 },
       data: {
         label: "Webhook Trigger",
-        displayName: "User question",
+        displayName: "Receive the user's question",
         nodeCategory: "trigger",
         config: { icon: "webhook", method: "POST", path: "/ask/specialist" },
         status: "idle",
@@ -2367,7 +2683,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 260, y: 320 },
       data: {
         label: "Intent Classifier",
-        displayName: "Classify specialist domain",
+        displayName: "Which expert team should handle this?",
         nodeCategory: "nlp",
         config: {
           icon: "target",
@@ -2436,7 +2752,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 560, y: 320 },
       data: {
         label: "Switch",
-        displayName: "Route to specialist",
+        displayName: "Hand off to the matching team",
         nodeCategory: "logic",
         config: {
           icon: "git-fork",
@@ -2459,7 +2775,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 60 },
       data: {
         label: "A2A Agent Call",
-        displayName: "Finance specialist (A2A)",
+        displayName: "Ask the Finance specialist agent",
         nodeCategory: "action",
         config: {
           icon: "network",
@@ -2478,7 +2794,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 220 },
       data: {
         label: "A2A Agent Call",
-        displayName: "Legal specialist (A2A)",
+        displayName: "Ask the Legal specialist agent",
         nodeCategory: "action",
         config: {
           icon: "network",
@@ -2497,7 +2813,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 380 },
       data: {
         label: "A2A Agent Call",
-        displayName: "Technical specialist (A2A)",
+        displayName: "Ask the Technical specialist agent",
         nodeCategory: "action",
         config: {
           icon: "network",
@@ -2516,7 +2832,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 860, y: 540 },
       data: {
         label: "LLM Agent",
-        displayName: "General assistant (local fallback)",
+        displayName: "Answer locally (general fallback)",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -2538,7 +2854,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1180, y: 320 },
       data: {
         label: "Merge",
-        displayName: "Converge paths",
+        displayName: "Collect whichever team answered",
         nodeCategory: "logic",
         config: {
           icon: "git-merge",
@@ -2557,7 +2873,7 @@ const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
       position: { x: 1460, y: 320 },
       data: {
         label: "Bridge User Reply",
-        displayName: "Return specialist answer",
+        displayName: "Send the answer back to the user",
         nodeCategory: "action",
         config: {
           icon: "message-square",
@@ -2649,9 +2965,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   }),
   asTemplate({
     id: "it-ticket-triage",
-    name: "IT ticket triage (helpdesk)",
+    name: "Helpdesk auto-triage — route every ticket to the right team",
     description:
-      "Router, ForEach SLA notes, human approval on the technical path, and bridge replies for sync chat clients.",
+      "Intent Classifier understands each inbound ticket in <2s and a Switch hands it to the right specialist (orders / technical / general). A parallel SLA checklist drafts internal notes in ForEach; the technical reply gets an L2 Human Approval gate before going back to the customer. Bridge User Reply makes this sync-chat-compatible. At ~1,000 tickets/day this saves roughly 330 agent-hours per day versus a manual triage queue.",
     category: "customer-support",
     tags: ["helpdesk", "HITL", "ForEach", "router"],
     graph: EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW,
@@ -2667,9 +2983,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   }),
   asTemplate({
     id: "document-review-hitl",
-    name: "Document review with HITL",
+    name: "Governed document review — legal gate before external send",
     description:
-      "Summarize submissions with a balanced-tier LLM (Gemini 2.5 Pro for legal/risk reasoning), pause for human approval with full audit trail, then bridge the approved reply and persist. The pending-approvals toolbar badge surfaces queued items; every approval submit is captured with approver + reason for compliance.",
+      "A BALANCED-tier LLM (Gemini 2.5 Pro) summarises submissions and flags legal/policy risks. A named approver signs off via the pending-approvals badge with a full compliance audit trail (approver · reason · patch). Nothing leaves the building without a human on record. At ~50 docs/day this trims initial review from ~25 min to ~2 min and approval turnaround from ~2 h to ~15 min.",
     category: "operations",
     tags: ["compliance", "approval", "documents", "audit"],
     graph: DOCUMENT_REVIEW_HITL,
@@ -2685,9 +3001,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   }),
   asTemplate({
     id: "ops-routing",
-    name: "Ops routing",
+    name: "Ops engineer assistant — diagnostics · remediation · RCA",
     description:
-      "LLM router to diagnostics, remediation, RCA, or default ops paths; human gate on remediation; bridge user replies for sync chat.",
+      "Every inbound alert is classified in <2s and handed to the right specialist path: Diagnostics runs tool-backed investigation (ReAct + MCP), Remediation takes corrective action behind a Human Approval gate, RCA drafts an exec-ready postmortem on BALANCED tier, and Default Ops fields everything else. Bridge User Reply keeps it sync-chat friendly. At ~200 alerts/day this typically cuts MTTR on runbook-covered failures from ~45 min to ~8 min and collapses RCA drafting from hours to ~90s.",
     category: "operations",
     tags: ["router", "ReAct", "AIOps", "HITL"],
     graph: EXAMPLE_OPERATIONS_ROUTING_WORKFLOW,
@@ -2759,18 +3075,18 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   // TMPL-02 — AutomationEdge (RPA) examples.
   asTemplate({
     id: "invoice-ae-erp",
-    name: "Invoice intake → ERP via AE",
+    name: "Invoice auto-post to ERP (RPA) — with exception handling",
     description:
-      "Webhook delivers an invoice payload, Entity Extractor pulls the structured fields (invoice number, amount, vendor, due date), and AutomationEdge submits them to a back-office ERP workflow. Post-AE Condition branches on node_3.result.status so success confirms to Slack and failure escalates to finance ops by email.",
+      "Incoming invoices are parsed by an Entity Extractor (invoice number, amount, vendor, due date) and posted to the ERP via AutomationEdge. A post-AE Condition branches on the RPA result so successes confirm to AP on Slack and failures escalate to finance ops by email with the AE request id. At ~200 invoices/day this typically cuts keying time from ~4 min/invoice to ~20 s and halves posting errors.",
     category: "operations",
     tags: ["automationedge", "RPA", "ERP", "invoice", "entity-extraction", "AP"],
     graph: INVOICE_AE_ERP,
   }),
   asTemplate({
     id: "incident-ae-remediation",
-    name: "Incident auto-remediation (AE + HITL)",
+    name: "Incident auto-remediation — runbook with human approval",
     description:
-      "Alert webhook → Intent Classifier categorises the incident → Switch routes to auto-remediation / investigate / manual. The auto-remediation path gates Human Approval BEFORE AE runs a runbook (destructive actions need governance) and a BALANCED-tier narrator LLM posts the outcome to the incident channel. Stacks NODES-01.a + HITL-01 + AutomationEdge.",
+      "Every alert is classified then routed three ways. Auto-remediation gates Human Approval BEFORE the runbook executes via AutomationEdge (destructive actions never bypass a human on record); the BALANCED-tier narrator then posts what happened to the incident channel. Investigations draft a diagnostic checklist; everything else pages on-call. Cuts MTTR on runbook-covered failures from ~45 min to ~8 min with zero unauthorised destructive actions.",
     category: "operations",
     tags: ["automationedge", "RPA", "incident", "HITL", "switch", "approval", "remediation"],
     graph: INCIDENT_AE_REMEDIATION,
@@ -2778,9 +3094,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   // TMPL-03 — cycle-graph use case: iterative draft refinement.
   asTemplate({
     id: "content-refinement-loop",
-    name: "Iterative draft refinement (policy / proposals)",
+    name: "Self-reviewing drafts — AI critic refines until accepted",
     description:
-      "Real-world use case for a cyclic workflow. Drafter writes business-grade copy (legal notes, proposals, customer replies) → Reflection critic scores it on correctness/clarity/tone-fit and emits actionable feedback → Condition branches on needs_revision. The revise branch fires a CYCLIC-01 loopback edge back to the Drafter (max 3 passes) so each iteration incorporates the critic's feedback; accept flows forward to the Finalizer + Slack review channel. Ships with BALANCED tier on both Drafter and Critic so the quality gate is tight.",
+      "Draft → Critic → (loop back if needs work) → Finalize → Slack. Drafter writes business-grade copy; a strict Reflection critic scores it on correctness, clarity, and tone-fit and sends specific feedback; a CYCLIC-01 loopback runs up to 3 revision passes before the cycle exits. Both Drafter and Critic run on BALANCED tier so the quality gate is meaningful. Trims a 35-minute draft-and-review cycle to ~90 seconds end-to-end for legal notes, proposals, and customer-facing replies.",
     category: "research",
     tags: ["cyclic", "loopback", "reflection", "drafting", "policy", "proposal", "quality-gate"],
     graph: CONTENT_REFINEMENT_LOOP,
@@ -2797,9 +3113,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   }),
   asTemplate({
     id: "a2a-specialist-routing",
-    name: "Specialist A2A routing (finance / legal / technical)",
+    name: "Route to the right expert — finance / legal / technical",
     description:
-      "Intent Classifier + Switch fans out to per-domain external A2A agents — finance, legal, and technical specialists live at their own agent-card URLs with their own API keys. Unknown or 'general' questions fall through to a local LLM so the workflow always replies even if every partner A2A is offline. Merge(waitAny) converges the chosen branch onto a Bridge User Reply. Canonical pattern when specialist knowledge lives with partner / sister teams exposing their own A2A endpoints.",
+      "Intent Classifier understands each incoming question in <2s, then a Switch hands it to the matching external A2A specialist (finance, legal, or technical) by agent-card URL. A local general-purpose LLM catches everything else so no caller hits a dead end even if every partner A2A is offline. Merge(waitAny) converges on a single Bridge User Reply. At ~400 questions/day this replaces manual triage + email routing (~2 min per question) with ~3s end-to-end.",
     category: "operations",
     tags: ["A2A", "agent-to-agent", "routing", "switch", "specialist", "delegation"],
     graph: A2A_SPECIALIST_ROUTING,

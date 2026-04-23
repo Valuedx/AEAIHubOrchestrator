@@ -41,13 +41,38 @@ import { TEMPLATE_TIER_FAST, TEMPLATE_TIER_BALANCED } from "@/lib/modelTiers";
  */
 export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
+    // TMPL-05 — business-framing sticky. Parameters reflect a mid-
+    // size SRE team with a mix of runbook-covered + investigative
+    // alerts. Scale numbers linearly with alert volume.
+    {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 560,
+      height: 196,
+      data: {
+        text:
+          "OPS ENGINEER ASSISTANT\n" +
+          "Triage every alert to diagnostics, remediation, RCA, or default ops in < 2 seconds — with a human gate before remediation touches anything.\n" +
+          "\n" +
+          "For: SRE · platform-ops · on-call managers\n" +
+          "\n" +
+          "At ~200 alerts/day:\n" +
+          "• MTTR on runbook-covered failures: 45 min → ~8 min\n" +
+          "• RCA report first-draft: 2 h → ~90 s (BALANCED tier)\n" +
+          "• On-call pages: ~15/day → ~4/day (auto-remediation handles the rest)\n" +
+          "\n" +
+          "Needs: MCP diagnostics + remediation servers · Slack incident channel · HITL approver allowlist",
+        color: "green",
+      },
+    },
     {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 260 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Ops intake (webhook or gateway)",
+        displayName: "Receive alert (webhook / gateway)",
         nodeCategory: "trigger",
         config: {
           icon: "webhook",
@@ -78,7 +103,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       position: { x: 460, y: 260 },
       data: {
         label: "Intent Classifier",
-        displayName: "Classify: diagnostics / remediation / RCA / ops",
+        displayName: "Figure out what this alert needs",
         nodeCategory: "nlp",
         config: {
           icon: "target",
@@ -147,7 +172,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       position: { x: 700, y: 260 },
       data: {
         label: "Switch",
-        displayName: "Route by intent",
+        displayName: "Hand off to the right specialist",
         nodeCategory: "logic",
         config: {
           icon: "git-fork",
@@ -175,7 +200,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       position: { x: 980, y: 80 },
       data: {
         label: "ReAct Agent",
-        displayName: "Diagnostics specialist (ReAct + tools)",
+        displayName: "Investigate the failure",
         nodeCategory: "agent",
         config: {
           icon: "repeat",
@@ -206,7 +231,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       position: { x: 1180, y: 220 },
       data: {
         label: "ReAct Agent",
-        displayName: "Remediation specialist (ReAct + tools)",
+        displayName: "Apply the corrective action",
         nodeCategory: "agent",
         config: {
           icon: "repeat",
@@ -238,7 +263,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       position: { x: 1420, y: 400 },
       data: {
         label: "LLM Agent",
-        displayName: "RCA report author",
+        displayName: "Draft the RCA report",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -267,7 +292,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       position: { x: 1420, y: 560 },
       data: {
         label: "LLM Agent",
-        displayName: "Default ops orchestrator",
+        displayName: "Give ops guidance (default)",
         nodeCategory: "agent",
         config: {
           icon: "brain",
@@ -291,7 +316,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       position: { x: 1420, y: 220 },
       data: {
         label: "Human Approval",
-        displayName: "Human gate: approve remediation",
+        displayName: "Approve remediation before it runs",
         nodeCategory: "action",
         config: {
           icon: "user-check",
