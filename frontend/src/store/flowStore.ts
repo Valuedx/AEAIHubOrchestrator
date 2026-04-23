@@ -15,6 +15,10 @@ import {
   STICKY_NOTE_DEFAULT_DATA,
   type StickyNoteData,
 } from "@/types/stickyNote";
+import {
+  LOOPBACK_DEFAULT_MAX_ITERATIONS,
+  hydrateEdgesFromLoad,
+} from "@/types/edges";
 
 let nodeIdCounter = 0;
 const nextId = () => `node_${++nodeIdCounter}`;
@@ -52,6 +56,10 @@ interface FlowState {
   nodes: Node[];
   edges: Edge[];
   selectedNodeId: string | null;
+  /** CYCLIC-01.d — the edge currently open in the EdgeInspector.
+   *  Mutually exclusive with ``selectedNodeId`` so only one panel
+   *  is visible at a time. ``null`` hides the edge inspector. */
+  selectedEdgeId: string | null;
 
   /** Undo/redo history stacks */
   past: Snapshot[];
@@ -90,6 +98,13 @@ interface FlowState {
     defaultConfig?: Record<string, unknown>,
   ) => void;
   selectNode: (id: string | null) => void;
+  /** CYCLIC-01.d — select an edge (mutually exclusive with node
+   *  selection). Passing ``null`` closes the EdgeInspector. */
+  selectEdge: (id: string | null) => void;
+  /** CYCLIC-01.d — merge a partial patch into an edge.
+   *  EdgeInspector uses this to write ``maxIterations`` /
+   *  ``type: "loopback"`` etc. Pushes history so undo works. */
+  updateEdge: (id: string, patch: Partial<Edge>) => void;
   updateNodeData: (
     id: string,
     data: Partial<AgenticNodeData> | Partial<StickyNoteData>,
@@ -119,6 +134,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   nodes: [],
   edges: [],
   selectedNodeId: null,
+  selectedEdgeId: null,
   past: [],
   future: [],
   _draggingNodeIds: new Set(),
@@ -143,6 +159,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       edges: previous.edges,
       future: [{ nodes: [...nodes], edges: [...edges] }, ...future].slice(0, MAX_HISTORY),
       selectedNodeId: null,
+      selectedEdgeId: null,
     });
   },
 
@@ -157,6 +174,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       edges: next.edges,
       past: [...past, { nodes: [...nodes], edges: [...edges] }].slice(-MAX_HISTORY),
       selectedNodeId: null,
+      selectedEdgeId: null,
     });
   },
 
@@ -201,21 +219,54 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       sourceNode?.data?.nodeCategory === "logic" &&
       sourceNode?.data?.label === "Condition";
 
-    const edge = {
-      ...connection,
-      label: isCondition ? (connection.sourceHandle === "false" ? "No" : "Yes") : undefined,
-      style: isCondition
-        ? { stroke: connection.sourceHandle === "false" ? "#ef4444" : "#22c55e", strokeWidth: 2 }
-        : undefined,
-      animated: isCondition ? true : false,
-    };
+    // CYCLIC-01.d — if the user drags a connection from a node back
+    // to one of its ancestors in the existing forward subgraph, we
+    // flip the new edge to ``type: "loopback"`` automatically. Gives
+    // the one-click authoring surface without making the user hunt
+    // for a menu. Forward adjacency is computed over the current
+    // forward-only edges (existing loopbacks excluded) so an earlier
+    // cycle doesn't taint the ancestor check.
+    const isAutoLoopback =
+      !!connection.source &&
+      !!connection.target &&
+      _isAncestorOnForwardGraph(
+        connection.target,
+        connection.source,
+        get().edges,
+      );
+
+    const edge: Edge = isAutoLoopback
+      ? {
+          ...connection,
+          type: "loopback",
+          // Seed the default cap so the runtime + EdgeInspector have
+          // something sensible to show. Author can tune it in the
+          // inspector right after.
+          data: { maxIterations: LOOPBACK_DEFAULT_MAX_ITERATIONS },
+        } as Edge
+      : ({
+          ...connection,
+          label: isCondition
+            ? connection.sourceHandle === "false"
+              ? "No"
+              : "Yes"
+            : undefined,
+          style: isCondition
+            ? {
+                stroke:
+                  connection.sourceHandle === "false" ? "#ef4444" : "#22c55e",
+                strokeWidth: 2,
+              }
+            : undefined,
+          animated: isCondition ? true : false,
+        } as Edge);
     set({ edges: addEdge(edge, get().edges) });
   },
 
   replaceGraph: (nodes, edges) => {
     syncNodeIdCounterFromNodes(nodes);
     // Loading a saved/example workflow resets history
-    set({ nodes, edges, selectedNodeId: null, past: [], future: [] });
+    set({ nodes, edges, selectedNodeId: null, selectedEdgeId: null, past: [], future: [] });
   },
 
   addNode: (nodeCategory, label, position, defaultConfig = {}) => {
@@ -236,7 +287,22 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   selectNode: (id) => {
-    set({ selectedNodeId: id });
+    // CYCLIC-01.d — node and edge selection are mutually exclusive so
+    // the right-hand pane only ever has one inspector to render.
+    set({ selectedNodeId: id, selectedEdgeId: id ? null : get().selectedEdgeId });
+  },
+
+  selectEdge: (id) => {
+    set({ selectedEdgeId: id, selectedNodeId: id ? null : get().selectedNodeId });
+  },
+
+  updateEdge: (id, patch) => {
+    get()._pushHistory();
+    set({
+      edges: get().edges.map((edge) =>
+        edge.id === id ? { ...edge, ...patch, id: edge.id } : edge,
+      ),
+    });
   },
 
   updateNodeData: (id, data) => {
@@ -268,11 +334,18 @@ export const useFlowStore = create<FlowState>((set, get) => ({
 
   deleteNode: (id) => {
     get()._pushHistory();
+    const remainingEdges = get().edges.filter(
+      (e) => e.source !== id && e.target !== id,
+    );
+    const selectedEdgeStillValid = remainingEdges.some(
+      (e) => e.id === get().selectedEdgeId,
+    );
     set({
       nodes: get().nodes.filter((n) => n.id !== id),
-      edges: get().edges.filter((e) => e.source !== id && e.target !== id),
+      edges: remainingEdges,
       selectedNodeId:
         get().selectedNodeId === id ? null : get().selectedNodeId,
+      selectedEdgeId: selectedEdgeStillValid ? get().selectedEdgeId : null,
     });
   },
 
@@ -316,9 +389,12 @@ function _buildCopilotPreview(
   baseGraph: { nodes: unknown[]; edges: unknown[] } | null,
 ): CopilotPreviewGraph {
   const baseNodes = (baseGraph?.nodes ?? []) as Node[];
-  const baseEdges = (baseGraph?.edges ?? []) as Edge[];
+  const baseEdges = hydrateEdgesFromLoad((baseGraph?.edges ?? []) as Edge[]);
   const draftNodes = (draftGraph.nodes ?? []) as Node[];
-  const draftEdges = (draftGraph.edges ?? []) as Edge[];
+  // CYCLIC-01.d — hydrate loopback ``maxIterations`` into ``data``
+  // before the preview renders so the LoopbackEdge chip shows the
+  // author's configured cap, not the default.
+  const draftEdges = hydrateEdgesFromLoad((draftGraph.edges ?? []) as Edge[]);
 
   const baseNodeById = new Map<string, Node>();
   for (const n of baseNodes) {
@@ -379,6 +455,56 @@ function _buildCopilotPreview(
     modifiedNodeIds,
     addedEdgeIds,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// CYCLIC-01.d — onConnect ancestor detection
+// ---------------------------------------------------------------------------
+
+
+/**
+ * BFS from ``startId`` over the forward-only edge graph — i.e.
+ * ignoring edges already typed as ``"loopback"`` so prior cycles in
+ * the canvas don't taint reachability. Returns true if ``targetId``
+ * is reachable. Used by ``onConnect`` to decide whether a new edge
+ * is actually a back-reference (target == an ancestor of source) and
+ * should therefore be created as a loopback.
+ *
+ * We walk the graph ``(forwardTarget) -> (forwardSource)`` — i.e.
+ * reverse edges — so "is A an ancestor of B" becomes "can we reach A
+ * by walking upstream from B". That's exactly the test we need for
+ * the auto-loopback affordance.
+ */
+function _isAncestorOnForwardGraph(
+  ancestorId: string,
+  startId: string,
+  edges: Edge[],
+): boolean {
+  if (ancestorId === startId) return false;
+  // Build reverse adjacency: target -> list of sources, forward edges only.
+  const reverse = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.type === "loopback") continue;
+    if (!e.source || !e.target) continue;
+    const bucket = reverse.get(e.target);
+    if (bucket) bucket.push(e.source);
+    else reverse.set(e.target, [e.source]);
+  }
+  const seen = new Set<string>([startId]);
+  const queue: string[] = [startId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    const parents = reverse.get(cur);
+    if (!parents) continue;
+    for (const p of parents) {
+      if (p === ancestorId) return true;
+      if (seen.has(p)) continue;
+      seen.add(p);
+      queue.push(p);
+    }
+  }
+  return false;
 }
 
 

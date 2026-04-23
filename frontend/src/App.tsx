@@ -4,6 +4,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { NodePalette } from "@/components/sidebar/NodePalette";
 import { FlowCanvas } from "@/components/canvas/FlowCanvas";
 import { PropertyInspector } from "@/components/sidebar/PropertyInspector";
+import { EdgeInspector } from "@/components/sidebar/EdgeInspector";
+import { useFlowStore } from "@/store/flowStore";
 import { Toolbar } from "@/components/toolbar/Toolbar";
 import { ExecutionPanel } from "@/components/toolbar/ExecutionPanel";
 import { WorkflowBanner } from "@/components/banner/WorkflowBanner";
@@ -25,6 +27,12 @@ export default function App() {
   // inspector; when the user selects a node in copilot-open mode
   // they can close the copilot to get the inspector back.
   const [copilotOpen, setCopilotOpen] = useState(false);
+
+  // CYCLIC-01.d — when an edge is selected, the right column swaps
+  // in the EdgeInspector instead of the node PropertyInspector
+  // (selection is mutually exclusive via the flowStore). Copilot
+  // still wins over both — it eats the column whole.
+  const selectedEdgeId = useFlowStore((s) => s.selectedEdgeId);
 
   const togglePalette = useCallback(() => setPaletteCollapsed((p) => !p), []);
   const toggleCopilot = useCallback(() => setCopilotOpen((v) => !v), []);
@@ -79,6 +87,8 @@ export default function App() {
             </div>
             {copilotOpen ? (
               <CopilotPanel open={copilotOpen} onClose={closeCopilot} />
+            ) : selectedEdgeId ? (
+              <EdgeInspector />
             ) : (
               <PropertyInspector />
             )}

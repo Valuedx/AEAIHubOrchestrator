@@ -8,6 +8,7 @@ describe("flowStore undo/redo", () => {
       nodes: [],
       edges: [],
       selectedNodeId: null,
+      selectedEdgeId: null,
       past: [],
       future: [],
       _draggingNodeIds: new Set(),
@@ -96,6 +97,7 @@ describe("flowStore copilot preview", () => {
       nodes: [],
       edges: [],
       selectedNodeId: null,
+      selectedEdgeId: null,
       past: [],
       future: [],
       _draggingNodeIds: new Set(),
@@ -254,5 +256,198 @@ describe("flowStore copilot preview", () => {
     expect(useFlowStore.getState().copilotPreview).not.toBeNull();
     useFlowStore.getState().setCopilotPreview(null, null);
     expect(useFlowStore.getState().copilotPreview).toBeNull();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// CYCLIC-01.d — loopback auto-detect on connect + edge selection
+// ---------------------------------------------------------------------------
+
+
+describe("flowStore loopback edges", () => {
+  beforeEach(() => {
+    useFlowStore.setState({
+      nodes: [],
+      edges: [],
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      past: [],
+      future: [],
+      _draggingNodeIds: new Set(),
+      copilotPreview: null,
+    });
+  });
+
+  function seedChain() {
+    // a → b → c, no cycles.
+    useFlowStore.setState({
+      nodes: [
+        { id: "a", type: "agenticNode", position: { x: 0, y: 0 }, data: { label: "A" } },
+        { id: "b", type: "agenticNode", position: { x: 100, y: 0 }, data: { label: "B" } },
+        { id: "c", type: "agenticNode", position: { x: 200, y: 0 }, data: { label: "C" } },
+      ],
+      edges: [
+        { id: "ea", source: "a", target: "b" },
+        { id: "eb", source: "b", target: "c" },
+      ],
+    });
+  }
+
+  it("onConnect auto-flags a back-reference as loopback", () => {
+    seedChain();
+    // Drag from c back to a — a IS an ancestor of c, so this is a cycle.
+    useFlowStore.getState().onConnect({
+      source: "c",
+      target: "a",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    const edges = useFlowStore.getState().edges;
+    const newEdge = edges.find((e) => e.source === "c" && e.target === "a");
+    expect(newEdge).toBeDefined();
+    expect(newEdge!.type).toBe("loopback");
+    // Defaulted cap under data for the LoopbackEdge renderer.
+    expect((newEdge!.data as { maxIterations?: number } | undefined)?.maxIterations)
+      .toBe(10);
+  });
+
+  it("onConnect leaves forward connections as forward edges", () => {
+    seedChain();
+    // a → c is a forward skip, not a back-reference — target (c)
+    // is NOT an ancestor of source (a).
+    useFlowStore.getState().onConnect({
+      source: "a",
+      target: "c",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    const edges = useFlowStore.getState().edges;
+    const newEdge = edges.find((e) => e.source === "a" && e.target === "c");
+    expect(newEdge).toBeDefined();
+    expect(newEdge!.type).toBeUndefined();
+  });
+
+  it("existing loopback edges don't taint ancestor detection", () => {
+    // Graph: a → b → c, plus a prior loopback c → a.
+    // Now add b → a — target (a) IS an ancestor of b on the forward
+    // subgraph, so this new edge should also be flagged loopback.
+    seedChain();
+    useFlowStore.setState({
+      edges: [
+        ...useFlowStore.getState().edges,
+        {
+          id: "lb1",
+          source: "c",
+          target: "a",
+          type: "loopback",
+          data: { maxIterations: 5 },
+        },
+      ],
+    });
+    useFlowStore.getState().onConnect({
+      source: "b",
+      target: "a",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    const newEdge = useFlowStore
+      .getState()
+      .edges.find((e) => e.source === "b" && e.target === "a");
+    expect(newEdge!.type).toBe("loopback");
+  });
+
+  it("selectEdge + selectNode are mutually exclusive", () => {
+    const s = useFlowStore.getState();
+    s.selectNode("node_1");
+    expect(useFlowStore.getState().selectedNodeId).toBe("node_1");
+    expect(useFlowStore.getState().selectedEdgeId).toBeNull();
+
+    s.selectEdge("edge_1");
+    expect(useFlowStore.getState().selectedEdgeId).toBe("edge_1");
+    expect(useFlowStore.getState().selectedNodeId).toBeNull();
+
+    s.selectNode("node_2");
+    expect(useFlowStore.getState().selectedNodeId).toBe("node_2");
+    expect(useFlowStore.getState().selectedEdgeId).toBeNull();
+  });
+
+  it("updateEdge merges a partial patch and pushes history", () => {
+    useFlowStore.setState({
+      edges: [
+        {
+          id: "lb1",
+          source: "b",
+          target: "a",
+          type: "loopback",
+          data: { maxIterations: 10 },
+        },
+      ],
+    });
+    useFlowStore.getState().updateEdge("lb1", {
+      data: { maxIterations: 42 },
+    });
+    const edge = useFlowStore.getState().edges[0];
+    expect(
+      (edge.data as { maxIterations?: number }).maxIterations,
+    ).toBe(42);
+    // Undo stack got a snapshot.
+    expect(useFlowStore.getState().past.length).toBeGreaterThan(0);
+  });
+
+  it("deleteNode clears selectedEdgeId when the edge attached to the node vanishes", () => {
+    seedChain();
+    useFlowStore.getState().selectEdge("ea"); // a → b
+    useFlowStore.getState().deleteNode("a");
+    expect(useFlowStore.getState().selectedEdgeId).toBeNull();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// CYCLIC-01.d — graph_json interop (serialise/hydrate)
+// ---------------------------------------------------------------------------
+
+
+describe("edge graph_json interop", () => {
+  it("serialiseEdgesForSave lifts data.maxIterations to top-level", async () => {
+    const { serialiseEdgesForSave } = await import("@/types/edges");
+    const out = serialiseEdgesForSave([
+      {
+        id: "lb1", source: "b", target: "a", type: "loopback",
+        data: { maxIterations: 7 },
+      },
+      { id: "fwd", source: "a", target: "b" },
+    ]);
+    expect(out[0].maxIterations).toBe(7);
+    expect(out[1].maxIterations).toBeUndefined();
+  });
+
+  it("hydrateEdgesFromLoad drops top-level maxIterations into data", async () => {
+    const { hydrateEdgesFromLoad } = await import("@/types/edges");
+    const out = hydrateEdgesFromLoad([
+      {
+        id: "lb1", source: "b", target: "a", type: "loopback",
+        maxIterations: 42,
+      },
+      { id: "fwd", source: "a", target: "b" },
+    ]);
+    expect((out[0].data as { maxIterations: number }).maxIterations).toBe(42);
+    expect(out[1].data).toBeUndefined();
+  });
+
+  it("round-trip preserves the cap", async () => {
+    const { serialiseEdgesForSave, hydrateEdgesFromLoad } = await import("@/types/edges");
+    const initial = [
+      {
+        id: "lb1", source: "b", target: "a", type: "loopback",
+        data: { maxIterations: 25 },
+      },
+    ];
+    const saved = serialiseEdgesForSave(initial);
+    const hydrated = hydrateEdgesFromLoad(saved);
+    expect(
+      (hydrated[0].data as { maxIterations: number }).maxIterations,
+    ).toBe(25);
   });
 });

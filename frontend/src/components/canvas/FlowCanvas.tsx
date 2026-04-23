@@ -16,10 +16,14 @@ import { useFlowStore } from "@/store/flowStore";
 import { useWorkflowStore } from "@/store/workflowStore";
 import { AgenticNode } from "@/components/nodes/AgenticNode";
 import { StickyNote } from "@/components/nodes/StickyNote";
+import { LoopbackEdge } from "@/components/canvas/LoopbackEdge";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
 import type { NodeCategory } from "@/types/nodes";
 
 const nodeTypes = { agenticNode: AgenticNode, stickyNote: StickyNote };
+// CYCLIC-01.d — loopback edges render with the dashed-amber custom
+// renderer. Forward edges keep the default bezier.
+const edgeTypes = { loopback: LoopbackEdge };
 
 const defaultEdgeOptions: DefaultEdgeOptions = {
   markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
@@ -37,9 +41,18 @@ export function FlowCanvas() {
   const addNode = useFlowStore((s) => s.addNode);
   const addStickyNote = useFlowStore((s) => s.addStickyNote);
   const selectNode = useFlowStore((s) => s.selectNode);
+  const selectEdge = useFlowStore((s) => s.selectEdge);
   const undo = useFlowStore((s) => s.undo);
   const redo = useFlowStore((s) => s.redo);
   const markDirty = useWorkflowStore((s) => s.markDirty);
+
+  // CYCLIC-01.d — clear both selections on pane clicks so the right
+  // pane resets to its empty state; clicking an edge opens the
+  // EdgeInspector, clicking a node opens the PropertyInspector.
+  const onPaneClick = useCallback(() => {
+    selectNode(null);
+    selectEdge(null);
+  }, [selectNode, selectEdge]);
 
   // COPILOT-02.ii.b — when the copilot panel hands a preview graph
   // to flowStore, render THAT read-only instead of the base
@@ -181,8 +194,10 @@ export function FlowCanvas() {
         onDrop={inPreviewMode ? undefined : onDrop}
         onDragOver={inPreviewMode ? undefined : onDragOver}
         onNodeClick={(_, node) => selectNode(node.id)}
-        onPaneClick={() => selectNode(null)}
+        onEdgeClick={(_, edge) => selectEdge(edge.id)}
+        onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
         fitView
         // Preview mode is read-only: no drags, no connect-drags, no

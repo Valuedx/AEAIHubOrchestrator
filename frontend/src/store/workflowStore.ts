@@ -22,6 +22,7 @@ import {
   type LogLite,
   type NodeStatus,
 } from "@/lib/executionStatus";
+import { serialiseEdgesForSave, hydrateEdgesFromLoad } from "@/types/edges";
 
 interface WorkflowState {
   currentWorkflow: WorkflowOut | null;
@@ -378,7 +379,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       const wf = await api.getWorkflow(id);
       const graph = wf.graph_json;
       const newNodes = (graph.nodes ?? []) as Node[];
-      const newEdges = (graph.edges ?? []) as Edge[];
+      const newEdges = hydrateEdgesFromLoad((graph.edges ?? []) as Edge[]);
 
       useFlowStore.getState().replaceGraph(newNodes, newEdges);
 
@@ -404,7 +405,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const { nodes, edges } = useFlowStore.getState();
-      const graph_json = { nodes, edges };
+      const graph_json = { nodes, edges: serialiseEdgesForSave(edges) };
       const current = get().currentWorkflow;
 
       let wf: WorkflowOut;
@@ -525,7 +526,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     const prev = get()._sseCleanup;
     if (prev) prev();
     const newNodes = (graph.nodes ?? []) as Node[];
-    const newEdges = (graph.edges ?? []) as Edge[];
+    const newEdges = hydrateEdgesFromLoad((graph.edges ?? []) as Edge[]);
     useFlowStore.getState().replaceGraph(newNodes, newEdges);
     set({
       currentWorkflow: null,
@@ -546,7 +547,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   exportCurrentGraph: () => {
     const { nodes, edges } = useFlowStore.getState();
-    const graph_json = { nodes, edges };
+    const graph_json = { nodes, edges: serialiseEdgesForSave(edges) };
     return new Blob([JSON.stringify(graph_json, null, 2)], {
       type: "application/json",
     });
@@ -879,7 +880,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     if (canvasVersion === v) return;
     if (v === wf.version) {
       const nodes = (wf.graph_json.nodes ?? []) as Node[];
-      const edges = (wf.graph_json.edges ?? []) as Edge[];
+      const edges = hydrateEdgesFromLoad((wf.graph_json.edges ?? []) as Edge[]);
       useFlowStore.getState().replaceGraph(nodes, edges);
       set({
         isDirty: false,
@@ -890,7 +891,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     try {
       const { graph_json } = await api.getGraphAtVersion(workflowId, v);
       const nodes = (graph_json.nodes ?? []) as Node[];
-      const edges = (graph_json.edges ?? []) as Edge[];
+      const edges = hydrateEdgesFromLoad((graph_json.edges ?? []) as Edge[]);
       useFlowStore.getState().replaceGraph(nodes, edges);
       set({
         isDirty: true,

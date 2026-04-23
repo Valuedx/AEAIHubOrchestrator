@@ -54,3 +54,59 @@ export function clampLoopbackMaxIterations(
     Math.min(Math.floor(parsed), LOOPBACK_MAX_ITERATIONS_HARD_CAP),
   );
 }
+
+// ---------------------------------------------------------------------------
+// graph_json interop
+// ---------------------------------------------------------------------------
+
+/**
+ * CYCLIC-01.d — serialise edges for persistence. The backend's
+ * loopback edge schema expects ``maxIterations`` at the top level
+ * (see ``backend/app/engine/cyclic_analysis.py::get_loopback_max_iterations``),
+ * but React Flow stores custom edge attributes under ``data``. This
+ * helper lifts ``data.maxIterations`` up to the edge root so the
+ * saved graph_json matches the backend schema.
+ *
+ * Forward edges and loopback edges without a configured cap are
+ * passed through unchanged. This keeps the save-time transformation
+ * minimal — no structural rewrite, just one field lifted when it
+ * exists.
+ */
+export function serialiseEdgesForSave<
+  T extends { type?: string; data?: unknown; maxIterations?: number | null }
+>(edges: T[]): T[] {
+  return edges.map((e) => {
+    if (e.type !== "loopback") return e;
+    const maxIter = (e.data as { maxIterations?: unknown } | undefined)
+      ?.maxIterations;
+    if (maxIter === undefined || maxIter === null) return e;
+    return { ...e, maxIterations: clampLoopbackMaxIterations(maxIter) };
+  });
+}
+
+/**
+ * CYCLIC-01.d — inverse of ``serialiseEdgesForSave``. When hydrating
+ * graph_json from the backend (workflow load, version restore), lift
+ * top-level ``maxIterations`` into ``data.maxIterations`` so the
+ * LoopbackEdge renderer can read it via React Flow's standard
+ * ``EdgeProps.data`` surface.
+ *
+ * Leaves forward edges untouched. Preserves any other ``data`` keys
+ * the backend or copilot may have attached to the edge.
+ */
+export function hydrateEdgesFromLoad<
+  T extends { type?: string; data?: unknown; maxIterations?: number | null }
+>(edges: T[]): T[] {
+  return edges.map((e) => {
+    if (e.type !== "loopback") return e;
+    if (e.maxIterations === undefined || e.maxIterations === null) return e;
+    const existingData = (e.data as Record<string, unknown> | undefined) ?? {};
+    return {
+      ...e,
+      data: {
+        ...existingData,
+        maxIterations: clampLoopbackMaxIterations(e.maxIterations),
+      },
+    };
+  });
+}
