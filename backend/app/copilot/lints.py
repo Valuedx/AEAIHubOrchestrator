@@ -327,6 +327,112 @@ def lint_missing_credentials(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# CYCLIC-01.c — loopback edge lints
+# ---------------------------------------------------------------------------
+
+
+def lint_loopback_no_exit(graph: dict[str, Any]) -> list[Lint]:
+    """Error — a loopback cycle with no forward exit path can only
+    terminate via the iteration cap. Almost always a bug. Same
+    rule the validator enforces at save time, but surfaced through
+    ``check_draft`` so the copilot flags it mid-authoring before
+    the operator hits Promote."""
+    from app.engine.cyclic_analysis import (
+        cycle_body,
+        has_forward_exit,
+        is_forward_ancestor,
+        loopback_edges,
+    )
+
+    out: list[Lint] = []
+    for edge in loopback_edges(graph):
+        source = str(edge.get("source"))
+        target = str(edge.get("target"))
+        # Skip malformed cycles — the validator catches those
+        # separately; piling two errors onto the same edge is noisy.
+        if not is_forward_ancestor(target, source, graph):
+            continue
+        body = cycle_body(target, source, graph)
+        if body and not has_forward_exit(body, graph):
+            out.append(Lint(
+                code="loopback_no_exit",
+                severity="error",
+                message=(
+                    f"Loopback {source}→{target}: the cycle has no forward "
+                    "exit path."
+                ),
+                fix_hint=(
+                    "Add a Condition whose false branch exits the cycle so "
+                    "the workflow can terminate on something other than the "
+                    "iteration cap."
+                ),
+                node_id=target,
+            ))
+    return out
+
+
+def lint_loopback_no_cap(graph: dict[str, Any]) -> list[Lint]:
+    """Warn — loopback edge relies on the default iteration cap
+    (``maxIterations`` missing from the edge entirely). The default
+    is sensible (10) but silent; flagging it nudges authors to
+    set an explicit number so someone reading the graph a month
+    later doesn't have to look up the default."""
+    from app.engine.cyclic_analysis import loopback_edges
+
+    out: list[Lint] = []
+    for edge in loopback_edges(graph):
+        if edge.get("maxIterations") is None:
+            source = str(edge.get("source"))
+            target = str(edge.get("target"))
+            out.append(Lint(
+                code="loopback_no_cap",
+                severity="warn",
+                message=(
+                    f"Loopback {source}→{target}: using the default "
+                    "maxIterations of 10."
+                ),
+                fix_hint=(
+                    "Set an explicit maxIterations on the edge so the cap is "
+                    "visible in graph_json. Valid range: 1 to 100."
+                ),
+                node_id=target,
+            ))
+    return out
+
+
+def lint_loopback_nested_deep(graph: dict[str, Any]) -> list[Lint]:
+    """Warn — three or more distinct cycles in one graph. Cycles
+    interact in subtle ways (cap counters are per-edge, body
+    clearing is per-edge, nested cycle body inclusion can be
+    surprising). Authors should split deeply nested cyclic
+    authoring into sub-workflows that each own their own cycle."""
+    from app.engine.cyclic_analysis import deduped_bodies
+
+    bodies = deduped_bodies(graph)
+    if len(bodies) < 3:
+        return []
+    return [Lint(
+        code="loopback_nested_deep",
+        severity="warn",
+        message=(
+            f"Graph has {len(bodies)} distinct cycles — deeply nested "
+            "cyclic logic tends to interact in surprising ways."
+        ),
+        fix_hint=(
+            "Consider extracting one or more cycles into a Sub-Workflow. "
+            "Each sub-workflow owns its own iteration counters and "
+            "cycle-body clearing, which is easier to reason about."
+        ),
+        node_id=None,
+    )]
+
+
+# ---------------------------------------------------------------------------
+# Composer
+# ---------------------------------------------------------------------------
+
+
 def run_lints(
     graph: dict[str, Any],
     *,
@@ -345,4 +451,10 @@ def run_lints(
     lints.extend(lint_orphan_edges(graph))
     lints.extend(lint_disconnected_nodes(graph))
     lints.extend(lint_missing_credentials(graph, tenant_id=tenant_id, db=db))
+    # CYCLIC-01.c — cycle-aware rules. Each checks for loopback
+    # edges first and no-ops when there aren't any, so the
+    # zero-loopback hot path stays near-zero cost.
+    lints.extend(lint_loopback_no_exit(graph))
+    lints.extend(lint_loopback_no_cap(graph))
+    lints.extend(lint_loopback_nested_deep(graph))
     return lints
