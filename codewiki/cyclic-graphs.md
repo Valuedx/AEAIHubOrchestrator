@@ -140,14 +140,23 @@ These properties are pinned by `tests/test_cyclic_loopback_execution.py` + `test
 - **Cap-hit → completed** — reaching the cap is not an error; the instance status transitions to `completed`, a `loopback_cap_reached` log row is written, and the forward exit path fires normally.
 - **Exit subtree recovery** — after iterations N-1 where the Condition chose the loopback branch (pruning the exit), iteration N choosing the exit branch must actually exit. Un-pruning the exit subtree inside `_fire_loopbacks` is what makes this work.
 
-## 9. What's *not* built
+## 9. Ready-to-use templates
+
+Two templates in the Template Gallery are cycle-graph use cases you can load as a starting point:
+
+* **Iterative draft refinement (policy / proposals)** (TMPL-03) — Drafter LLM produces business-grade copy → Reflection critic scores it + emits feedback → Condition branches on `needs_revision`. The revise branch fires a loopback back to the Drafter (max 3 passes, gated by `sourceHandle: "true"`); on each iteration the Drafter sees `node_3.feedback` in context. Accept flows forward to the Finalizer + Slack review channel. This is the canonical "draft until good enough OR ship what we have" pattern — real-world fits include legal notes, proposals, and customer replies. Both Drafter and Critic run on `TEMPLATE_TIER_BALANCED` so the gate is tight.
+* **Agent ↔ tool loopback** (TMPL-01.f) — Planner LLM → Condition(use_tool?) → { MCP Tool ↻ loopback → Planner } OR Final LLM. Explicit node-level version of what ReAct does internally, giving per-step pins, observability, and custom gating.
+
+Both use **Condition-gated loopbacks** (the loopback's `sourceHandle` matches the Condition's chosen branch, so it fires only on the "loop" branch and stays silent on the "exit" branch). That's the recommended pattern — a raw unconditional loopback re-fires every single time its source completes and is almost always a bug.
+
+## 10. What's *not* built
 
 - **Streaming cycles** — the iteration counter bumps as a side-effect of `_fire_loopbacks`; there's no streaming `loopback_iteration` SSE event to the frontend yet. The UI picks up the log row on the next `ExecutionLog` refresh.
 - **Nested-scope variable shadowing** — context is flat; `context["planner"]` is overwritten on each iteration. There's no way to ask for "the planner output from iteration 2". If you need that, `append` outputs into a shared `context["history"]` list inside the node's handler.
 - **Full state-graph runtime** — we considered a LangGraph-style state-machine with explicit entry/exit nodes (Tier 3 of the original plan); the loopback-edge approach won on simplicity + backwards compatibility. Revisit if loopback edges prove insufficient for a real workload.
 - **Push to the copilot** — the copilot can read lint findings via `check_draft`, but there's no explicit "add a cycle here" runner tool. Authors get auto-flagging via `onConnect` instead.
 
-## 10. Related files
+## 11. Related files
 
 | File | Role |
 |---|---|

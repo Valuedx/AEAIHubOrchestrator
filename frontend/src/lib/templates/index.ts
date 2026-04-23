@@ -2005,6 +2005,194 @@ const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
 };
 
 
+// ---------------------------------------------------------------------------
+// TMPL-03 — Cycle graph example.
+//
+// A genuinely cyclic workflow: Drafter → Reflection → Condition →
+// (loop back to Drafter if the Reflection says needs_revision,
+//  else Finalizer → Notification). The loopback edge carries the
+// cycle, gated by the Condition's branch so it only fires on the
+// "revise" path. Hard cap of 3 iterations via the loopback's
+// maxIterations; combined with the Reflection's quality gate this
+// gives a deterministic "draft until good enough OR ship what we have"
+// pattern that's valuable for legal/policy notes, customer replies,
+// proposal drafts, and anywhere a single-shot LLM answer is too risky.
+//
+// Loop invariants:
+//   * On iteration N > 0 the Drafter sees the prior Reflection's
+//     feedback in context (node_3.feedback) and is prompted to
+//     incorporate it.
+//   * The Reflection returns a JSON object with
+//     ``needs_revision`` (bool) and ``feedback`` (string) — see
+//     outputKeys + reflectionPrompt below.
+//   * The Condition branches on ``node_3.needs_revision == true``.
+//     True fires ONLY the loopback (back to Drafter); false fires
+//     the forward edge to the Finalizer.
+// ---------------------------------------------------------------------------
+const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 220 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Drafting request",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/drafts/refine" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 260, y: 220 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Drafter · produce / revise",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          ...TEMPLATE_TIER_BALANCED,
+          systemPrompt:
+            "You draft business-grade written content. The request is: " +
+            "topic={{ trigger.topic }}, audience={{ trigger.audience }}, tone={{ trigger.tone | default('neutral') }}. " +
+            "If this is a revision (node_3 exists in context), INCORPORATE the critic's feedback verbatim: " +
+            "{{ node_3.feedback | default('') }}. Otherwise produce the first draft. " +
+            "Respond with ONLY the draft text — no preamble, no post-script.",
+          temperature: 0.5,
+          maxTokens: 2048,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 560, y: 220 },
+      data: {
+        label: "Reflection",
+        displayName: "Critic · gate on quality",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          // Reflection runs on BALANCED (2.5-pro) because the gate
+          // quality drives the whole loop — a lenient critic sends
+          // mediocre copy, a hallucinating critic traps the loop.
+          ...TEMPLATE_TIER_BALANCED,
+          reflectionPrompt:
+            "You are a strict content critic. Review the latest draft (node_2.response) against the brief " +
+            "(trigger.topic, trigger.audience, trigger.tone). Score on correctness, clarity, tone-fit, and " +
+            "completeness. Return STRICT JSON: " +
+            '{"needs_revision": <bool>, "score": <0.0-1.0>, "feedback": "<what to change in the next pass; ' +
+            'specific and actionable. If no changes needed, leave empty.>"}. ' +
+            "Do not rewrite the draft yourself — just critique it.",
+          outputKeys: ["needs_revision", "score", "feedback"],
+          maxHistoryNodes: 5,
+          temperature: 0.2,
+          maxTokens: 1024,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 860, y: 220 },
+      data: {
+        label: "Condition",
+        displayName: "Needs revision?",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-branch",
+          condition: "node_3.needs_revision == true",
+          trueLabel: "Revise ↻",
+          falseLabel: "Accept",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 1160, y: 220 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Finalizer · polish for send",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          ...TEMPLATE_TIER_FAST,
+          systemPrompt:
+            "The drafter + critic are done. Take node_2.response as the approved copy. " +
+            "Format it for publication: add a 1-line subject/title if appropriate, preserve paragraphing, " +
+            "and output the final text only. Don't editorialise or add disclaimers.",
+          temperature: 0.2,
+          maxTokens: 2048,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 1460, y: 220 },
+      data: {
+        label: "Notification",
+        displayName: "Publish to review channel",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_DRAFTS_WEBHOOK }}",
+          username: "Drafts Bot",
+          iconEmoji: ":pencil2:",
+          messageTemplate:
+            ":pencil2: *Draft accepted* (score {{ node_3.score | round(2) }}, revision pass)\n" +
+            "Topic: {{ trigger.topic }} · Audience: {{ trigger.audience }}\n\n" +
+            "{{ node_5.response }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+    { id: "e_2_3", source: "node_2", target: "node_3" },
+    { id: "e_3_4", source: "node_3", target: "node_4" },
+    // Accept branch: forward to the finaliser → notification.
+    {
+      id: "e_4_5",
+      source: "node_4",
+      target: "node_5",
+      sourceHandle: "false",
+      label: "Accept",
+      style: { stroke: "#22c55e", strokeWidth: 2 },
+      animated: true,
+    },
+    { id: "e_5_6", source: "node_5", target: "node_6" },
+    // CYCLIC-01 loopback: on the "true" (needs revision) branch, fire
+    // a loopback back to the Drafter. The dag_runner gates loopbacks
+    // on the Condition's chosen branch via ``sourceHandle``, so this
+    // only fires when needs_revision==true. Hard cap of 3 bounds a
+    // stubborn critic / flaky LLM.
+    {
+      id: "e_4_2_loopback",
+      source: "node_4",
+      target: "node_2",
+      sourceHandle: "true",
+      type: "loopback",
+      data: { maxIterations: 3 },
+      label: "↻ revise with feedback",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "6 4" },
+      animated: true,
+    },
+  ],
+};
+
+
 function asTemplate(
   t: Omit<WorkflowTemplate, "nodeCount">,
 ): WorkflowTemplate {
@@ -2151,6 +2339,16 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     category: "operations",
     tags: ["automationedge", "RPA", "incident", "HITL", "switch", "approval", "remediation"],
     graph: INCIDENT_AE_REMEDIATION,
+  }),
+  // TMPL-03 — cycle-graph use case: iterative draft refinement.
+  asTemplate({
+    id: "content-refinement-loop",
+    name: "Iterative draft refinement (policy / proposals)",
+    description:
+      "Real-world use case for a cyclic workflow. Drafter writes business-grade copy (legal notes, proposals, customer replies) → Reflection critic scores it on correctness/clarity/tone-fit and emits actionable feedback → Condition branches on needs_revision. The revise branch fires a CYCLIC-01 loopback edge back to the Drafter (max 3 passes) so each iteration incorporates the critic's feedback; accept flows forward to the Finalizer + Slack review channel. Ships with BALANCED tier on both Drafter and Critic so the quality gate is tight.",
+    category: "research",
+    tags: ["cyclic", "loopback", "reflection", "drafting", "policy", "proposal", "quality-gate"],
+    graph: CONTENT_REFINEMENT_LOOP,
   }),
 ];
 
