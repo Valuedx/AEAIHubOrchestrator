@@ -130,6 +130,23 @@ The full response body is preserved on `node_X.ae_response`, and `workflowRespon
 
 ## 4. Using the node on the canvas
 
+> **Ready-to-use templates (TMPL-02):** the Template Gallery ships two
+> AutomationEdge examples you can load as a starting point:
+>
+> * **Invoice intake → ERP via AE** — Webhook → `Entity Extractor`
+>   pulls `invoice_number` / `amount` / `vendor` / `due_date` → AE
+>   submits to `AP_Invoice_Post_v2` → post-AE `Condition` branches
+>   on `node_3.result.status` to confirm on Slack or escalate by
+>   email. Demonstrates **poll** completion mode.
+> * **Incident auto-remediation (AE + HITL)** — Alert webhook →
+>   `Intent Classifier` → `Switch` → auto-remediation path gates a
+>   **Human Approval** BEFORE AE runs the runbook (destructive RPA
+>   always has a human on record), then a BALANCED-tier narrator
+>   LLM posts the outcome to the incident channel. Demonstrates
+>   **webhook** completion mode + HITL stacking.
+>
+> Load either from Toolbar → Template gallery → Operations.
+
 Drag the 🤖 AutomationEdge node in. Typical config for a production workflow:
 
 ```yaml

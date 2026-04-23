@@ -1467,6 +1467,544 @@ const AGENT_TOOL_LOOPBACK: { nodes: Node[]; edges: Edge[] } = {
 };
 
 
+// ---------------------------------------------------------------------------
+// AutomationEdge (RPA) example templates — TMPL-02.
+//
+// The AE node submits a workflow to an AutomationEdge engine and then
+// SUSPENDS the parent workflow until AE reports a terminal state. Poll
+// mode (default) has the Beat task re-check every ``pollIntervalSeconds``;
+// webhook mode lets AE call back via an AE HTTP step. Either way, the
+// orchestrator resumes downstream nodes with AE's output payload on
+// node_X.result so the surrounding graph can react to success/failure.
+// See ``codewiki/automationedge.md`` for the full wire format.
+// ---------------------------------------------------------------------------
+
+/** Invoice intake → ERP via AE.
+ *
+ * Email/webhook drops an invoice payload → an LLM-backed Entity
+ * Extractor pulls the structured fields → AE submits those fields to
+ * a back-office ERP workflow → on AE completion a Condition branches
+ * on the reported status to either confirm (Slack) or escalate to
+ * finance ops (email). Showcases the "data in → RPA → data out"
+ * pattern with a strong post-AE branch for visibility into the
+ * automation's outcome. */
+const INVOICE_AE_ERP: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 220 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Invoice intake",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/ap/invoice" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 260, y: 220 },
+      data: {
+        label: "Entity Extractor",
+        displayName: "Extract invoice fields",
+        nodeCategory: "nlp",
+        config: {
+          icon: "list-filter",
+          sourceExpression: "trigger.raw_text",
+          entities: [
+            {
+              name: "invoice_number",
+              type: "regex",
+              pattern: "INV[-_]?\\d{4,10}",
+              description: "Invoice number (INV-prefix).",
+              required: true,
+            },
+            {
+              name: "amount",
+              type: "number",
+              description: "Total amount due.",
+              required: true,
+            },
+            {
+              name: "vendor",
+              type: "free_text",
+              description: "Vendor / supplier name.",
+              required: true,
+            },
+            {
+              name: "due_date",
+              type: "date",
+              description: "Invoice due date (ISO 8601 preferred).",
+              required: false,
+            },
+          ],
+          // LLM fallback fills in required entities that the rule-
+          // based extractors missed — useful on noisier invoices.
+          llmFallback: true,
+          ...TEMPLATE_TIER_FAST,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 560, y: 220 },
+      data: {
+        label: "AutomationEdge",
+        displayName: "Post invoice to ERP",
+        nodeCategory: "action",
+        config: {
+          icon: "bot",
+          // Blank integrationLabel → uses the tenant's default
+          // AutomationEdge integration (toolbar ⇢ Integrations dialog).
+          integrationLabel: "",
+          workflowName: "AP_Invoice_Post_v2",
+          authMode: "ae_session",
+          credentialsSecretPrefix: "AUTOMATIONEDGE",
+          // Input mapping: each entry's valueExpression is safe_eval'd
+          // against the workflow context. Entity Extractor output lives
+          // at node_2.entities.{name} (array of matches).
+          inputMapping: [
+            {
+              name: "invoice_number",
+              type: "string",
+              valueExpression: "node_2.entities.invoice_number[0]",
+            },
+            {
+              name: "amount",
+              type: "number",
+              valueExpression: "node_2.entities.amount[0]",
+            },
+            {
+              name: "vendor",
+              type: "string",
+              valueExpression: "node_2.entities.vendor[0]",
+            },
+            {
+              name: "due_date",
+              type: "string",
+              valueExpression: "node_2.entities.due_date[0]",
+            },
+            {
+              name: "source_message_id",
+              type: "string",
+              valueExpression: "trigger.message_id",
+            },
+          ],
+          completionMode: "poll",
+          pollIntervalSeconds: 30,
+          timeoutSeconds: 3600,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 860, y: 220 },
+      data: {
+        label: "Condition",
+        displayName: "ERP job succeeded?",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-branch",
+          // AE reports its terminal state + payload on
+          // node_3.result.{...}; status == "success" indicates the
+          // RPA workflow ended in its happy path.
+          condition: 'node_3.result.status == "success"',
+          trueLabel: "Success",
+          falseLabel: "Failure",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 1160, y: 100 },
+      data: {
+        label: "Notification",
+        displayName: "Confirm to AP team · Slack",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_AP_WEBHOOK }}",
+          username: "Invoice Bot",
+          iconEmoji: ":receipt:",
+          messageTemplate:
+            ":receipt: Invoice *{{ node_2.entities.invoice_number[0] }}* from *{{ node_2.entities.vendor[0] }}* (${{ node_2.entities.amount[0] }}) posted to ERP. AE job `{{ node_3.request_id }}` completed in {{ node_3.result.elapsed_seconds }}s.",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 1160, y: 340 },
+      data: {
+        label: "Notification",
+        displayName: "Escalate failure · email ops",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "email",
+          destination: "{{ env.FINANCE_OPS_EMAIL }}",
+          emailProvider: "sendgrid",
+          subject:
+            "Invoice posting failed: {{ node_2.entities.invoice_number[0] }} ({{ node_2.entities.vendor[0] }})",
+          messageTemplate:
+            "The AutomationEdge workflow for invoice {{ node_2.entities.invoice_number[0] }} ended in status `{{ node_3.result.status }}`.\n\nVendor: {{ node_2.entities.vendor[0] }}\nAmount: {{ node_2.entities.amount[0] }}\nAE request id: {{ node_3.request_id }}\nError detail: {{ node_3.result.error | default('n/a') }}\n\nRetry or post manually in the ERP.",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+    { id: "e_2_3", source: "node_2", target: "node_3" },
+    { id: "e_3_4", source: "node_3", target: "node_4" },
+    {
+      id: "e_4_5",
+      source: "node_4",
+      target: "node_5",
+      sourceHandle: "true",
+      label: "Success",
+      style: { stroke: "#22c55e", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_4_6",
+      source: "node_4",
+      target: "node_6",
+      sourceHandle: "false",
+      label: "Failure",
+      style: { stroke: "#ef4444", strokeWidth: 2 },
+      animated: true,
+    },
+  ],
+};
+
+/** Incident auto-remediation via AE.
+ *
+ * Alert webhook → Intent Classifier categorises the incident →
+ * Switch routes to one of {auto-remediation, investigation, manual}.
+ * The auto-remediation path gates Human Approval BEFORE the AE RPA
+ * workflow runs (destructive actions need governance), then a
+ * synthesiser LLM narrates the outcome for the incident channel.
+ * Showcases AE with the HITL + branching primitives stacked —
+ * the canonical "bot does the work, human owns the decision" pattern. */
+const INCIDENT_AE_REMEDIATION: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 260 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Alert intake",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/incidents/alert" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 260, y: 260 },
+      data: {
+        label: "Intent Classifier",
+        displayName: "Classify incident action",
+        nodeCategory: "nlp",
+        config: {
+          icon: "target",
+          utteranceExpression: "trigger.alert_text",
+          intents: [
+            {
+              name: "auto_remediate",
+              description:
+                "Known failure with a documented runbook — safe to attempt automated remediation.",
+              examples: [
+                "service X is failing its healthcheck and the runbook says restart",
+                "queue Y is backed up > 1000 — drain job",
+                "certificate expired on host Z — rotate",
+              ],
+              priority: 100,
+            },
+            {
+              name: "investigate",
+              description:
+                "Symptoms known but cause not obvious — gather diagnostics before acting.",
+              examples: [
+                "latency spike across several services",
+                "intermittent 502s from the frontend",
+                "unexplained memory growth",
+              ],
+              priority: 100,
+            },
+            {
+              name: "manual_handling",
+              description:
+                "High-risk or out-of-scope for automation — assign to oncall.",
+              examples: [
+                "suspected security incident",
+                "customer-facing data inconsistency",
+                "unknown alert source",
+              ],
+              priority: 50,
+            },
+          ],
+          mode: "hybrid",
+          ...TEMPLATE_TIER_FAST,
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          confidenceThreshold: 0.6,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 560, y: 260 },
+      data: {
+        label: "Switch",
+        displayName: "Route by action class",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-fork",
+          expression: "node_2.intents[0]",
+          cases: [
+            { value: "auto_remediate", label: "Auto-remediate (HITL + AE)" },
+            { value: "investigate", label: "Investigate" },
+            { value: "manual_handling", label: "Page oncall" },
+          ],
+          defaultLabel: "Unknown → oncall",
+          matchMode: "equals",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 860, y: 80 },
+      data: {
+        label: "Human Approval",
+        displayName: "Approve automated remediation",
+        nodeCategory: "action",
+        config: {
+          icon: "user-check",
+          approvalMessage:
+            "Auto-remediation detected: `{{ trigger.runbook_id }}` — {{ trigger.alert_text }}.\n" +
+            "Approve to run AE workflow `{{ trigger.runbook_id }}` against `{{ trigger.target }}`. " +
+            "Your approver identity is captured for the audit trail.",
+          timeout: 1800,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 1160, y: 80 },
+      data: {
+        label: "AutomationEdge",
+        displayName: "Run approved remediation",
+        nodeCategory: "action",
+        config: {
+          icon: "bot",
+          integrationLabel: "",
+          // The workflow name comes from trigger metadata so different
+          // runbooks reuse the same template. In prod, validate
+          // trigger.runbook_id against an allowlist before reaching
+          // this node (e.g. via a Code node upstream).
+          workflowName: "{{ trigger.runbook_id }}",
+          authMode: "ae_session",
+          credentialsSecretPrefix: "AUTOMATIONEDGE",
+          inputMapping: [
+            {
+              name: "target",
+              type: "string",
+              valueExpression: "trigger.target",
+            },
+            {
+              name: "alert_id",
+              type: "string",
+              valueExpression: "trigger.alert_id",
+            },
+            {
+              name: "approved_by",
+              type: "string",
+              // Approval payload carries the approver identity captured
+              // by HITL-01 (approval_audit_log).
+              valueExpression: "node_4.approver",
+            },
+          ],
+          completionMode: "webhook",
+          webhookAuth: "hmac",
+          webhookCallbackBaseUrl: "{{ env.ORCHESTRATOR_PUBLIC_BASE_URL }}",
+          pollIntervalSeconds: 15,
+          timeoutSeconds: 1800,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 1460, y: 80 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Narrate remediation outcome",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          ...TEMPLATE_TIER_BALANCED,
+          systemPrompt:
+            "Write a concise incident-channel update (2-4 lines). " +
+            "Inputs: trigger.alert_text (the original alert), node_4.approver (who approved), " +
+            "node_5.result (AE terminal status + output payload). " +
+            "Mention the runbook id, whether it succeeded, and the one next step if it failed.",
+          temperature: 0.3,
+          maxTokens: 512,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_7",
+      type: "agenticNode",
+      position: { x: 1760, y: 80 },
+      data: {
+        label: "Notification",
+        displayName: "Post to incident channel",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_INCIDENT_WEBHOOK }}",
+          username: "Remediation Bot",
+          iconEmoji: ":construction:",
+          messageTemplate: "{{ node_6.response }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_8",
+      type: "agenticNode",
+      position: { x: 860, y: 260 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Draft diagnostic plan",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          ...TEMPLATE_TIER_FAST,
+          systemPrompt:
+            "You are the triage analyst. The alert is: {{ trigger.alert_text }}. " +
+            "Outline a short, ordered checklist (3-5 steps) for the oncall to gather diagnostics. " +
+            "Cite likely log sources and dashboards by name when reasonable.",
+          temperature: 0.3,
+          maxTokens: 768,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_9",
+      type: "agenticNode",
+      position: { x: 1160, y: 260 },
+      data: {
+        label: "Notification",
+        displayName: "Send diagnostic plan · Slack",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_INCIDENT_WEBHOOK }}",
+          username: "Triage Bot",
+          iconEmoji: ":mag:",
+          messageTemplate:
+            ":mag: *Investigate* — {{ trigger.alert_text }}\n\n{{ node_8.response }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_10",
+      type: "agenticNode",
+      position: { x: 860, y: 440 },
+      data: {
+        label: "Notification",
+        displayName: "Page oncall · PagerDuty",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "pagerduty",
+          destination: "{{ env.PAGERDUTY_ROUTING_KEY }}",
+          severity: "warning",
+          eventAction: "trigger",
+          messageTemplate:
+            "[manual-handling] {{ trigger.alert_text }} · target={{ trigger.target }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+    { id: "e_2_3", source: "node_2", target: "node_3" },
+    {
+      id: "e_3_4",
+      source: "node_3",
+      target: "node_4",
+      sourceHandle: "auto_remediate",
+      label: "Auto-remediate",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_8",
+      source: "node_3",
+      target: "node_8",
+      sourceHandle: "investigate",
+      label: "Investigate",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_10",
+      source: "node_3",
+      target: "node_10",
+      sourceHandle: "manual_handling",
+      label: "Manual",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_10_default",
+      source: "node_3",
+      target: "node_10",
+      sourceHandle: "default",
+      label: "Unknown → oncall",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "4 3" },
+      animated: true,
+    },
+    { id: "e_4_5", source: "node_4", target: "node_5" },
+    { id: "e_5_6", source: "node_5", target: "node_6" },
+    { id: "e_6_7", source: "node_6", target: "node_7" },
+    { id: "e_8_9", source: "node_8", target: "node_9" },
+  ],
+};
+
+
 function asTemplate(
   t: Omit<WorkflowTemplate, "nodeCount">,
 ): WorkflowTemplate {
@@ -1594,6 +2132,25 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     category: "research",
     tags: ["loopback", "cyclic", "agent", "tools", "MCP", "ReAct"],
     graph: AGENT_TOOL_LOOPBACK,
+  }),
+  // TMPL-02 — AutomationEdge (RPA) examples.
+  asTemplate({
+    id: "invoice-ae-erp",
+    name: "Invoice intake → ERP via AE",
+    description:
+      "Webhook delivers an invoice payload, Entity Extractor pulls the structured fields (invoice number, amount, vendor, due date), and AutomationEdge submits them to a back-office ERP workflow. Post-AE Condition branches on node_3.result.status so success confirms to Slack and failure escalates to finance ops by email.",
+    category: "operations",
+    tags: ["automationedge", "RPA", "ERP", "invoice", "entity-extraction", "AP"],
+    graph: INVOICE_AE_ERP,
+  }),
+  asTemplate({
+    id: "incident-ae-remediation",
+    name: "Incident auto-remediation (AE + HITL)",
+    description:
+      "Alert webhook → Intent Classifier categorises the incident → Switch routes to auto-remediation / investigate / manual. The auto-remediation path gates Human Approval BEFORE AE runs a runbook (destructive actions need governance) and a BALANCED-tier narrator LLM posts the outcome to the incident channel. Stacks NODES-01.a + HITL-01 + AutomationEdge.",
+    category: "operations",
+    tags: ["automationedge", "RPA", "incident", "HITL", "switch", "approval", "remediation"],
+    graph: INCIDENT_AE_REMEDIATION,
   }),
 ];
 
