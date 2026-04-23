@@ -117,40 +117,48 @@ export function PendingApprovalsButton() {
   return (
     <>
       <DropdownMenu open={open} onOpenChange={setOpen}>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="relative gap-1.5"
-            aria-label={
-              count === 0
-                ? "No pending approvals"
-                : `${count} pending ${count === 1 ? "approval" : "approvals"}`
-            }
-            title={
-              count === 0
-                ? "No approvals waiting"
-                : `${count} ${count === 1 ? "approval" : "approvals"} waiting`
-            }
-          >
-            <Bell className="h-4 w-4" />
-            {count > 0 && (
-              <>
-                {/* Pulsing amber dot — matches the suspended-state
-                    amber we use everywhere else in the UI. */}
-                <span className="absolute top-1 right-1 flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
-                </span>
-                <Badge
-                  variant="outline"
-                  className="h-5 px-1.5 text-[10px] font-medium border-amber-300 text-amber-700 dark:text-amber-300 dark:border-amber-800"
-                >
-                  {countLabel}
-                </Badge>
-              </>
-            )}
-          </Button>
+        {/* base-ui's MenuTrigger always renders its own <button> —
+            Radix's asChild-merge isn't available. Use base-ui's
+            ``render`` prop to merge the trigger into a <Button>
+            instead of wrapping it (the wrap produces
+            <button><button/></button>, which React flags as
+            invalid DOM nesting). */}
+        <DropdownMenuTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="sm"
+              className="relative gap-1.5"
+              aria-label={
+                count === 0
+                  ? "No pending approvals"
+                  : `${count} pending ${count === 1 ? "approval" : "approvals"}`
+              }
+              title={
+                count === 0
+                  ? "No approvals waiting"
+                  : `${count} ${count === 1 ? "approval" : "approvals"} waiting`
+              }
+            />
+          }
+        >
+          <Bell className="h-4 w-4" />
+          {count > 0 && (
+            <>
+              {/* Pulsing amber dot — matches the suspended-state
+                  amber we use everywhere else in the UI. */}
+              <span className="absolute top-1 right-1 flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+              </span>
+              <Badge
+                variant="outline"
+                className="h-5 px-1.5 text-[10px] font-medium border-amber-300 text-amber-700 dark:text-amber-300 dark:border-amber-800"
+              >
+                {countLabel}
+              </Badge>
+            </>
+          )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-96 p-0">
           <div className="flex items-center justify-between px-3 py-2 border-b">
