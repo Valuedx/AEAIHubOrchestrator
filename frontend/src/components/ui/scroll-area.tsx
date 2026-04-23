@@ -37,15 +37,25 @@ function ScrollBar({
       data-slot="scroll-area-scrollbar"
       data-orientation={orientation}
       orientation={orientation}
+      // Track is always visible (not overlay-hover). Windows users —
+      // our primary audience — expect a persistent scroll affordance
+      // so they can see at a glance *that* a region is scrollable.
+      // The thumb darkens on hover/drag for affordance.
       className={cn(
-        "flex touch-none p-px transition-colors select-none data-horizontal:h-2.5 data-horizontal:flex-col data-horizontal:border-t data-horizontal:border-t-transparent data-vertical:h-full data-vertical:w-2.5 data-vertical:border-l data-vertical:border-l-transparent",
+        "flex touch-none select-none transition-colors",
+        "data-vertical:h-full data-vertical:w-2.5",
+        "data-horizontal:h-2.5 data-horizontal:w-full data-horizontal:flex-col",
+        "bg-muted/40 hover:bg-muted/60 data-scrolling:bg-muted/60",
         className
       )}
       {...props}
     >
       <ScrollAreaPrimitive.Thumb
         data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-border"
+        className={cn(
+          "relative flex-1 rounded-full bg-muted-foreground/40",
+          "hover:bg-muted-foreground/60 transition-colors",
+        )}
       />
     </ScrollAreaPrimitive.Scrollbar>
   )
