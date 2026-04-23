@@ -450,6 +450,23 @@ The backend rehydrates these rows from `memory_debug` recorded during execution 
 
 ## A2A (Agent-to-Agent) — `/tenants/{tenant_id}/...`
 
+> **Ready-to-use templates (TMPL-04):** the Template Gallery ships two
+> A2A examples that illustrate the calling pattern from the
+> orchestrator side.
+>
+> * **A2A research swarm** — webhook → researcher A2A → fact-checker
+>   A2A (reads the researcher's output via a composed
+>   `messageExpression`) → BALANCED synthesiser LLM → Slack.
+>   Demonstrates chaining two different external agents with
+>   distinct `agentCardUrl` / `apiKeySecret` per call.
+> * **Specialist A2A routing** — Intent Classifier + Switch → per-
+>   domain A2A agents (finance / legal / technical) + local
+>   fallback → Merge(waitAny) → Bridge User Reply. Canonical
+>   pattern when specialist knowledge lives with partner / sister
+>   teams exposing their own agent cards.
+>
+> Load either from Toolbar → Template gallery → Research / Operations.
+
 ### Public agent card (no auth)
 
 We serve the agent card at **both** paths so A2A v0.2.x and v1.0 clients both discover us (A2A-01.a):

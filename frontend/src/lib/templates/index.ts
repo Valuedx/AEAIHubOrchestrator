@@ -2193,6 +2193,441 @@ const CONTENT_REFINEMENT_LOOP: { nodes: Node[]; edges: Edge[] } = {
 };
 
 
+// ---------------------------------------------------------------------------
+// TMPL-04 — A2A (Agent-to-Agent) example workflows.
+//
+// The A2A Agent Call node delegates a task to an external A2A-compatible
+// agent identified by its /.well-known/agent.json discovery document.
+// The orchestrator acts as the conductor: it picks which external agent
+// to call, composes the input message, and synthesises the final answer
+// from the remote responses. Great when the specialist knowledge lives
+// outside the orchestrator (a compliance team's agent, a partner's
+// research agent, an in-house RAG stack with its own A2A interface).
+//
+// See ``codewiki/api-reference.md`` §A2A for the full JSON-RPC surface.
+// ---------------------------------------------------------------------------
+
+/** A2A research swarm — sequential delegation:
+ *   webhook → external researcher A2A agent → external fact-checker A2A
+ *   agent (reads researcher output) → synthesiser LLM → Slack.
+ *
+ * Showcases chaining two different external agents. Each agent card URL
+ * is distinct; each call has its own ``apiKeySecret`` vault reference.
+ * The second A2A call sends the FIRST agent's output as its input, so
+ * authors can see the ``messageExpression`` composition pattern. */
+const A2A_RESEARCH_SWARM: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 220 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Research request",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/research/ask" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 260, y: 220 },
+      data: {
+        label: "A2A Agent Call",
+        displayName: "Web researcher (A2A)",
+        nodeCategory: "action",
+        config: {
+          icon: "network",
+          agentCardUrl: "{{ env.A2A_RESEARCHER_AGENT_CARD_URL }}",
+          // Blank skillId = use the remote agent's first advertised
+          // skill. Set it to an explicit id (e.g. "deep_research")
+          // once you know which skill the remote agent exposes.
+          skillId: "",
+          messageExpression: "trigger.question",
+          apiKeySecret: "{{ env.A2A_RESEARCHER_API_KEY }}",
+          timeoutSeconds: 300,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 560, y: 220 },
+      data: {
+        label: "A2A Agent Call",
+        displayName: "Fact checker (A2A)",
+        nodeCategory: "action",
+        config: {
+          icon: "network",
+          agentCardUrl: "{{ env.A2A_FACTCHECKER_AGENT_CARD_URL }}",
+          skillId: "",
+          // Chain: the fact-checker reads the researcher's response as
+          // its input. A2A responses land on node_2.response (plain
+          // text) or node_2.artifacts (rich outputs — FilePart /
+          // DataPart per A2A-01.c). Here we pass both the original
+          // question and the researcher's draft so the checker has
+          // full context.
+          messageExpression:
+            "'Claim to verify: ' + node_2.response + '\\n\\nOriginal question: ' + trigger.question",
+          apiKeySecret: "{{ env.A2A_FACTCHECKER_API_KEY }}",
+          timeoutSeconds: 300,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 860, y: 220 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Synthesise final answer",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          // BALANCED — this is reasoning-heavy (resolve disagreements
+          // between two independent external agents). A local FAST
+          // tier often misses subtle contradictions the fact-checker
+          // flagged.
+          ...TEMPLATE_TIER_BALANCED,
+          systemPrompt:
+            "You are the research lead. You have two remote-agent responses: " +
+            "Researcher draft: `{{ node_2.response }}`\n" +
+            "Fact-checker findings: `{{ node_3.response }}`\n\n" +
+            "Write a final answer to the user's question (trigger.question). " +
+            "Cite any facts the checker confirmed; call out any claims it disputed " +
+            "and correct them. Keep it under 400 words unless the question warrants more.",
+          temperature: 0.3,
+          maxTokens: 2048,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 1160, y: 220 },
+      data: {
+        label: "Notification",
+        displayName: "Post answer to research channel",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_RESEARCH_WEBHOOK }}",
+          username: "Research Bot",
+          iconEmoji: ":microscope:",
+          messageTemplate:
+            ":microscope: *Q:* {{ trigger.question }}\n\n{{ node_4.response }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+    { id: "e_2_3", source: "node_2", target: "node_3" },
+    { id: "e_3_4", source: "node_3", target: "node_4" },
+    { id: "e_4_5", source: "node_4", target: "node_5" },
+  ],
+};
+
+/** Specialist A2A routing — Intent Classifier + Switch fans out to
+ *  per-domain external agents and converges on a single notification.
+ *
+ *   webhook → Intent Classifier (finance / legal / technical / general) →
+ *   Switch → {A2A finance agent | A2A legal agent | A2A technical agent
+ *             | fallback inline LLM} → Notification.
+ *
+ * This is the production pattern when specialist knowledge lives with
+ * partner / sister teams exposing their own A2A agents — each
+ * ``agentCardUrl`` points at a different remote deployment. The
+ * "general" fallback stays inline so the workflow still answers even
+ * if every A2A partner is unreachable. */
+const A2A_SPECIALIST_ROUTING: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 320 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "User question",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/ask/specialist" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 260, y: 320 },
+      data: {
+        label: "Intent Classifier",
+        displayName: "Classify specialist domain",
+        nodeCategory: "nlp",
+        config: {
+          icon: "target",
+          utteranceExpression: "trigger.message",
+          intents: [
+            {
+              name: "finance",
+              description:
+                "Questions about billing, pricing, budgets, contracts, SOX/PCI compliance dollar figures.",
+              examples: [
+                "what is my monthly spend",
+                "when is my contract renewal",
+                "can we capitalise this expense",
+                "invoice dispute",
+              ],
+              priority: 100,
+            },
+            {
+              name: "legal",
+              description:
+                "Questions about NDAs, DPAs, MSAs, regulatory exposure, IP, employment law.",
+              examples: [
+                "is our NDA template GDPR-compliant",
+                "can we terminate this contract",
+                "who owns the IP on this repo",
+                "legal review of these terms",
+              ],
+              priority: 100,
+            },
+            {
+              name: "technical",
+              description:
+                "Deep technical questions about the product, architecture, APIs, integrations.",
+              examples: [
+                "how does the A2A protocol handle authentication",
+                "what's the retention for execution logs",
+                "how do I integrate webhook signing",
+                "debug a Vertex AI 403 error",
+              ],
+              priority: 100,
+            },
+            {
+              name: "general",
+              description:
+                "Casual, out-of-scope, or cross-cutting questions — answered locally.",
+              examples: [
+                "hi",
+                "what can you do",
+                "I'm not sure who to ask",
+              ],
+              priority: 50,
+            },
+          ],
+          mode: "hybrid",
+          ...TEMPLATE_TIER_FAST,
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          confidenceThreshold: 0.6,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 560, y: 320 },
+      data: {
+        label: "Switch",
+        displayName: "Route to specialist",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-fork",
+          expression: "node_2.intents[0]",
+          cases: [
+            { value: "finance", label: "Finance A2A" },
+            { value: "legal", label: "Legal A2A" },
+            { value: "technical", label: "Technical A2A" },
+            { value: "general", label: "General (local)" },
+          ],
+          defaultLabel: "Unknown → general",
+          matchMode: "equals",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 860, y: 60 },
+      data: {
+        label: "A2A Agent Call",
+        displayName: "Finance specialist (A2A)",
+        nodeCategory: "action",
+        config: {
+          icon: "network",
+          agentCardUrl: "{{ env.A2A_FINANCE_AGENT_CARD_URL }}",
+          skillId: "",
+          messageExpression: "trigger.message",
+          apiKeySecret: "{{ env.A2A_FINANCE_API_KEY }}",
+          timeoutSeconds: 300,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 860, y: 220 },
+      data: {
+        label: "A2A Agent Call",
+        displayName: "Legal specialist (A2A)",
+        nodeCategory: "action",
+        config: {
+          icon: "network",
+          agentCardUrl: "{{ env.A2A_LEGAL_AGENT_CARD_URL }}",
+          skillId: "",
+          messageExpression: "trigger.message",
+          apiKeySecret: "{{ env.A2A_LEGAL_API_KEY }}",
+          timeoutSeconds: 300,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 860, y: 380 },
+      data: {
+        label: "A2A Agent Call",
+        displayName: "Technical specialist (A2A)",
+        nodeCategory: "action",
+        config: {
+          icon: "network",
+          agentCardUrl: "{{ env.A2A_TECHNICAL_AGENT_CARD_URL }}",
+          skillId: "",
+          messageExpression: "trigger.message",
+          apiKeySecret: "{{ env.A2A_TECHNICAL_API_KEY }}",
+          timeoutSeconds: 300,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_7",
+      type: "agenticNode",
+      position: { x: 860, y: 540 },
+      data: {
+        label: "LLM Agent",
+        displayName: "General assistant (local fallback)",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          ...TEMPLATE_TIER_FAST,
+          systemPrompt:
+            "You handle general / out-of-scope questions locally. " +
+            "Answer briefly and point the user at the specialist channels " +
+            "(finance, legal, technical) when relevant. Stay on-brand.",
+          temperature: 0.45,
+          maxTokens: 512,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_8",
+      type: "agenticNode",
+      position: { x: 1180, y: 320 },
+      data: {
+        label: "Merge",
+        displayName: "Converge paths",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-merge",
+          // waitAny: only one specialist path fires per invocation
+          // (the Switch prunes the others), so the Merge must NOT
+          // wait for every predecessor — it unblocks the moment the
+          // chosen specialist returns.
+          strategy: "waitAny",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_9",
+      type: "agenticNode",
+      position: { x: 1460, y: 320 },
+      data: {
+        label: "Bridge User Reply",
+        displayName: "Return specialist answer",
+        nodeCategory: "action",
+        config: {
+          icon: "message-square",
+          // Pick whichever upstream ran. Each specialist path writes
+          // its output to its own node id; the reply expression walks
+          // them in priority order and picks the first non-empty one.
+          messageExpression:
+            "(node_4.response or node_5.response or node_6.response or node_7.response)",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+    { id: "e_2_3", source: "node_2", target: "node_3" },
+    {
+      id: "e_3_4",
+      source: "node_3",
+      target: "node_4",
+      sourceHandle: "finance",
+      label: "Finance",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_5",
+      source: "node_3",
+      target: "node_5",
+      sourceHandle: "legal",
+      label: "Legal",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_6",
+      source: "node_3",
+      target: "node_6",
+      sourceHandle: "technical",
+      label: "Technical",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_7",
+      source: "node_3",
+      target: "node_7",
+      sourceHandle: "general",
+      label: "General",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_7_default",
+      source: "node_3",
+      target: "node_7",
+      sourceHandle: "default",
+      label: "Unknown → general",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "4 3" },
+      animated: true,
+    },
+    { id: "e_4_8", source: "node_4", target: "node_8" },
+    { id: "e_5_8", source: "node_5", target: "node_8" },
+    { id: "e_6_8", source: "node_6", target: "node_8" },
+    { id: "e_7_8", source: "node_7", target: "node_8" },
+    { id: "e_8_9", source: "node_8", target: "node_9" },
+  ],
+};
+
+
 function asTemplate(
   t: Omit<WorkflowTemplate, "nodeCount">,
 ): WorkflowTemplate {
@@ -2349,6 +2784,25 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     category: "research",
     tags: ["cyclic", "loopback", "reflection", "drafting", "policy", "proposal", "quality-gate"],
     graph: CONTENT_REFINEMENT_LOOP,
+  }),
+  // TMPL-04 — Agent-to-Agent (A2A) delegation.
+  asTemplate({
+    id: "a2a-research-swarm",
+    name: "A2A research swarm (researcher → fact-checker)",
+    description:
+      "Chain two external A2A agents by agent-card URL: a web researcher drafts an answer, then a fact-checker verifies the claims by reading the researcher's output. A BALANCED synthesiser LLM resolves disagreements and posts the final answer to Slack. Showcases the A2A Agent Call node with distinct agentCardUrl + apiKeySecret per call, and composing one agent's response into the next agent's messageExpression.",
+    category: "research",
+    tags: ["A2A", "agent-to-agent", "delegation", "research", "fact-check", "chain"],
+    graph: A2A_RESEARCH_SWARM,
+  }),
+  asTemplate({
+    id: "a2a-specialist-routing",
+    name: "Specialist A2A routing (finance / legal / technical)",
+    description:
+      "Intent Classifier + Switch fans out to per-domain external A2A agents — finance, legal, and technical specialists live at their own agent-card URLs with their own API keys. Unknown or 'general' questions fall through to a local LLM so the workflow always replies even if every partner A2A is offline. Merge(waitAny) converges the chosen branch onto a Bridge User Reply. Canonical pattern when specialist knowledge lives with partner / sister teams exposing their own A2A endpoints.",
+    category: "operations",
+    tags: ["A2A", "agent-to-agent", "routing", "switch", "specialist", "delegation"],
+    graph: A2A_SPECIALIST_ROUTING,
   }),
 ];
 
