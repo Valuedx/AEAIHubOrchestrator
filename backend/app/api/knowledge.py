@@ -95,6 +95,13 @@ class EmbeddingOptionOut(BaseModel):
     provider: str
     model: str
     dimension: int
+    # MODEL-01.d: modalities + preview + display fields so the KB dialog
+    # can render modality chips (gemini-embedding-2 lights up four) and
+    # a preview badge without needing a second registry lookup.
+    modalities: list[str] = Field(default_factory=lambda: ["text"])
+    preview: bool = False
+    display_name: str = ""
+    notes: str = ""
 
 
 # ---------------------------------------------------------------------------

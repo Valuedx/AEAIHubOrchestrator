@@ -23,6 +23,7 @@ from app.api.async_jobs import router as async_jobs_router
 from app.api.tenant_integrations import router as tenant_integrations_router
 from app.api.tenant_mcp_servers import router as tenant_mcp_servers_router
 from app.api.tenant_policies import router as tenant_policies_router
+from app.api.models import router as models_router
 from app.api.llm_credentials import router as llm_credentials_router
 from app.api.copilot_drafts import router as copilot_drafts_router
 from app.api.copilot_sessions import router as copilot_sessions_router
@@ -114,6 +115,11 @@ app.include_router(
     tenant_policies_router,
     prefix="/api/v1/tenant-policy",
     tags=["tenant-policy"],
+)
+app.include_router(
+    models_router,
+    prefix="/api/v1/models",
+    tags=["models"],
 )
 app.include_router(
     llm_credentials_router,

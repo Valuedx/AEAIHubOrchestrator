@@ -43,6 +43,11 @@ def _row(
     smart_01_scenario_memory_enabled: bool | None = None,
     smart_01_strict_promote_gate_enabled: bool | None = None,
     smart_05_vector_docs_enabled: bool | None = None,
+    default_llm_provider: str | None = None,
+    default_llm_model: str | None = None,
+    default_embedding_provider: str | None = None,
+    default_embedding_model: str | None = None,
+    allowed_model_families: list[str] | None = None,
 ):
     row = MagicMock()
     row.execution_quota_per_hour = execution_quota_per_hour
@@ -59,6 +64,12 @@ def _row(
     row.smart_01_scenario_memory_enabled = smart_01_scenario_memory_enabled
     row.smart_01_strict_promote_gate_enabled = smart_01_strict_promote_gate_enabled
     row.smart_05_vector_docs_enabled = smart_05_vector_docs_enabled
+    # MODEL-01.e — per-tenant model defaults + family allowlist.
+    row.default_llm_provider = default_llm_provider
+    row.default_llm_model = default_llm_model
+    row.default_embedding_provider = default_embedding_provider
+    row.default_embedding_model = default_embedding_model
+    row.allowed_model_families = allowed_model_families
     return row
 
 
@@ -93,6 +104,12 @@ class TestEnvFallback:
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
             "smart_05_vector_docs_enabled": "env_default",
+            # MODEL-01.e — per-tenant model defaults + allowlist.
+            "default_llm_provider": "env_default",
+            "default_llm_model": "env_default",
+            "default_embedding_provider": "env_default",
+            "default_embedding_model": "env_default",
+            "allowed_model_families": "env_default",
         }
 
     def test_no_row_for_tenant_returns_env_defaults(self, patched_settings):
@@ -153,6 +170,12 @@ class TestRowOverrides:
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
             "smart_05_vector_docs_enabled": "env_default",
+            # MODEL-01.e — row fixture doesn't set them.
+            "default_llm_provider": "env_default",
+            "default_llm_model": "env_default",
+            "default_embedding_provider": "env_default",
+            "default_embedding_model": "env_default",
+            "allowed_model_families": "env_default",
         }
 
     def test_partial_override_inherits_missing_fields_from_env(self, patched_settings):

@@ -790,7 +790,7 @@ Returns {**parsed, "_usage": usage, "_raw_response": raw_response}
 | Field | Default | What it does |
 |-------|---------|-------------|
 | `provider` | `google` | LLM provider |
-| `model` | `gemini-2.5-flash` | Model variant |
+| `model` | `gemini-2.5-flash` | Model variant — any entry from the [model registry](codewiki/model-registry.md) is valid (2.0 / 2.5 / 3.x Gemini, Claude, GPT-4o) |
 | `reflectionPrompt` | *(required)* | Jinja2 system prompt; use `{{ execution_summary }}` |
 | `outputKeys` | `[]` | Expected top-level keys in the JSON response — warns if absent |
 | `maxHistoryNodes` | `10` | How many recent node outputs to include in the summary |

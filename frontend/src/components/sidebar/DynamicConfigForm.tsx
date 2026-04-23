@@ -649,6 +649,144 @@ function IntentListEditor({
 }
 
 // ---------------------------------------------------------------------------
+// CaseListEditor — array-of-objects editor for Switch node cases
+// (NODES-01.a). Each case is {value, label}; value becomes the edge
+// sourceHandle that the dag_runner's branch-pruning uses to choose
+// which downstream path fires.
+// ---------------------------------------------------------------------------
+
+interface CaseItem {
+  value: string;
+  label: string;
+}
+
+function CaseListEditor({
+  value,
+  onChange,
+  description,
+}: {
+  value: CaseItem[];
+  onChange: (v: CaseItem[]) => void;
+  description?: string;
+}) {
+  const items: CaseItem[] = Array.isArray(value) ? value : [];
+
+  const addItem = () => {
+    onChange([...items, { value: "", label: "" }]);
+  };
+  const removeItem = (idx: number) => {
+    onChange(items.filter((_, i) => i !== idx));
+  };
+  const updateItem = (idx: number, patch: Partial<CaseItem>) => {
+    onChange(items.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  };
+  const moveItem = (idx: number, delta: -1 | 1) => {
+    const j = idx + delta;
+    if (j < 0 || j >= items.length) return;
+    const next = items.slice();
+    const [spliced] = next.splice(idx, 1);
+    next.splice(j, 0, spliced);
+    onChange(next);
+  };
+
+  // Detect duplicate values (would produce ambiguous edge routing).
+  const duplicateValues = new Set<string>();
+  const seen = new Set<string>();
+  for (const it of items) {
+    if (it.value && seen.has(it.value)) duplicateValues.add(it.value);
+    else if (it.value) seen.add(it.value);
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <Label>Cases</Label>
+        <button
+          type="button"
+          onClick={addItem}
+          className="text-xs text-primary hover:underline"
+        >
+          + Add case
+        </button>
+      </div>
+      {items.length === 0 && (
+        <p className="text-[10px] text-muted-foreground italic">
+          No cases yet — click &quot;+ Add case&quot;. Every unmatched value falls through to the default handle.
+        </p>
+      )}
+      {items.map((item, idx) => (
+        <div
+          key={idx}
+          className="border rounded-md p-2.5 space-y-2 bg-muted/30"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+              Case {idx + 1}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => moveItem(idx, -1)}
+                disabled={idx === 0}
+                className="text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-30"
+                title="Move up"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => moveItem(idx, 1)}
+                disabled={idx === items.length - 1}
+                className="text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-30"
+                title="Move down"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                onClick={() => removeItem(idx)}
+                className="text-[10px] text-destructive hover:underline"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`case-value-${idx}`} className="text-[11px]">
+              Match value *
+              {duplicateValues.has(item.value) && (
+                <span className="ml-2 text-destructive">— duplicate</span>
+              )}
+            </Label>
+            <Input
+              id={`case-value-${idx}`}
+              value={item.value}
+              onChange={(e) => updateItem(idx, { value: e.target.value })}
+              placeholder="e.g. diagnose"
+              className={`h-8 text-xs font-mono ${
+                duplicateValues.has(item.value) ? "border-destructive/60" : ""
+              }`}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`case-label-${idx}`} className="text-[11px]">Handle label</Label>
+            <Input
+              id={`case-label-${idx}`}
+              value={item.label}
+              onChange={(e) => updateItem(idx, { label: e.target.value })}
+              placeholder="Diagnostics path"
+              className="h-8 text-xs"
+            />
+          </div>
+        </div>
+      ))}
+      {description && <FieldHint text={description} />}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
 // EntityListEditor — array-of-objects editor for Entity Extractor entities
 // ---------------------------------------------------------------------------
 
@@ -1149,6 +1287,19 @@ export function DynamicConfigForm({
             <div key={key}>
               <IntentListEditor
                 value={Array.isArray(value) ? (value as IntentItem[]) : []}
+                onChange={(v) => update(key, v)}
+                description={field.description}
+              />
+            </div>
+          );
+        }
+
+        // ---- cases array on switch → CaseListEditor (NODES-01.a) ----
+        if (field.type === "array" && key === "cases" && nodeType === "switch") {
+          return (
+            <div key={key}>
+              <CaseListEditor
+                value={Array.isArray(value) ? (value as CaseItem[]) : []}
                 onChange={(v) => update(key, v)}
                 description={field.description}
               />

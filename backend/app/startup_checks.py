@@ -462,6 +462,45 @@ def check_mcp_default_server() -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
+def check_model_registry_drift() -> CheckResult:
+    """Catch `shared/node_registry.json` drifting from the central
+    model registry. A drift means users see a model in the Node
+    Inspector dropdown that the backend doesn't know how to route —
+    or vice versa, a new registry model hasn't been surfaced to
+    users yet. MODEL-01.c wired this check.
+    """
+    try:
+        from app.engine.model_registry import node_registry_drift
+
+        drifts = node_registry_drift()
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="model_registry_drift",
+            status="fail",
+            message=f"drift check itself raised: {exc}",
+            remediation=(
+                "File a bug — the drift check should never raise. "
+                "In the meantime, inspect `backend/app/engine/model_registry.py`."
+            ),
+        )
+    if not drifts:
+        return CheckResult(
+            name="model_registry_drift",
+            status="pass",
+            message="shared/node_registry.json matches the central model registry.",
+        )
+    return CheckResult(
+        name="model_registry_drift",
+        status="warn",
+        message="; ".join(drifts),
+        remediation=(
+            "Update `shared/node_registry.json` model enums to match "
+            "`backend/app/engine/model_registry.py::expected_node_enum()`, "
+            "or add the new model to the registry."
+        ),
+    )
+
+
 _REGISTRY: tuple[Callable[[], CheckResult], ...] = (
     check_database,
     check_redis,
@@ -470,6 +509,7 @@ _REGISTRY: tuple[Callable[[], CheckResult], ...] = (
     check_auth_mode,
     check_vault_key,
     check_mcp_default_server,
+    check_model_registry_drift,
 )
 
 

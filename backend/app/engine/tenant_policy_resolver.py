@@ -69,6 +69,18 @@ class EffectivePolicy:
     # degrade path when the embedding provider is unreachable.
     smart_05_vector_docs_enabled: bool
     source: dict[str, PolicySource]
+    # MODEL-01.e — per-tenant model defaults + family allowlist.
+    # ``default_llm_provider`` / ``default_llm_model`` pin a tenant to
+    # an explicit choice; null = tier-based resolution via
+    # ``default_llm_for``. ``allowed_model_families`` is a list of
+    # registry ``generation`` strings (e.g. ``["2.5", "3.x"]``) — empty
+    # / null = no family restriction. All fields default to None so
+    # pre-MODEL-01.e test helpers keep compiling.
+    default_llm_provider: str | None = None
+    default_llm_model: str | None = None
+    default_embedding_provider: str | None = None
+    default_embedding_model: str | None = None
+    allowed_model_families: list[str] | None = None
 
 
 def _env_defaults() -> EffectivePolicy:
@@ -84,6 +96,12 @@ def _env_defaults() -> EffectivePolicy:
         smart_01_scenario_memory_enabled=settings.smart_01_scenario_memory_enabled,
         smart_01_strict_promote_gate_enabled=settings.smart_01_strict_promote_gate_enabled,
         smart_05_vector_docs_enabled=settings.smart_05_vector_docs_enabled,
+        # MODEL-01.e — registry owns the defaults; tenant has no override.
+        default_llm_provider=None,
+        default_llm_model=None,
+        default_embedding_provider=None,
+        default_embedding_model=None,
+        allowed_model_families=None,
         source={
             "execution_quota_per_hour": "env_default",
             "max_snapshots": "env_default",
@@ -96,6 +114,11 @@ def _env_defaults() -> EffectivePolicy:
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
             "smart_05_vector_docs_enabled": "env_default",
+            "default_llm_provider": "env_default",
+            "default_llm_model": "env_default",
+            "default_embedding_provider": "env_default",
+            "default_embedding_model": "env_default",
+            "allowed_model_families": "env_default",
         },
     )
 
@@ -145,6 +168,26 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 return env_value
             source[field] = "tenant_policy"
             return col_value
+
+        def _pick_opt_str(col_value: str | None, field: str) -> str | None:
+            """Optional-string variant for MODEL-01.e fields — null is a
+            valid end state meaning "inherit registry default". Source
+            flips between tenant_policy (explicit override) and
+            env_default (null)."""
+            if col_value is None:
+                source[field] = "env_default"
+                return None
+            source[field] = "tenant_policy"
+            return col_value
+
+        def _pick_opt_list(col_value: list | None, field: str) -> list[str] | None:
+            """Optional-list variant for ``allowed_model_families``.
+            An empty list is normalised to None (no restriction)."""
+            if not col_value:
+                source[field] = "env_default"
+                return None
+            source[field] = "tenant_policy"
+            return [str(x) for x in col_value]
 
         return EffectivePolicy(
             execution_quota_per_hour=_pick(
@@ -201,6 +244,28 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
                 getattr(row, "smart_05_vector_docs_enabled", None),
                 settings.smart_05_vector_docs_enabled,
                 "smart_05_vector_docs_enabled",
+            ),
+            # MODEL-01.e — nullable pins; no env default. Source is
+            # "tenant_policy" when set, "env_default" when null.
+            default_llm_provider=_pick_opt_str(
+                getattr(row, "default_llm_provider", None),
+                "default_llm_provider",
+            ),
+            default_llm_model=_pick_opt_str(
+                getattr(row, "default_llm_model", None),
+                "default_llm_model",
+            ),
+            default_embedding_provider=_pick_opt_str(
+                getattr(row, "default_embedding_provider", None),
+                "default_embedding_provider",
+            ),
+            default_embedding_model=_pick_opt_str(
+                getattr(row, "default_embedding_model", None),
+                "default_embedding_model",
+            ),
+            allowed_model_families=_pick_opt_list(
+                getattr(row, "allowed_model_families", None),
+                "allowed_model_families",
             ),
             source=source,
         )

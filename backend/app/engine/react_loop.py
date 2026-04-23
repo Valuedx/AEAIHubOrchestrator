@@ -30,9 +30,11 @@ def run_react_loop(
     tenant_id: str,
 ) -> dict[str, Any]:
     """Execute a ReAct agent loop with tool calling."""
+    from app.engine.model_registry import default_llm_for
+
     config = node_data.get("config", {})
     provider = config.get("provider", "google")
-    model = config.get("model", "gemini-2.5-flash")
+    model = config.get("model") or default_llm_for(provider, role="fast")
     raw_prompt = config.get("systemPrompt", "")
     max_iterations = min(int(config.get("maxIterations", 10)), _MAX_ITERATIONS_HARD_CAP)
     tool_names: list[str] = config.get("tools", [])

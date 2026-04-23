@@ -107,13 +107,14 @@ def _handle_reflection(
     The handler is intentionally read-only: it never mutates ``context``.
     """
     from app.engine.llm_providers import call_llm
+    from app.engine.model_registry import default_llm_for
     from app.engine.prompt_template import render_prompt
     from app.observability import record_generation
 
     config = node_data.get("config", {})
 
     provider: str = config.get("provider", "google")
-    model: str = config.get("model", "gemini-2.5-flash")
+    model: str = config.get("model") or default_llm_for(provider, role="fast")
     reflection_prompt_template: str = config.get("reflectionPrompt", "")
     output_keys: list[str] = config.get("outputKeys", [])
     max_history: int = min(

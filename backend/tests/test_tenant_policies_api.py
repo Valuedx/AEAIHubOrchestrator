@@ -63,6 +63,11 @@ def _row(
     mcp_pool_size: int | None = None,
     rate_limit_requests_per_window: int | None = None,
     rate_limit_window_seconds: int | None = None,
+    default_llm_provider: str | None = None,
+    default_llm_model: str | None = None,
+    default_embedding_provider: str | None = None,
+    default_embedding_model: str | None = None,
+    allowed_model_families: list[str] | None = None,
     updated_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
 ):
     row = MagicMock()
@@ -72,6 +77,13 @@ def _row(
     row.mcp_pool_size = mcp_pool_size
     row.rate_limit_requests_per_window = rate_limit_requests_per_window
     row.rate_limit_window_seconds = rate_limit_window_seconds
+    # MODEL-01.e — nullable; an unset MagicMock attribute would be
+    # truthy and trip the PATCH handler's validation.
+    row.default_llm_provider = default_llm_provider
+    row.default_llm_model = default_llm_model
+    row.default_embedding_provider = default_embedding_provider
+    row.default_embedding_model = default_embedding_model
+    row.allowed_model_families = allowed_model_families
     row.updated_at = updated_at
     return row
 
@@ -118,6 +130,12 @@ class TestGetPolicy:
             "smart_01_scenario_memory_enabled": "env_default",
             "smart_01_strict_promote_gate_enabled": "env_default",
             "smart_05_vector_docs_enabled": "env_default",
+            # MODEL-01.e — per-tenant model defaults (nullable).
+            "default_llm_provider": "env_default",
+            "default_llm_model": "env_default",
+            "default_embedding_provider": "env_default",
+            "default_embedding_model": "env_default",
+            "allowed_model_families": "env_default",
         }
         # SMART-XX feature flags appear under the flags field.
         assert body["flags"] == {

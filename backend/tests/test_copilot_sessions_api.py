@@ -149,6 +149,65 @@ def test_create_session_unsupported_provider_400(client_and_session):
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("google", "gemini-3.1-pro-preview"),
+        ("google", "gemini-2.5-pro"),
+        ("google", "gemini-3-flash-preview"),
+        ("vertex", "gemini-3.1-pro-preview"),
+        ("vertex", "gemini-2.5-pro"),
+        ("vertex", "gemini-2.5-flash"),
+        ("anthropic", "claude-sonnet-4-20250514"),
+    ],
+)
+def test_create_session_accepts_registry_model(client_and_session, provider, model):
+    """MODEL-01.b — user picks any copilot-capable registry model."""
+    client, session = client_and_session
+    draft = _mock_draft()
+    _set_first(session, draft)
+    resp = client.post(
+        "/api/v1/copilot/sessions",
+        json={"draft_id": str(draft.id), "provider": provider, "model": model},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["model"] == model
+
+
+def test_create_session_rejects_unknown_model_400(client_and_session):
+    """MODEL-01.b — unknown model strings are rejected with 400."""
+    client, session = client_and_session
+    draft = _mock_draft()
+    _set_first(session, draft)
+    resp = client.post(
+        "/api/v1/copilot/sessions",
+        json={
+            "draft_id": str(draft.id),
+            "provider": "vertex",
+            "model": "gemini-9000-ultra",
+        },
+    )
+    assert resp.status_code == 400
+    assert "not available" in resp.json()["detail"].lower()
+
+
+def test_create_session_rejects_lite_tier_model_400(client_and_session):
+    """MODEL-01.b — lite-tier models (no thinking) aren't copilot-capable."""
+    client, session = client_and_session
+    draft = _mock_draft()
+    _set_first(session, draft)
+    resp = client.post(
+        "/api/v1/copilot/sessions",
+        json={
+            "draft_id": str(draft.id),
+            "provider": "vertex",
+            "model": "gemini-3.1-flash-lite-preview",
+        },
+    )
+    assert resp.status_code == 400
+    assert "copilot-capable" in resp.json()["detail"].lower()
+
+
 def test_delete_session_marks_abandoned_keeps_history(client_and_session):
     client, session = client_and_session
     s = _mock_session()

@@ -1,8 +1,11 @@
 """Multi-provider embedding abstraction.
 
 Supports OpenAI, Google GenAI, and Google Vertex AI.  Each provider function
-returns a list of float vectors.  A registry maps (provider, model) pairs to
-their output dimensionality so callers can validate at KB-creation time.
+returns a list of float vectors.  The central model registry
+(:mod:`app.engine.model_registry`) owns the catalogue of valid
+``(provider, model)`` pairs + per-entry metadata (dimension, modalities,
+preview flag); this module mirrors the dimension dict for back-compat and
+adds the provider-specific call paths.
 """
 
 from __future__ import annotations
@@ -14,21 +17,21 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.config import settings
+from app.engine.model_registry import (
+    EMBEDDING_DIMENSIONS,
+    EMBEDDING_MODELS,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Provider / model -> dimension registry
+# Provider / model -> dimension registry — sourced from the central model
+# registry so adding a new embedding (e.g. ``gemini-embedding-2``) is a
+# one-line edit there; callers that import ``EMBEDDING_REGISTRY`` keep
+# working unchanged.
 # ---------------------------------------------------------------------------
 
-EMBEDDING_REGISTRY: dict[tuple[str, str], int] = {
-    ("openai", "text-embedding-3-small"): 1536,
-    ("openai", "text-embedding-3-large"): 3072,
-    ("google", "text-embedding-004"): 768,
-    ("vertex", "gemini-embedding-001"): 3072,
-    ("vertex", "text-embedding-005"): 768,
-    ("vertex", "text-multilingual-embedding-002"): 768,
-}
+EMBEDDING_REGISTRY: dict[tuple[str, str], int] = dict(EMBEDDING_DIMENSIONS)
 
 
 def get_embedding_dimension(provider: str, model: str) -> int:
@@ -42,11 +45,28 @@ def get_embedding_dimension(provider: str, model: str) -> int:
 
 
 def list_embedding_options() -> list[dict[str, Any]]:
-    """Return the full catalogue of supported embedding provider/model combos."""
-    return [
-        {"provider": p, "model": m, "dimension": d}
-        for (p, m), d in EMBEDDING_REGISTRY.items()
-    ]
+    """Return the full catalogue of supported embedding provider/model combos.
+
+    Each entry carries modality + preview metadata drawn from the central
+    registry. Consumers (KB-create dialog, `/api/v1/models?kind=embedding`)
+    use this shape to render modality chips + dim + preview badges.
+    """
+    out: list[dict[str, Any]] = []
+    for m in EMBEDDING_MODELS:
+        if m.deprecated:
+            continue
+        out.append(
+            {
+                "provider": m.provider,
+                "model": m.model_id,
+                "dimension": m.dim,
+                "modalities": list(m.modalities),
+                "preview": m.preview,
+                "display_name": m.display_name or m.model_id,
+                "notes": m.notes,
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------

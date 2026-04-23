@@ -555,6 +555,24 @@ ORCHESTRATOR_A2A_DOCUMENTATION_URL="https://your.example/docs"
 
 ---
 
+## Models — `/api/v1/models` (MODEL-01.e, planned)
+
+Driven by the central [model registry](model-registry.md). Single source of truth for every LLM and embedding model the orchestrator can route to — consumed by Node Inspector, copilot session-create picker, KB creation dialog, and starter templates.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/models?kind=llm` | Full LLM catalogue filtered to tenant allowlist. Returns `provider`, `model_id`, `generation`, `tier`, `preview`, `context_window`, `supports_tools`, `supports_thinking`, `copilot_ok`, `modalities`, `deprecated`, `display_name` per entry. |
+| `GET` | `/api/v1/models?kind=embedding` | Embedding catalogue — `provider`, `model_id`, `dim`, `preview`, `modalities`, `deprecated`, `display_name` per entry. |
+| `GET` | `/api/v1/models/defaults` | Tier-resolved defaults for the tenant. Response: `{fast, balanced, powerful, copilot, embedding}` with `{provider, model_id}` per role. Honours tenant-policy overrides from MODEL-01.e. |
+
+Query params:
+
+* `provider=google\|vertex\|anthropic\|openai` — restrict to one provider.
+* `include_preview=false` — hide preview variants (default `true`; forced `false` if tenant policy blocks preview).
+* `copilot_only=true` — only return models where `copilot_ok=true`.
+
+Error model: `404` on unknown `kind`; `403` if tenant allowlist would yield an empty set (signal to operator).
+
 ## Knowledge Bases — `/api/v1/knowledge-bases`
 
 Full reference in [RAG & Knowledge Base](rag-knowledge-base.md). Summary:
@@ -563,7 +581,7 @@ Full reference in [RAG & Knowledge Base](rag-knowledge-base.md). Summary:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/knowledge-bases/embedding-options` | Available embedding providers/models |
+| `GET` | `/api/v1/knowledge-bases/embedding-options` | Available embedding providers/models (superseded by `/api/v1/models?kind=embedding` in MODEL-01.e, but kept for back-compat). |
 | `GET` | `/api/v1/knowledge-bases/chunking-strategies` | Available chunking strategies |
 | `GET` | `/api/v1/knowledge-bases/vector-stores` | Available vector store backends |
 

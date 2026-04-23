@@ -90,6 +90,10 @@ class MemoryProfile(Base):
     summary_trigger_messages = Column(Integer, nullable=False, default=12)
     summary_recent_turns = Column(Integer, nullable=False, default=6)
     summary_max_tokens = Column(Integer, nullable=False, default=400)
+    # Defaults track the registry's `fast` tier for the google provider
+    # via `memory_service.DEFAULT_*` (MODEL-01.c). Registry upgrade →
+    # one import-time refresh; no migration needed for *new* rows.
+    # Existing rows keep whatever they were written with.
     summary_provider = Column(String(32), nullable=False, default="google")
     summary_model = Column(String(128), nullable=False, default="gemini-2.5-flash")
     episode_archive_provider = Column(String(32), nullable=False, default="google")

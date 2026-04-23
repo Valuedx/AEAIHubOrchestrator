@@ -33,10 +33,20 @@ class MemoryProfileBase(BaseModel):
     summary_trigger_messages: int = Field(default=12, ge=1, le=200)
     summary_recent_turns: int = Field(default=6, ge=0, le=50)
     summary_max_tokens: int = Field(default=400, ge=64, le=4000)
+    # MODEL-01.c: registry-tracked defaults via memory_service so a
+    # tier bump flows through without editing Pydantic fields.
     summary_provider: str = "google"
-    summary_model: str = "gemini-2.5-flash"
+    summary_model: str = Field(
+        default_factory=lambda: __import__(
+            "app.engine.memory_service", fromlist=["DEFAULT_SUMMARY_MODEL"]
+        ).DEFAULT_SUMMARY_MODEL
+    )
     episode_archive_provider: str = "google"
-    episode_archive_model: str = "gemini-2.5-flash"
+    episode_archive_model: str = Field(
+        default_factory=lambda: __import__(
+            "app.engine.memory_service", fromlist=["DEFAULT_EPISODE_ARCHIVE_MODEL"]
+        ).DEFAULT_EPISODE_ARCHIVE_MODEL
+    )
     episode_inactivity_minutes: int = Field(default=10080, ge=1, le=525600)
     episode_min_turns: int = Field(default=2, ge=1, le=500)
     auto_archive_on_resolved: bool = True

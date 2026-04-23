@@ -14,6 +14,7 @@ import { CopilotPanel } from "@/components/copilot/CopilotPanel";
 import { LoginPage } from "@/components/auth/LoginPage";
 import { getAuthToken } from "@/lib/api";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
+import { prefetchModelDefaults } from "@/lib/useModels";
 
 // OIDC auth gate: only active when VITE_AUTH_MODE=oidc
 const AUTH_MODE = import.meta.env.VITE_AUTH_MODE;
@@ -47,6 +48,14 @@ export default function App() {
     window.addEventListener("copilot:toggle", handler as EventListener);
     return () => window.removeEventListener("copilot:toggle", handler as EventListener);
   }, [toggleCopilot]);
+
+  // MODEL-01.f — warm the tenant-defaults cache once so templates
+  // loaded later resolve TIER_* markers to the tenant's pin without
+  // an async flow in loadTemplate. Fire-and-forget; failures are
+  // fine, templates fall back to their literal fast-tier values.
+  useEffect(() => {
+    prefetchModelDefaults();
+  }, []);
 
   // DV-06 — Tab toggles the palette. Swallowed inside inputs/textareas
   // so typing stays intact.

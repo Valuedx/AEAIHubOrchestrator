@@ -280,11 +280,33 @@ function KBCreateView({ onCreated }: { onCreated: () => void }) {
               <SelectContent>
                 {modelsForProvider.map((o) => (
                   <SelectItem key={o.model} value={o.model}>
-                    {o.model} ({o.dimension}d)
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium">{o.display_name || o.model}</span>
+                      <span className="text-[10px] text-muted-foreground">{o.dimension}d</span>
+                      {o.preview && (
+                        <Badge variant="outline" className="text-[9px] px-1 py-0 border-amber-500/40 text-amber-700 dark:text-amber-400">preview</Badge>
+                      )}
+                      {o.modalities.length > 1 && (
+                        <Badge variant="outline" className="text-[9px] px-1 py-0 border-violet-500/40 text-violet-700 dark:text-violet-400">
+                          multimodal
+                        </Badge>
+                      )}
+                    </div>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {modelsForProvider.find((m) => m.model === embeddingModel) && (
+              <div className="flex flex-wrap gap-1 pt-0.5">
+                {modelsForProvider
+                  .find((m) => m.model === embeddingModel)!
+                  .modalities.map((mod) => (
+                    <Badge key={mod} variant="secondary" className="text-[9px] px-1.5 py-0">
+                      {mod}
+                    </Badge>
+                  ))}
+              </div>
+            )}
           </div>
         </div>
 

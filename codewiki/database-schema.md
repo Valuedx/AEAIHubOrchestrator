@@ -422,8 +422,8 @@ One chat session per draft (optionally many sequential sessions if a user abando
 | `id` | `UUID` | PK | |
 | `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
 | `draft_id` | `UUID` | FK → `workflow_drafts.id` (CASCADE) | |
-| `provider` | `VARCHAR(32)` | NOT NULL | `anthropic` / `google` / `vertex` / `openai` (pending) |
-| `model` | `VARCHAR(128)` | NOT NULL | e.g. `claude-sonnet-4-6`, `gemini-3.1-pro-preview-customtools` |
+| `provider` | `VARCHAR(32)` | NOT NULL | `anthropic` / `google` / `vertex` / `openai` (pending). Validated against the [model registry](model-registry.md). |
+| `model` | `VARCHAR(128)` | NOT NULL | Any entry from the [model registry](model-registry.md) — e.g. `claude-sonnet-4-6`, `gemini-3.1-pro-preview-customtools`, `gemini-2.5-pro`, `gemini-3-flash-preview`. Validated + tenant-allowlist-checked on session create (MODEL-01.b). |
 | `status` | `VARCHAR(16)` | NOT NULL, default `active` | `active` / `completed` / `abandoned` |
 | `created_at` / `updated_at` | `TIMESTAMPTZ` | | |
 
@@ -448,6 +448,22 @@ Ordered user / assistant / tool messages. Replayed on session reopen and as the 
 **Indexes:** `ix_turn_tenant_session` on `(tenant_id, session_id)`, unique `(session_id, turn_index)`.
 
 **RLS:** each copilot table has a `tenant_isolation_*` policy on `current_setting('app.tenant_id')`.
+
+---
+
+### `tenant_policies` (model override columns — MODEL-01.e, planned)
+
+MODEL-01.e extends the existing `tenant_policies` table (see [tenant-policies.md](tenant-policies.md) for the full row) with per-tenant model defaults + an allowlist:
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `default_llm_provider` | `VARCHAR(32)` NULL | Override for process-wide default provider on this tenant. Null = use global default. |
+| `default_llm_model` | `VARCHAR(128)` NULL | Explicit pin. Null = tier-based resolution via `default_llm_for(provider, role)`. |
+| `default_embedding_provider` | `VARCHAR(32)` NULL | Same for embeddings. |
+| `default_embedding_model` | `VARCHAR(128)` NULL | Same. |
+| `allowed_model_families` | `JSONB` NULL | e.g. `["2.5", "3.x"]`. Empty/null = no family restriction. Enforced by `is_allowed_llm(...)` at session + node-config validation time. |
+
+Resolver semantics live in [model-registry.md §8](model-registry.md#8-planned-mode-01e-tenant-overrides).
 
 ---
 

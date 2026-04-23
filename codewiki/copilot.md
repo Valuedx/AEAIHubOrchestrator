@@ -32,7 +32,15 @@ Scoped across three tickets: [COPILOT-01](feature-roadmap.md#copilot-01--draft-w
 
 **Agent runner (01b.i + Google/Vertex).** `app/copilot/agent.py` holds a provider-agnostic per-turn loop: load prior history from `copilot_turns` → build provider-specific state via the adapter → call LLM → for each tool call, dispatch through `tool_layer.dispatch` → append results to state → loop until the assistant produces text with no more tool calls. Capped at `MAX_TOOL_ITERATIONS = 12` so a pathological "flap" can't burn unbounded cost. Every turn (user + assistant + tool) is persisted to `copilot_turns` as it happens; a disconnected client never loses progress.
 
-**Provider adapters.** Three providers ship today, all behind the same `_PROVIDER_ADAPTERS` dispatch: **Anthropic** (`claude-sonnet-4-6`), **Google AI Studio** (`gemini-3.1-pro-preview-customtools`), **Vertex AI** (same Gemini 3.x model, but through the unified `google-genai` SDK with `vertexai=True` + per-tenant `project`/`location` resolved by VERTEX-02's `_resolve_vertex_target`). Each adapter bundles three callables — `build_state`, `call`, `append_tool_round` — that encapsulate the provider's message-history shape. The runner's loop body is provider-agnostic; only the state object differs. Adding OpenAI (and any other function-calling provider) is a third entry in `_PROVIDER_ADAPTERS` plus the three adapter functions — no change to `send_turn`. The `gemini-3.1-pro-preview-customtools` endpoint is specifically optimised for agentic tool-calling workloads and is the default for both `google` and `vertex` providers.
+**Provider adapters.** Three providers ship today, all behind the same `_PROVIDER_ADAPTERS` dispatch: **Anthropic** (`claude-sonnet-4-6`), **Google AI Studio** (`gemini-3.1-pro-preview-customtools`), **Vertex AI** (same Gemini 3.x model, but through the unified `google-genai` SDK with `vertexai=True` + per-tenant `project`/`location` resolved by VERTEX-02's `_resolve_vertex_target`). Each adapter bundles three callables — `build_state`, `call`, `append_tool_round` — that encapsulate the provider's message-history shape. The runner's loop body is provider-agnostic; only the state object differs. Adding OpenAI (and any other function-calling provider) is a third entry in `_PROVIDER_ADAPTERS` plus the three adapter functions — no change to `send_turn`. The `gemini-3.1-pro-preview-customtools` endpoint is specifically optimised for agentic tool-calling workloads and is the copilot default for both `google` and `vertex` providers.
+
+**Model resolution.** Since MODEL-01.a, every default model string the runner uses resolves through `app/engine/model_registry.default_llm_for(provider, role="copilot")` instead of a hardcoded dict. This means:
+
+* users can pick any 2.5 or 3.x variant for their session (Pro, Flash, Flash-Lite) — not just the Pro customtools default
+* tenant allowlists (MODEL-01.e) can pin a session to `generation="2.5"` and the copilot falls back to `gemini-2.5-pro` cleanly
+* every model in the picker carries multimodal metadata (text/image/video/audio/pdf for Gemini 2.5+, text/image for Claude 3.5 Haiku, etc.), so a future "attach a screenshot to the chat" affordance knows which models can accept it natively
+
+See [model-registry.md](model-registry.md) for the full catalogue, tier semantics, and allowlist shape.
 
 **Pure tool layer.** Every mutation function in `app/copilot/tool_layer.py` takes a `graph_json` dict and returns a new one. No DB access inside the tool functions. The HTTP dispatch path persists atomically; the (future) agent runner chains many calls in-memory and commits once per turn. Same code drives both — no fork.
 
@@ -60,7 +68,7 @@ Three tenant-scoped tables. All three carry denormalised `tenant_id` so the RLS 
 
 ### `copilot_sessions`
 
-One chat session per draft (possibly many sequential — a user may abandon a session and reopen the draft later with a different provider). Holds `provider` (google/openai/anthropic) + `model` so the FE doesn't have to remember which model drafted which part.
+One chat session per draft (possibly many sequential — a user may abandon a session and reopen the draft later with a different provider). Holds `provider` (google/vertex/openai/anthropic) + `model` so the FE doesn't have to remember which model drafted which part. The `model` column is validated against the [model registry](model-registry.md) (MODEL-01.b) so a user who picks any 2.5 or 3.x variant, or any Claude / GPT-4o entry, gets their choice honoured — unrecognised strings are rejected at session-create time.
 
 ### `copilot_turns`
 

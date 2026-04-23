@@ -46,8 +46,16 @@ tenant_policies:
   smart_01_scenario_memory_enabled  BOOLEAN NOT NULL DEFAULT FALSE           (0028)
   smart_01_strict_promote_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE        (0028)
   smart_05_vector_docs_enabled      BOOLEAN NOT NULL DEFAULT FALSE           (0029)
+  -- MODEL-01.e (planned) — per-tenant model defaults + allowlist:
+  -- default_llm_provider            VARCHAR(32) NULL
+  -- default_llm_model               VARCHAR(128) NULL
+  -- default_embedding_provider      VARCHAR(32) NULL
+  -- default_embedding_model         VARCHAR(128) NULL
+  -- allowed_model_families          JSONB NULL   -- e.g. ["2.5", "3.x"]; null = no family restriction
   created_at, updated_at
 ```
+
+**MODEL-01.e (planned) — model defaults + allowlist.** A tenant that's conservative about previews can pin `allowed_model_families = ["2.5"]`; the resolver refuses any 3.x model for engine nodes + copilot sessions, and tier defaults fall back to the nearest allowed generation. A tenant on Vertex can set `default_llm_provider = "vertex"` / `default_embedding_provider = "vertex"` so templates and new nodes automatically route there. See [model-registry.md §8](model-registry.md#8-planned-mode-01e-tenant-overrides) for the resolver semantics.
 
 Integer knobs are nullable-for-env-fallback (per-field, see §3). Boolean SMART-XX flags are NOT NULL with a design-default matching the feature's expected cost (on for zero-LLM-cost features, off for features that incur net-new spend).
 

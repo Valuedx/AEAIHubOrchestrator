@@ -421,3 +421,58 @@ def test_build_google_state_reconstructs_from_prior_turns(db, draft):
     tool_part = state.history[2].parts[0]
     assert tool_part.function_response is not None
     assert tool_part.function_response.name == "add_node"
+
+
+# ---------------------------------------------------------------------------
+# Regression: ``to_google_tools`` import (see commit history)
+# ---------------------------------------------------------------------------
+
+
+def test_call_google_does_not_raise_nameerror_for_tool_assembly(db, draft):
+    """Regression: the Google/Vertex adapter's tool assembly line
+    (``tools=to_google_tools()``) relies on the symbol being imported
+    at the top of ``agent.py``. Prior tests all mocked out
+    ``_call_google`` wholesale so the inner body — including that
+    import-gated line — never ran in CI. This test exercises the body
+    by mocking only the low-level ``_google_client`` SDK wrapper, so a
+    missing import would surface as a ``NameError`` instead of
+    silently passing.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from app.copilot.agent import _call_google, _GoogleState
+
+    # Minimal state — empty history + system prompt; the adapter only
+    # touches ``to_google_tools()`` regardless of state shape.
+    state = _GoogleState(system="sys", history=[], _backend="genai")
+
+    # Build a fake SDK response with no candidates (terminates cleanly).
+    fake_resp = MagicMock()
+    fake_resp.candidates = []
+    fake_resp.usage_metadata = None
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = fake_resp
+
+    with patch(
+        "app.engine.llm_providers._google_client", return_value=fake_client
+    ):
+        # The regression would manifest here as NameError before the
+        # network-level mock is ever touched.
+        result = _call_google(
+            model="gemini-3.1-pro-preview-customtools",
+            state=state,
+            tenant_id=TENANT,
+            new_user_text="hello",
+            max_tokens=256,
+            temperature=0.2,
+        )
+
+    assert result is not None
+    # Confirm tool assembly ran — the config passed to generate_content
+    # should carry the tools list (non-empty, since COPILOT_TOOL_DEFINITIONS
+    # is populated).
+    call_kwargs = fake_client.models.generate_content.call_args.kwargs
+    config = call_kwargs.get("config")
+    assert config is not None
+    assert config.tools, "to_google_tools() returned empty / wasn't called"

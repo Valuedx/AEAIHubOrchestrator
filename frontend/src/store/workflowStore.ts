@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { useFlowStore } from "@/store/flowStore";
 import { getWorkflowTemplate } from "@/lib/templates";
+import { getCachedModelDefaults, resolveTemplateTiers } from "@/lib/useModels";
 import type { AgenticNodeData } from "@/types/nodes";
 import { nextBackoffMs, POLL_MAX_ATTEMPTS } from "@/lib/retry";
 import {
@@ -503,7 +504,12 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     }
     const prev = get()._sseCleanup;
     if (prev) prev();
-    const { nodes, edges } = t.graph;
+    // MODEL-01.f — swap TIER-marked configs for the tenant's resolved
+    // defaults. When the cache is cold (first session load before
+    // prefetchModelDefaults resolves), the template literals stay —
+    // they're already valid registry entries so execution works.
+    const resolved = resolveTemplateTiers(t.graph, getCachedModelDefaults());
+    const { nodes, edges } = resolved;
     useFlowStore.getState().replaceGraph(nodes, edges);
     set({
       currentWorkflow: null,

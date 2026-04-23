@@ -70,7 +70,11 @@ from sqlalchemy.orm import Session
 
 from app.copilot import tool_layer
 from app.copilot.prompts import build_system_prompt
-from app.copilot.tool_definitions import COPILOT_TOOL_DEFINITIONS, to_anthropic_tools
+from app.copilot.tool_definitions import (
+    COPILOT_TOOL_DEFINITIONS,
+    to_anthropic_tools,
+    to_google_tools,
+)
 from app.models.copilot import CopilotSession, CopilotTurn, WorkflowDraft
 
 logger = logging.getLogger(__name__)
@@ -84,19 +88,27 @@ turn uses 3–6 iterations (list_node_types → get_node_schema →
 add_node × N → connect_nodes × M → validate_graph).
 """
 
-DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
-    "anthropic": "claude-sonnet-4-6",
-    # google: AI Studio via api_key (ADMIN-03 resolves per-tenant key).
-    # ``-customtools`` is the agentic-tool-calling-optimised preview
-    # endpoint — exactly the workload this runner drives. See
-    # https://ai.google.dev/gemini-api/docs/gemini-3
-    "google": "gemini-3.1-pro-preview-customtools",
-    # vertex: same unified google-genai SDK but with vertexai=True +
-    # per-tenant project/location from VERTEX-02.
-    "vertex": "gemini-3.1-pro-preview-customtools",
-    # openai lands in a follow-up; same adapter shape — add a key here
-    # plus _call_openai + _build_openai_messages.
-}
+from app.engine.model_registry import (
+    LLM_TIER_DEFAULTS,
+    default_llm_for,
+    find_llm_model,
+    is_allowed_llm,
+)
+
+# Copilot default model per provider. Sourced from the central model
+# registry's ``copilot`` tier so swapping the agentic-tools endpoint
+# (e.g. when Google promotes Gemini 3.x Pro out of preview) is a
+# one-line edit in ``model_registry.py`` — every caller that reads
+# this dict picks up the change automatically.
+#
+# * google / vertex default to ``gemini-3.1-pro-preview-customtools``
+#   (the agentic-tool-calling-optimised variant; see
+#   https://ai.google.dev/gemini-api/docs/gemini-3 ).
+# * anthropic defaults to ``claude-sonnet-4-6``.
+# * openai is absent today — the copilot OpenAI adapter lands in
+#   COPILOT-01b.iv. Adding it means populating ``LLM_TIER_DEFAULTS["copilot"]["openai"]``
+#   in the registry plus the three adapter functions here.
+DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = dict(LLM_TIER_DEFAULTS["copilot"])
 
 
 # ---------------------------------------------------------------------------
@@ -1040,19 +1052,65 @@ class AgentRunner:
 
 
 def default_model_for(provider: str) -> str:
-    """Resolve a sensible default model name per provider. The API
-    accepts an explicit override at session-create time."""
+    """Resolve the copilot default model for ``provider``.
+
+    Delegates to :func:`app.engine.model_registry.default_llm_for` with
+    ``role="copilot"`` so both call sites share a single lookup path.
+    """
     try:
-        return DEFAULT_MODEL_BY_PROVIDER[provider]
-    except KeyError:
+        return default_llm_for(provider, role="copilot")
+    except Exception as exc:  # UnknownModelError from the registry.
         raise UnsupportedProviderError(
-            f"No default model configured for provider '{provider}'"
-        )
+            f"No copilot-capable default model configured for provider '{provider}'"
+        ) from exc
 
 
 def supported_providers() -> list[str]:
     """For the frontend session-create dropdown."""
     return sorted(DEFAULT_MODEL_BY_PROVIDER.keys())
+
+
+def validate_session_model(
+    provider: str, model: str, *, tenant_id: str | None = None
+) -> None:
+    """Reject session-create with an unknown / disallowed model.
+
+    Copilot sessions may pick any registry entry whose ``copilot_ok``
+    flag is set — that excludes ``lite`` tier Gemini 3.x / 2.5
+    variants (no ``supports_thinking``).
+
+    MODEL-01.e: when ``tenant_id`` is provided, the tenant's
+    ``allowed_model_families`` list is consulted — e.g. a tenant
+    pinned to ``["2.5"]`` gets 3.x rejected at session-create.
+    Preview-gate similarly follows tenant policy (future knob);
+    today preview is allowed unless the family allowlist excludes 3.x.
+    """
+    allowed_families: list[str] | None = None
+    if tenant_id:
+        try:
+            from app.engine.tenant_policy_resolver import get_effective_policy
+
+            policy = get_effective_policy(tenant_id)
+            allowed_families = policy.allowed_model_families
+        except Exception:  # pragma: no cover — defensive
+            allowed_families = None
+
+    if not is_allowed_llm(provider, model, allowed_families=allowed_families):
+        if allowed_families:
+            raise UnsupportedProviderError(
+                f"Model {model!r} is blocked by tenant policy "
+                f"(allowed families: {allowed_families})."
+            )
+        raise UnsupportedProviderError(
+            f"Model {model!r} is not available for provider {provider!r}. "
+            f"Pick a model listed in /api/v1/copilot/sessions/providers."
+        )
+    entry = find_llm_model(provider, model)
+    if entry is not None and not entry.copilot_ok:
+        raise UnsupportedProviderError(
+            f"Model {model!r} is not copilot-capable (typically a lite "
+            f"variant without thinking support). Pick a Flash or Pro tier."
+        )
 
 
 def declared_tools() -> list[dict[str, Any]]:

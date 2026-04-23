@@ -2,6 +2,20 @@ import type { Edge, Node } from "@xyflow/react";
 import type { AgenticNodeData } from "@/types/nodes";
 import { EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW } from "@/lib/exampleComplexWorkflow";
 import { EXAMPLE_OPERATIONS_ROUTING_WORKFLOW } from "@/lib/exampleOperationsRoutingWorkflow";
+// MODEL-01.f — tier constants live in their own module to avoid a
+// circular import with the example workflow files above.
+import {
+  TEMPLATE_TIER_FAST,
+  TEMPLATE_TIER_BALANCED,
+  TEMPLATE_TIER_POWERFUL,
+} from "@/lib/modelTiers";
+
+export {
+  TEMPLATE_TIER_FAST,
+  TEMPLATE_TIER_BALANCED,
+  TEMPLATE_TIER_POWERFUL,
+};
+export type { TemplateTier } from "@/lib/modelTiers";
 
 /** Gallery categories (filter tabs). */
 export type TemplateCategory =
@@ -60,8 +74,7 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You review documents submitted via webhook. Summarize key points, list compliance or policy risks, " +
             "and suggest whether a human should approve before external send. Use trigger.document_text or trigger.body when present.",
@@ -158,8 +171,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are a thorough researcher. Answer the user's question using trigger.message or trigger.query. " +
             "Cite assumptions; prefer structured bullets.",
@@ -180,8 +192,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You critique and fact-check a research draft. Input: same user question as the researcher (trigger). " +
             "List gaps, overclaims, and what to verify. Be concise.",
@@ -214,8 +225,7 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "Combine node_2 (researcher) and node_3 (critic) outputs into one clear answer for the user. " +
             "Resolve disagreements; note remaining uncertainties.",
@@ -290,8 +300,7 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "Welcome a brand-new customer. Explain core product value, next steps, and one CTA. Use trigger.message and trigger.name if present. Short and friendly.",
           temperature: 0.6,
@@ -312,8 +321,7 @@ const CUSTOMER_ONBOARDING: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "Welcome back a returning customer. Reference continuity, offer help based on trigger.message. Keep it brief.",
           temperature: 0.5,
@@ -410,8 +418,7 @@ const GETTING_STARTED_MINIMAL: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "Reply helpfully to the user. Use trigger.message or the whole trigger object as context.",
           temperature: 0.7,
@@ -479,8 +486,7 @@ const RAG_KNOWLEDGE_QA: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are a knowledgeable assistant. Answer the user's question using ONLY the retrieved context below.\n\n" +
             "Retrieved context:\n{{ node_3.context_text }}\n\n" +
@@ -558,8 +564,7 @@ const SCHEDULED_NOTIFICATION: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You write a concise daily operations digest for the engineering team. " +
             "Summarize: top open incidents, upcoming scheduled jobs, and any anomalies from context. " +
@@ -662,8 +667,7 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
             },
           ],
           mode: "hybrid",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           confidenceThreshold: 0.6,
           historyNodeId: "node_2",
         },
@@ -703,8 +707,7 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
             cancel_request: ["reference_id"],
           },
           llmFallback: true,
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -736,8 +739,7 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are a booking assistant. The user wants to schedule an appointment. " +
             "Extracted entities: {{ node_4.entities | tojson }}. " +
@@ -760,8 +762,7 @@ const NLP_INTENT_ENTITY: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are a helpful assistant. The classified intent is '{{ node_3.intent }}' " +
             "with entities: {{ node_4.entities | tojson }}. " +
@@ -874,8 +875,7 @@ const EPISODE_ARCHIVE_SUPPORT: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "route",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           intents: ["issue_open", "issue_resolved"],
           historyNodeId: "node_2",
           userMessageExpression: "trigger.message",
@@ -910,8 +910,7 @@ const EPISODE_ARCHIVE_SUPPORT: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "The user has indicated their issue is resolved. " +
             "Write a warm closing message: confirm the resolution, offer to re-open if needed, and thank them. " +
@@ -934,8 +933,7 @@ const EPISODE_ARCHIVE_SUPPORT: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are a friendly support agent. Help the user troubleshoot their issue. " +
             "Use prior conversation history and trigger.message for context. " +

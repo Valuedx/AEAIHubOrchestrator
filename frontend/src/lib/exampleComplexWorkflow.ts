@@ -1,5 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { AgenticNodeData } from "@/types/nodes";
+import { TEMPLATE_TIER_FAST } from "@/lib/modelTiers";
 
 /**
  * IT / customer helpdesk - single complete vertical (router, ForEach, HITL).
@@ -70,8 +71,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
         nodeCategory: "agent",
         config: {
           icon: "route",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           intents: ["orders_and_shipping", "technical_issue", "general_inquiry"],
           historyNodeId: "node_2",
           userMessageExpression: "trigger.message",
@@ -106,8 +106,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are a helpdesk agent for orders, billing, returns, and shipment status. " +
             "Use only the customer message and conversation history in context. " +
@@ -148,8 +147,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
         nodeCategory: "agent",
         config: {
           icon: "repeat",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are L1 IT support. Gather: product, OS/version, error text, and what changed recently. " +
             "Suggest concrete troubleshooting in order. If tools are available (MCP), use them for status or runbooks. " +
@@ -173,8 +171,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You handle general and out-of-scope messages: greetings, vague questions, or small talk. " +
             "Acknowledge politely, clarify how the helpdesk can help, and point to self-service or opening a ticket. " +
@@ -217,8 +214,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You write **internal** ticket notes for the helpdesk, not customer-facing text. " +
             "The user message includes **Current loop item** JSON with fields `step` and `ask`. " +

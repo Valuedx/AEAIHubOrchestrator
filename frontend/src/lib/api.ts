@@ -408,6 +408,10 @@ export interface EmbeddingOption {
   provider: string;
   model: string;
   dimension: number;
+  modalities: string[];
+  preview: boolean;
+  display_name: string;
+  notes: string;
 }
 
 export interface ChunkingStrategy {
@@ -545,20 +549,18 @@ export interface TenantPolicyOut {
     // default off (opt-in) because they spend engine tokens.
     smart_01_scenario_memory_enabled: boolean;
     smart_01_strict_promote_gate_enabled: boolean;
+    smart_05_vector_docs_enabled: boolean;
   };
-  source: {
-    execution_quota_per_hour: TenantPolicySource;
-    max_snapshots: TenantPolicySource;
-    mcp_pool_size: TenantPolicySource;
-    rate_limit_requests_per_window: TenantPolicySource;
-    rate_limit_window_seconds: TenantPolicySource;
-    // SMART-XX flags
-    smart_04_lints_enabled: TenantPolicySource;
-    smart_06_mcp_discovery_enabled: TenantPolicySource;
-    smart_02_pattern_library_enabled: TenantPolicySource;
-    smart_01_scenario_memory_enabled: TenantPolicySource;
-    smart_01_strict_promote_gate_enabled: TenantPolicySource;
+  // MODEL-01.e — per-tenant model defaults + family allowlist. Null
+  // entries mean "inherit registry default".
+  models: {
+    default_llm_provider: string | null;
+    default_llm_model: string | null;
+    default_embedding_provider: string | null;
+    default_embedding_model: string | null;
+    allowed_model_families: string[] | null;
   };
+  source: Record<string, TenantPolicySource>;
   updated_at: string | null;
 }
 
@@ -626,6 +628,60 @@ export interface TenantPolicyUpdate {
   // default. When on, the PromoteDialog hides its soft-gate
   // checkbox and hard-blocks Apply until all scenarios pass.
   smart_01_strict_promote_gate_enabled?: boolean | null;
+  // SMART-05 — vector-backed docs search (opt-in, spends embedding tokens).
+  smart_05_vector_docs_enabled?: boolean | null;
+  // MODEL-01.e — per-tenant model overrides. Null clears the pin.
+  default_llm_provider?: string | null;
+  default_llm_model?: string | null;
+  default_embedding_provider?: string | null;
+  default_embedding_model?: string | null;
+  allowed_model_families?: string[] | null;
+}
+
+// MODEL-01.e — /api/v1/models payload shape.
+export interface LlmModelOut {
+  provider: string;
+  model_id: string;
+  generation: string;
+  tier: string;
+  preview: boolean;
+  context_window: number | null;
+  supports_tools: boolean;
+  supports_thinking: boolean;
+  copilot_ok: boolean;
+  modalities: string[];
+  deprecated: boolean;
+  display_name: string;
+  notes: string;
+}
+
+export interface EmbeddingModelOut {
+  provider: string;
+  model_id: string;
+  dim: number;
+  preview: boolean;
+  modalities: string[];
+  deprecated: boolean;
+  display_name: string;
+  notes: string;
+}
+
+export interface ModelsOut {
+  llm: LlmModelOut[];
+  embedding: EmbeddingModelOut[];
+}
+
+export interface ModelDefaultEntry {
+  provider: string;
+  model_id: string;
+}
+
+export interface ModelDefaultsOut {
+  fast: ModelDefaultEntry;
+  balanced: ModelDefaultEntry;
+  powerful: ModelDefaultEntry;
+  copilot: ModelDefaultEntry;
+  embedding: ModelDefaultEntry;
 }
 
 export interface KBChunkOut {
@@ -1456,6 +1512,26 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     });
+  },
+
+  // MODEL-01.e — central model catalogue + tenant-resolved defaults.
+  getModels(opts?: {
+    kind?: "llm" | "embedding" | "all";
+    provider?: string;
+    includePreview?: boolean;
+    copilotOnly?: boolean;
+  }): Promise<ModelsOut> {
+    const q = new URLSearchParams();
+    if (opts?.kind) q.set("kind", opts.kind);
+    if (opts?.provider) q.set("provider", opts.provider);
+    if (opts?.includePreview === false) q.set("include_preview", "false");
+    if (opts?.copilotOnly) q.set("copilot_only", "true");
+    const suffix = q.toString() ? `?${q}` : "";
+    return request(`/api/v1/models${suffix}`);
+  },
+
+  getModelDefaults(): Promise<ModelDefaultsOut> {
+    return request("/api/v1/models/defaults");
   },
 
   // ---------------------------------------------------------------------------

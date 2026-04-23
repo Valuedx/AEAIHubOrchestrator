@@ -98,6 +98,26 @@ ADMIN-02 extends `tenant_policies` with two rate-limit columns (migration `0021`
 | HITL-01.e | Notification channels (Slack / email / webhook) on suspend — reuses Notification node transport where possible; webhook HMAC-signed | Planned |
 | HITL-01.f | Bubble child sub-workflow HITL up to parent — unblocks composable workflows; replaces the `node_handlers.py:2150` hard block with cascade semantics | Planned |
 
+### Sprint 2H in flight — Unified model registry (MODEL-01)
+
+Goal: one registry drives every LLM and embedding choice — copilot, engine nodes, templates, KB pipeline, frontend pickers — so 2.0 / 2.5 / 3.x Gemini (incl. Flash / Flash-Lite), Claude, and GPT-4o all stay equally first-class and multimodal metadata is preserved end to end.
+
+| # | Feature | Status |
+|---|---------|--------|
+| MODEL-01.a | Central [model registry](model-registry.md) at `backend/app/engine/model_registry.py` — `LlmModel` + `EmbeddingModel` dataclasses with modality metadata; tier-based defaults (`fast` / `balanced` / `powerful` / `copilot`); helpers `default_llm_for`, `default_embedding_for`, `is_allowed_llm`, `list_llm_models`, etc.; full 2026 lineup incl. `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`, `gemini-embedding-2` (multimodal GA). 44 unit tests. | **Done** |
+| MODEL-01.b | Copilot agent runner + `suggest_fix` wired to `default_llm_for(provider, role="copilot")` instead of hardcoded `DEFAULT_MODEL_BY_PROVIDER`. Session create validates `model` against registry + tenant allowlist. Tests pin Vertex+3.x, Vertex+2.5, Google+3.x, Google+2.5. | Planned |
+| MODEL-01.c | Every engine AI node (`LLMAgent`, `ReAct`, `Reflection`, `Intent Classifier`, `Entity Extractor`, memory summariser) reads default from registry. `shared/node_registry.json` `model.enum` generated from registry + startup drift check. 3.x variants + `gemini-2.5-flash-lite` added to every LLM node. | Planned |
+| MODEL-01.d | Embeddings unified: KB-create dialog gets full picker grouped by provider with dim + modality chips; `gemini-embedding-2` recommended for Vertex tenants; SMART-05 docs index defaults pulled from registry. Reindex-on-change caveat surfaced in the dialog. | Planned |
+| MODEL-01.e | `GET /api/v1/models?kind=llm\|embedding` returning tenant-filtered catalogue. `useModels()` hook drives every FE picker (Node Inspector, copilot session create, KB dialog). Tenant-policy migration adds `default_llm_provider` / `default_llm_model` / `default_embedding_provider` / `default_embedding_model` / `allowed_model_families`. Admin row in Tenant Policy dialog. | Planned |
+| MODEL-01.f | Frontend starter templates (`frontend/src/lib/templates/index.ts`) pick a tier (not a model) resolved at load time; full docs sweep; full backend+frontend test suites + typecheck + browser smoke test. | **Done** |
+
+### Sprint 2I in flight — Logic node additions (NODES-01)
+
+| # | Feature | Status |
+|---|---------|--------|
+| NODES-01.a | **Switch node** — multi-branch routing on an expression's value. Config: `expression` + `cases: [{value, label}]` + `matchMode` (equals / equals_ci) + `defaultLabel`. Handler returns `{branch: <value-or-default>}`. dag_runner generalises `is_condition` → `is_branch_node` so the same prune path handles N cases. Inspector renders a `CaseListEditor` with add/remove/reorder + duplicate-value detection; `AgenticNode` renders N+1 handles (teal for cases, amber for default) with per-handle labels and auto-growing card height. | **Done** |
+| NODES-01.b | **While node** — thin twin of Loop with a required condition for clearer authoring UX. Handler maps `condition` → `continueExpression`, reuses dag_runner's existing iteration runner (`_run_loop_iterations`). Palette entry with `rotate-cw` icon; card shows `⟳ while <expr>` + iteration-cap badge. | **Done** |
+
 ---
 
 ## Pending backlog

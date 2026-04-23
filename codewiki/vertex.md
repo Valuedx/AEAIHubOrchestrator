@@ -18,8 +18,33 @@ This page is the canonical reference for how Vertex is wired, what VERTEX-01 and
 | **Workflow Authoring Copilot agent (chat loop)** runs on Vertex with `gemini-3.1-pro-preview-customtools` | ✅ COPILOT-01b.iv (Google/Vertex slice) | — | `copilot/agent.py::_call_google` + provider-adapter registry |
 | **Copilot `suggest_fix` LLM subcall** reuses the active session's provider — Vertex sessions produce Vertex-hosted fix suggestions | ✅ COPILOT-03.c + Vertex-parity fix | — | `copilot/runner_tools._resolve_suggest_fix_provider` + `_call_suggest_fix_google` |
 | **Copilot docs retrieval (SMART-05)** embeds the docs corpus through Vertex when `ORCHESTRATOR_SMART_05_EMBEDDING_PROVIDER=vertex` (pair with `gemini-embedding-001` / `text-embedding-005`) | ✅ SMART-05 | — | `copilot/docs_index._get_or_build_vector_index` via `embedding_provider.get_embeddings_batch_sync` |
+| **Central model registry** cataloguing every 2.0 / 2.5 / 3.x Gemini variant + embeddings (incl. `gemini-embedding-2` multimodal) with tier-based defaults | ✅ MODEL-01.a | — | `engine/model_registry.py` — see [model-registry.md](model-registry.md) |
 | Per-tenant Vertex service-account identity | ❌ Not planned yet | — | Future work; see §5 |
 | Per-node Vertex project override | ❌ Not planned yet | — | Would extend `integration_resolver` with `integrationLabel` on LLM nodes |
+
+### Gemini model lineup available on Vertex
+
+All Gemini variants below are listed in the [model registry](model-registry.md). Every 2.5 and 3.x entry is fully multimodal (`text + image + video + audio + pdf` inputs).
+
+| Generation | Variant | Vertex availability | Copilot-ok | Tier role |
+|---|---|---|---|---|
+| **3.x (preview)** | `gemini-3.1-pro-preview-customtools` | Preview | ✅ | `copilot` (agentic tools) |
+| | `gemini-3.1-pro-preview` | Preview | ✅ | `powerful` |
+| | `gemini-3-flash-preview` | Preview | ✅ | — (selectable) |
+| | `gemini-3.1-flash-lite-preview` | Preview | ❌ | — (cheapest) |
+| **2.5 (GA)** | `gemini-2.5-pro` | GA | ✅ | `balanced` |
+| | `gemini-2.5-flash` | GA | ✅ | `fast` |
+| | `gemini-2.5-flash-lite` | GA | ❌ | — |
+| **2.0 (legacy)** | `gemini-2.0-flash` | GA (deprecated) | ❌ | — |
+
+### Embeddings available on Vertex
+
+| Model | Dim | Modalities | Notes |
+|---|---|---|---|
+| `gemini-embedding-2` | 3072 | text + image + video + audio | **Natively multimodal** — recommended default for Vertex tenants. Matryoshka: reducible via `output_dimensionality`. |
+| `gemini-embedding-001` | 3072 | text | Text-only predecessor. |
+| `text-embedding-005` | 768 | text | Lighter alternative. |
+| `text-multilingual-embedding-002` | 768 | text | 100+ languages. |
 
 ---
 
@@ -70,7 +95,7 @@ Every LLM-calling node (LLM Agent, ReAct Agent, LLM Router, Reflection, Intent C
 }
 ```
 
-The routing happens in the engine — nodes don't pick projects. Swapping a workflow from AI Studio to Vertex is a one-field PATCH.
+The routing happens in the engine — nodes don't pick projects. Swapping a workflow from AI Studio to Vertex is a one-field PATCH. Any 2.0 / 2.5 / 3.x model from the [registry](model-registry.md) is valid; the enum is generated from the registry (MODEL-01.c).
 
 ---
 
@@ -189,9 +214,10 @@ The useful way to summarise: **VERTEX-02 gets you everything except tenant-attri
 
 ## 7. Related reading
 
+* [Model Registry](model-registry.md) — canonical list of every Gemini variant + embedding model + tier defaults
 * [Security](security.md) — Vertex ADC section, vault indirection, multi-tenancy RLS model
 * [Node Types](node-types.md) — provider selection table on every LLM-using node
-* [Feature Roadmap](feature-roadmap.md) — Sprint 2C (VERTEX-01, VERTEX-02)
+* [Feature Roadmap](feature-roadmap.md) — Sprint 2C (VERTEX-01, VERTEX-02), Sprint 2E (MODEL-01)
 * [Setup Guide](../SETUP_GUIDE.md) — §1.2 External Services and §7.1 Backend Variables cover ADC and env-var configuration
 * [API Reference](api-reference.md) — `tenant_integrations` endpoints handle `system='vertex'` rows alongside AE
 * [MCP Audit](mcp-audit.md) — compare how MCP-02 solved the same per-tenant-URL problem for MCP servers; the registry pattern is intentional consistency

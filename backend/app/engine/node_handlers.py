@@ -95,11 +95,18 @@ def dispatch_node(
         "notification": _handle_action,
     }
 
-    # ForEach / Loop are logic nodes with special dispatch handled by dag_runner
+    # ForEach / Loop / While are logic nodes with special dispatch handled by
+    # dag_runner. While reuses Loop's runner (same continueExpression shape).
     if category == "logic" and label == "ForEach":
         return _handle_forEach(node_data, context, tenant_id)
     if category == "logic" and label == "Loop":
         return _handle_loop(node_data, context, tenant_id)
+    if category == "logic" and label == "While":
+        return _handle_while(node_data, context, tenant_id)
+    # NODES-01.a — Switch: multi-branch routing. Handled inline so the
+    # branch result lands on the node output the dag_runner reads.
+    if category == "logic" and label == "Switch":
+        return _handle_switch(node_data, context, tenant_id)
 
     # Conversational memory nodes — special dispatch regardless of category
     if label == "Load Conversation State":
@@ -166,10 +173,11 @@ def _handle_agent(
     from app.database import SessionLocal, set_tenant_context
     from app.engine.llm_providers import call_llm_streaming
     from app.engine.memory_service import assemble_agent_messages
+    from app.engine.model_registry import default_llm_for
     from app.engine.prompt_template import render_prompt
 
     provider = config.get("provider", "vertex")
-    model = config.get("model", "gemini-2.5-flash")
+    model = config.get("model") or default_llm_for(provider, role="fast")
     raw_prompt = config.get("systemPrompt", "")
     temperature = float(config.get("temperature", 0.7))
     max_tokens = int(config.get("maxTokens", 4096))
@@ -399,6 +407,94 @@ def _handle_loop(
         continue_expr, max_iterations,
     )
     return {"continueExpression": continue_expr, "maxIterations": max_iterations}
+
+
+def _handle_while(
+    node_data: dict, context: dict[str, Any], _tenant_id: str
+) -> dict[str, Any]:
+    """NODES-01.b — While loop: thin wrapper over Loop with a required
+    condition for clearer author intent.
+
+    Maps the node's ``condition`` config onto the same
+    ``{continueExpression, maxIterations}`` shape the dag_runner's
+    existing loop machinery reads, so no runner changes are needed.
+    An empty condition is still accepted (it would be caught by
+    save-time validation) and degrades to unconditional iteration up
+    to ``maxIterations``, matching Loop semantics.
+    """
+    config = node_data.get("config", {})
+    condition = config.get("condition", "")
+    max_iterations = min(int(config.get("maxIterations", 10)), 25)
+
+    logger.info(
+        "While node: condition=%r, maxIterations=%d",
+        condition, max_iterations,
+    )
+    return {"continueExpression": condition, "maxIterations": max_iterations}
+
+
+def _handle_switch(
+    node_data: dict, context: dict[str, Any], _tenant_id: str
+) -> dict[str, Any]:
+    """NODES-01.a — Switch: multi-case routing.
+
+    Evaluates ``expression`` against the DAG context and returns
+    ``{"branch": <matched-value-or-"default">}``. dag_runner's
+    branch-pruning path (``_update_after_node_completion``) treats the
+    returned branch the same way it treats Condition's true/false
+    branch: every outgoing edge whose ``sourceHandle`` doesn't match
+    is pruned.
+
+    Matching is first-match-wins by string equality on the case's
+    ``value`` field. ``matchMode="equals_ci"`` is case-insensitive —
+    useful when the upstream value comes from an LLM ("Refund" vs.
+    "refund"). If nothing matches, branch is ``"default"``.
+    """
+    from app.engine.safe_eval import safe_eval, SafeEvalError
+
+    config = node_data.get("config", {})
+    expr = str(config.get("expression", "") or "")
+    cases = config.get("cases", []) or []
+    match_mode = str(config.get("matchMode", "equals") or "equals")
+
+    if not expr:
+        logger.warning("Switch node has empty expression; routing to default.")
+        return {"branch": "default", "evaluated": None}
+
+    upstream = {k: v for k, v in context.items() if k.startswith("node_")}
+    eval_env = {
+        "output": upstream,
+        "context": context,
+        "trigger": context.get("trigger", {}),
+    }
+    eval_env.update(upstream)
+    try:
+        value = safe_eval(expr, eval_env)
+    except SafeEvalError as exc:
+        logger.warning("Switch expression rejected by safe evaluator: %s", exc)
+        return {"branch": "default", "evaluated": None, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.warning("Switch expression eval error: %s", exc)
+        return {"branch": "default", "evaluated": None, "error": str(exc)}
+
+    # Normalise for matching. Non-string values are stringified so an
+    # author can switch on ints / bools / enum-likes without juggling
+    # quotes in the case list.
+    value_s = str(value) if value is not None else ""
+    if match_mode == "equals_ci":
+        value_s_cmp = value_s.casefold()
+    else:
+        value_s_cmp = value_s
+
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        case_value = str(case.get("value", ""))
+        case_cmp = case_value.casefold() if match_mode == "equals_ci" else case_value
+        if case_cmp == value_s_cmp:
+            return {"branch": case_value, "evaluated": value_s, "match": "case"}
+
+    return {"branch": "default", "evaluated": value_s, "match": "default"}
 
 
 # ---------------------------------------------------------------------------
@@ -765,9 +861,11 @@ def _handle_llm_router(
     and returns `{"intent": "<label>"}` for downstream Condition nodes to
     branch on.  Temperature is forced to 0.1 for deterministic output.
     """
+    from app.engine.model_registry import default_llm_for
+
     config = node_data.get("config", {})
     provider = config.get("provider", "google")
-    model = config.get("model", "gemini-2.5-flash")
+    model = config.get("model") or default_llm_for(provider, role="fast")
     intents: list[str] = config.get("intents", [])
     user_msg_expr = config.get("userMessageExpression", "trigger.message")
 

@@ -1,5 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { AgenticNodeData } from "@/types/nodes";
+import { TEMPLATE_TIER_FAST } from "@/lib/modelTiers";
 
 /**
  * Operations routing workflow with four specialist paths: diagnostics,
@@ -81,8 +82,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
         nodeCategory: "agent",
         config: {
           icon: "route",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           // First = fallback when the model returns an unknown label (matches ops_orchestrator as default catch-all).
           intents: ["ops_orchestrator", "diagnostics", "remediation", "rca_report"],
           historyNodeId: "node_2",
@@ -152,8 +152,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
         nodeCategory: "agent",
         config: {
           icon: "repeat",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are the Diagnostic Specialist. " +
             "Investigate RPA/workflow failures: pull status, logs, dependencies, files. " +
@@ -176,8 +175,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
         nodeCategory: "agent",
         config: {
           icon: "repeat",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are the Remediation Specialist. " +
             "Execute corrective actions: restart workflows, notifications, safe config changes. " +
@@ -200,8 +198,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are the RCA Specialist. " +
             "Produce a structured incident report: Summary, Timeline, Root cause, Impact, Prevention, " +
@@ -225,8 +222,7 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are the Ops Orchestrator. " +
             "Default handler for operations work: workflows, queues, schedules, agents, and batch jobs. " +

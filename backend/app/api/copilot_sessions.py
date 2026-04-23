@@ -42,6 +42,7 @@ from app.copilot.agent import (
     declared_tools,
     default_model_for,
     supported_providers,
+    validate_session_model,
 )
 from app.database import get_tenant_db
 from app.models.copilot import CopilotSession, CopilotTurn, WorkflowDraft
@@ -136,6 +137,12 @@ def create_session(
 
     try:
         model = body.model or default_model_for(body.provider)
+        # Explicit user picks must be registry-valid + copilot-capable
+        # + satisfy the tenant's family allowlist (MODEL-01.e).
+        # Defaulted models come from the registry and don't need
+        # re-checking — but we still run the allowlist check on them
+        # so a tenant pinned to "2.5" doesn't get a default 3.x model.
+        validate_session_model(body.provider, model, tenant_id=tenant_id)
     except UnsupportedProviderError as exc:
         raise HTTPException(400, str(exc))
 

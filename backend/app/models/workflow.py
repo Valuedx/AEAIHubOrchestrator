@@ -469,6 +469,17 @@ class TenantPolicy(Base):
     smart_05_vector_docs_enabled = Column(
         Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
     )
+    # MODEL-01.e — per-tenant model defaults + family allowlist.
+    # Nullable so tenants that never open the model row in the policy
+    # dialog keep the registry's global defaults untouched. See
+    # `engine/model_registry.py::default_llm_for` + `is_allowed_llm`.
+    default_llm_provider = Column(String(32), nullable=True)
+    default_llm_model = Column(String(128), nullable=True)
+    default_embedding_provider = Column(String(32), nullable=True)
+    default_embedding_model = Column(String(128), nullable=True)
+    # Allowlist of registry generations, e.g. ["2.5", "3.x"]. Null =
+    # no restriction. An empty list is treated the same as null.
+    allowed_model_families = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

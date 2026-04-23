@@ -658,7 +658,8 @@ def _execute_ready_queue(
         iteration_node_ids = [
             nid for nid in ready
             if nodes_map.get(nid, {}).get("data", {}).get("nodeCategory") == "logic"
-            and nodes_map.get(nid, {}).get("data", {}).get("label") in ("ForEach", "Loop")
+            and nodes_map.get(nid, {}).get("data", {}).get("label")
+            in ("ForEach", "Loop", "While")
         ]
         if iteration_node_ids:
             ready = [iteration_node_ids[0]]
@@ -684,7 +685,10 @@ def _execute_ready_queue(
                     in_degree, context, skipped, pruned, satisfied,
                     forEach_node_id=node_id,
                 )
-            elif node_data.get("nodeCategory") == "logic" and node_label == "Loop":
+            elif node_data.get("nodeCategory") == "logic" and node_label in {"Loop", "While"}:
+                # NODES-01.b — While reuses Loop's iteration runner.
+                # The handler returns the same {continueExpression,
+                # maxIterations} shape regardless of label.
                 _run_loop_iterations(
                     db, instance, nodes_map, forward, reverse,
                     in_degree, context, skipped, pruned, satisfied,
@@ -764,17 +768,24 @@ def _propagate_edges(
     edges that don't match a condition branch."""
     node_output = context.get(node_id, {})
     node_data = nodes_map.get(node_id, {}).get("data", {})
-    is_condition = (
+    # NODES-01.a — both Condition and Switch route by ``branch`` in
+    # their output dict. Generalising the check keeps the pruning
+    # logic in one place: Condition yields "true" / "false", Switch
+    # yields the matched case value (or "default"). Any future
+    # branch-style node just needs to set ``is_branch_node`` logic
+    # here and populate ``branch`` in its handler output.
+    label = node_data.get("label")
+    is_branch_node = (
         node_data.get("nodeCategory") == "logic"
-        and node_data.get("label") == "Condition"
+        and label in {"Condition", "Switch"}
     )
 
     chosen_branch = None
-    if is_condition and isinstance(node_output, dict):
+    if is_branch_node and isinstance(node_output, dict):
         chosen_branch = node_output.get("branch")
 
     for edge in forward.get(node_id, []):
-        if is_condition and chosen_branch is not None:
+        if is_branch_node and chosen_branch is not None:
             if edge.source_handle is not None and edge.source_handle != chosen_branch:
                 _prune_subtree(edge.target, forward, pruned)
                 continue
@@ -883,11 +894,11 @@ def _should_fire_loopback(
        can add a dedicated ``continueExpression`` field if authors
        need expression-level gating on non-Condition sources.
     """
-    is_condition = (
+    is_branch_node = (
         source_node_data.get("nodeCategory") == "logic"
-        and source_node_data.get("label") == "Condition"
+        and source_node_data.get("label") in {"Condition", "Switch"}
     )
-    if is_condition and edge.source_handle is not None:
+    if is_branch_node and edge.source_handle is not None:
         chosen = source_output.get("branch") if isinstance(source_output, dict) else None
         return chosen == edge.source_handle
     # No source-handle routing — fire unconditionally.

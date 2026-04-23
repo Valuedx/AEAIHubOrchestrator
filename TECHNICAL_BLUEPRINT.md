@@ -456,14 +456,20 @@ File: `app/config.py`
 
 File: `app/engine/llm_providers.py`
 
-The `call_llm()` function routes to one of three provider backends based on the
-node's `config.provider` value:
+The `call_llm()` function routes to one of four provider backends based on the
+node's `config.provider` value. Default models below are the `balanced`-tier
+resolutions from the central [model registry](codewiki/model-registry.md);
+every entry is overridable per-node and bounded by the per-tenant allowlist
+from MODEL-01.e.
 
-| Provider | SDK | Default Model | Config Key |
+| Provider | SDK | Default Model (`balanced` tier) | Config Key |
 |----------|-----|---------------|------------|
-| `google` | `google-genai` | `gemini-2.5-flash` | `ORCHESTRATOR_GOOGLE_API_KEY` |
+| `google` | `google-genai` | `gemini-2.5-pro` | `ORCHESTRATOR_GOOGLE_API_KEY` |
+| `vertex` | `google-genai` (`vertexai=True`) | `gemini-2.5-pro` | ADC + per-tenant `tenant_integrations(system='vertex')` |
 | `openai` | `openai` | `gpt-4o` | `ORCHESTRATOR_OPENAI_API_KEY` |
 | `anthropic` | `anthropic` | `claude-sonnet-4-20250514` | `ORCHESTRATOR_ANTHROPIC_API_KEY` |
+
+**Every 2.0 / 2.5 / 3.x Gemini variant is selectable** — including `gemini-3.1-pro-preview` (flagship reasoning), `gemini-3-flash-preview`, and `gemini-3.1-flash-lite-preview`. Gemini 2.5 and 3.x models all accept text + image + video + audio + PDF natively; node handlers route attachments as native parts rather than flattening to text.
 
 Each provider returns a standardized response:
 
