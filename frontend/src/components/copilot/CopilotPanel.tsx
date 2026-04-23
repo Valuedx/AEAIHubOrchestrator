@@ -189,6 +189,14 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
 
     return () => {
       cancelled = true;
+      // Release the re-entry guard so that if this cleanup fires
+      // because a dep changed (e.g. ``currentWorkflow?.id`` updated
+      // mid-bootstrap), the re-invocation of this effect can start
+      // a fresh bootstrap. Without this reset, the new effect would
+      // see ``bootstrappedRef.current === true`` and bail, while the
+      // old async silently exits via ``if (cancelled) return`` — the
+      // panel ends up permanently stuck at "Starting a draft session…".
+      bootstrappedRef.current = false;
     };
   }, [open, currentWorkflow?.id, currentWorkflow?.name]);
 
