@@ -301,6 +301,8 @@ Branches the graph based on a boolean expression.
 
 **Routing:** Exactly one outgoing edge is followed based on the condition result.
 
+**Cyclic graphs:** a Condition's outgoing edge can be marked `type: "loopback"` to re-enqueue an upstream node — the classic agent↔tool / reflection / retry patterns. The loopback's `sourceHandle` must match the Condition's branch (`"true"` / `"false"` / custom) for it to fire, and `maxIterations` caps the iteration count. See [cyclic-graphs.md](cyclic-graphs.md) for the full authoring + runtime story.
+
 ### Merge (`merge`)
 
 Joins multiple branches back together.

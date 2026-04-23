@@ -85,7 +85,7 @@ ADMIN-02 extends `tenant_policies` with two rate-limit columns (migration `0021`
 | CYCLIC-01.b | dag_runner loopback execution semantics — after each node completes, `_fire_loopbacks` evaluates outgoing loopback edges, gates on `sourceHandle` matching Condition's chosen branch, clears the cycle body (forward-descendants of target ∩ ancestors of source) from context + un-satisfies internal-to-cycle edges, bumps `context._cycle_iterations[edge_id]`, writes a `loopback_iteration` ExecutionLog row per fire and a `loopback_cap_reached` row when the cap hits. Hard cap 100 regardless of author-supplied value. | **Done** — zero-loopback graphs unchanged; 803 passed |
 | CYCLIC-01.c | Validator rules + SMART-04 lints. Save-time **errors**: invalid `maxIterations`, duplicate loopbacks per source, target-not-forward-ancestor, LOOPBACK_NO_EXIT (cycle body with no forward exit). Copilot **lints**: `loopback_no_exit` (error), `loopback_no_cap` (warn on implicit default), `loopback_nested_deep` (warn on ≥3 distinct cycles with overlap-aware merging). Pure graph analysis in new `app/engine/cyclic_analysis.py` shared by validator + lints. | **Done** — 824 passed; +21 tests |
 | CYCLIC-01.d | Canvas UX — `LoopbackEdge.tsx` dashed-amber bezier with `↻ ×N` iteration chip; `onConnect` auto-detects drag-to-ancestor and flips `type: "loopback"` with default `maxIterations` seeded; `EdgeInspector.tsx` tunes `maxIterations` (clamped 1–100) with convert-to-forward / convert-to-loopback buttons; graph_json round-trip via `serialiseEdgesForSave` / `hydrateEdgesFromLoad` (top-level `maxIterations` ↔ React Flow `data.maxIterations`). Node + edge selections mutually exclusive via `flowStore.selectedEdgeId`. | **Done** — +9 flowStore tests; 171 FE tests green |
-| CYCLIC-01.e | E2E tests (agent↔tool loop, reflection, retry) + new `codewiki/cyclic-graphs.md` + roadmap/node-types/api-reference/copilot.md sweeps | Planned |
+| CYCLIC-01.e | End-to-end pattern tests (`test_cyclic_e2e_patterns.py`) pinning agent↔tool loop, reflection, retry, cap-hit, zero-loopback hot-path. Surfaced + fixed `_fire_loopbacks` exit-subtree un-prune gap (cycles whose Condition chose the loopback branch on iter N-1 now actually exit cleanly on iter N when the Condition chooses the exit branch). New [cyclic-graphs.md](cyclic-graphs.md) codewiki page; node-types + api-reference + copilot.md cross-links. | **Done** — 8 E2E tests green; 832/832 backend pass |
 
 ### Sprint 2F in flight — Enterprise-grade HITL
 
@@ -300,7 +300,7 @@ Reuses the existing RAG pipeline (pgvector + markdown chunker + embedding provid
 | **P0** | 4 | Credential Management UI | n8n, Dify | **Done** |
 | **P1** | 5 | In-Process Multi-Agent Patterns | CrewAI, LangGraph, AutoGen | Planned |
 | **P1** | 6 | Subgraphs / Nested Workflows | LangGraph, Dify | **Done** |
-| **P1** | 7 | Cyclic Graph Support | LangGraph | **In flight** (CYCLIC-01 series) |
+| **P1** | 7 | Cyclic Graph Support | LangGraph | **Done** — CYCLIC-01.a–e shipped ([cyclic-graphs.md](cyclic-graphs.md)) |
 | **P1** | 8 | Built-in Observability Dashboard | Dify, LangSmith | Planned |
 | **P1** | 9 | Per-Node Error Handling & Retry | n8n | Planned |
 | **P1** | 10 | Dynamic Fan-Out Map-Reduce | LangGraph | Planned |
@@ -376,11 +376,13 @@ We have A2A delegation (remote agents) but no native in-process multi-agent patt
 
 See [Node Types — Sub-Workflow](node-types.md) for full config reference.
 
-#### 7. Cyclic Graph Support — Planned
+#### 7. Cyclic Graph Support — Done
 
 > LangGraph explicitly supports cyclic state machines — agents can loop back to previous nodes based on conditions. This is its core selling point.
 
-We enforce DAG-only (Kahn cycle detection rejects cycles). Loop/ForEach are workarounds, not true cyclic graph support. This limits the expressiveness of agent reasoning loops. Supporting cycles would require rethinking the execution engine to handle state machines.
+**Implemented:** loopback edges (`type: "loopback"` + `maxIterations`) re-enqueue the target when the source fires, gated by `sourceHandle` matching the source's Condition branch and capped at 100 hard. Forward subgraph stays a DAG — loopback edges are excluded from Kahn's check — so all existing cycle-detection, scheduler, logging, and debug surfaces keep working unchanged. Save-time validator rules + copilot lints (`loopback_no_exit` error, `loopback_no_cap` warn, `loopback_nested_deep` warn) keep cycles authorable without footguns. Canvas authoring: dashed-amber `LoopbackEdge` with `↻ ×N` chip, `onConnect` auto-detects drag-to-ancestor, `EdgeInspector` tunes `maxIterations`. Pattern coverage: agent↔tool, reflection, retry, cap-hit graceful termination — all pinned by `test_cyclic_e2e_patterns.py`.
+
+See [cyclic-graphs.md](cyclic-graphs.md) for the full authoring, runtime, and observability story.
 
 #### 8. Built-in Observability Dashboard — Planned
 

@@ -40,6 +40,18 @@ All fields optional: `name`, `description`, `graph_json`, `is_active`. When `gra
 
 **Save-time side effects:** Both POST and PATCH validate node configs against the registry schema (returning warnings in logs). If the graph contains Intent Classifier nodes with `cacheEmbeddings=true`, embeddings for their intent definitions are precomputed and stored in the `embedding_cache` table. This is transparent to the caller — the API response is unchanged.
 
+**Edge schema:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | string | Yes | Stable React Flow id |
+| `source` / `target` | string | Yes | Node ids |
+| `sourceHandle` | string | No | Branch label on Condition sources (`"true"`, `"false"`, custom) |
+| `type` | enum | No | Missing/`undefined` = forward edge; `"loopback"` re-enqueues `target` when `source` fires (see [cyclic-graphs.md](cyclic-graphs.md)) |
+| `maxIterations` | int 1–100 | No | Loopback iteration cap; default 10, hard cap 100. Required-in-spirit but defaults fill in if missing (copilot surfaces `loopback_no_cap` warn) |
+
+**Loopback edge validation errors (save-blocking):** invalid `maxIterations`; duplicate loopbacks per source; target not a forward ancestor of source; cycle body has no forward exit path. See `backend/app/engine/config_validator.py::_validate_loopback_edges`.
+
 **WorkflowOut** (response):
 
 | Field | Type |

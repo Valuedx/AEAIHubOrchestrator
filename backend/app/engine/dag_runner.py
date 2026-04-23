@@ -973,6 +973,38 @@ def _fire_loopbacks(
             # fresh against the new iteration's condition output.
             pruned.discard(nid)
 
+        # Un-prune exit subtrees too. When a Condition inside the
+        # cycle chose the loopback branch on iteration N, its
+        # ``_propagate_edges`` pruned the exit-branch subtree —
+        # which then stays pruned across subsequent iterations,
+        # so the cycle can never actually exit cleanly even if a
+        # later iteration's Condition chooses the exit branch. By
+        # un-pruning every forward-reachable node from any
+        # cycle-body source that isn't itself in the body, we let
+        # the next iteration's ``_propagate_edges`` make the
+        # decision fresh.
+        exit_frontier: list[str] = []
+        for src_id in cycle_body:
+            for e in forward.get(src_id, []):
+                if e.target not in cycle_body:
+                    # Drop any prior satisfaction from this
+                    # cycle-body source, so the exit doesn't look
+                    # spuriously satisfied when the stale source
+                    # is already cleared from context.
+                    satisfied.get(e.target, set()).discard(e.source)
+                    if e.target in pruned:
+                        exit_frontier.append(e.target)
+        seen_unprune: set[str] = set()
+        while exit_frontier:
+            cur = exit_frontier.pop()
+            if cur in seen_unprune:
+                continue
+            seen_unprune.add(cur)
+            pruned.discard(cur)
+            for e in forward.get(cur, []):
+                if e.target not in cycle_body:
+                    exit_frontier.append(e.target)
+
         # Un-satisfy forward edges internal to the cycle so
         # downstream cycle nodes wait for their upstream cycle
         # nodes to re-fire. Edges crossing the cycle boundary
