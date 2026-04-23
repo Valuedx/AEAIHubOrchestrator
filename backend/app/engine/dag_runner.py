@@ -160,6 +160,10 @@ def _abort_if_cancel_or_pause(
 class _Edge:
     """One edge in the parsed graph.
 
+    * ``id`` — React Flow edge id, used as the key for per-edge
+      iteration counters in ``context["_cycle_iterations"]``.
+      Falls back to a synthesised ``<source>→<target>:<handle>``
+      key if the edge dict didn't carry an id (legacy graphs).
     * ``source`` / ``target`` — node ids.
     * ``source_handle`` — optional handle id used by Condition to
       route true/false branches.
@@ -174,7 +178,7 @@ class _Edge:
       attribute says; validator clamps author-supplied values to
       1-100 in CYCLIC-01.c.
     """
-    __slots__ = ("source", "target", "source_handle", "kind", "max_iterations")
+    __slots__ = ("id", "source", "target", "source_handle", "kind", "max_iterations")
 
     def __init__(
         self,
@@ -183,7 +187,9 @@ class _Edge:
         source_handle: str | None,
         kind: str = "forward",
         max_iterations: int | None = None,
+        id: str | None = None,
     ):
+        self.id = id or f"{source}->{target}:{source_handle or ''}"
         self.source = source
         self.target = target
         self.source_handle = source_handle
@@ -255,6 +261,7 @@ def parse_graph(graph_json: dict) -> tuple[dict, list[_Edge]]:
             # a clamped one.
             max_iter = max(1, min(max_iter, LOOPBACK_HARD_CAP))
             edges.append(_Edge(
+                id=e.get("id"),
                 source=e["source"],
                 target=e["target"],
                 source_handle=e.get("sourceHandle"),
@@ -263,6 +270,7 @@ def parse_graph(graph_json: dict) -> tuple[dict, list[_Edge]]:
             ))
         else:
             edges.append(_Edge(
+                id=e.get("id"),
                 source=e["source"],
                 target=e["target"],
                 source_handle=e.get("sourceHandle"),
@@ -405,6 +413,7 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
             db, instance, nodes_map, forward, reverse, in_degree, context,
             skipped=set(),
             deterministic_mode=deterministic_mode,
+            loopbacks_by_source=_build_loopback_map(edges),
         )
         trace.update(output={"status": instance.status, "nodes_executed": len([k for k in context if k.startswith("node_")])})
 
@@ -463,6 +472,7 @@ def resume_graph(
     _execute_ready_queue(
         db, instance, nodes_map, forward, reverse, in_degree, context,
         skipped=already_executed,
+        loopbacks_by_source=_build_loopback_map(edges),
     )
 
 
@@ -514,6 +524,7 @@ def resume_paused_graph(
         _execute_ready_queue(
             db, instance, nodes_map, forward, reverse, in_degree, context,
             skipped=already_executed,
+            loopbacks_by_source=_build_loopback_map(edges),
         )
         trace.update(
             output={
@@ -587,6 +598,7 @@ def retry_graph(
         _execute_ready_queue(
             db, instance, nodes_map, forward, reverse, in_degree, context,
             skipped=already_executed,
+            loopbacks_by_source=_build_loopback_map(edges),
         )
         trace.update(output={"status": instance.status, "retried_from": retry_node})
 
@@ -605,9 +617,20 @@ def _execute_ready_queue(
     context: dict[str, Any],
     skipped: set[str],
     deterministic_mode: bool = False,
+    loopbacks_by_source: dict[str, list[_Edge]] | None = None,
 ) -> None:
     """Process nodes in ready-order, respecting condition branches and
-    running independent nodes in parallel."""
+    running independent nodes in parallel.
+
+    ``loopbacks_by_source`` (CYCLIC-01.b) maps each source node id
+    to the loopback edges originating there. After a node completes
+    and its forward edges propagate, any matching loopbacks are
+    evaluated and fired (cycle body cleared + iteration counter
+    bumped). ``None`` is equivalent to ``{}`` — the resume / retry
+    paths that don't re-parse loopbacks fall back to the original
+    forward-only semantics.
+    """
+    loopbacks_by_source = loopbacks_by_source or {}
 
     satisfied: dict[str, set[str]] = defaultdict(set)
     pruned: set[str] = set()
@@ -669,6 +692,16 @@ def _execute_ready_queue(
                 )
             else:
                 _propagate_edges(node_id, forward, nodes_map, context, satisfied, pruned)
+                # CYCLIC-01.b — evaluate loopbacks after forward
+                # edges propagate. Loopback firing mutates context
+                # (clears cycle body), satisfied (un-satisfies
+                # internal-to-cycle edges), and pruned (un-prunes
+                # previously-dead branches so they re-evaluate on
+                # the next iteration's condition output).
+                _fire_loopbacks(
+                    db, instance, node_id, loopbacks_by_source,
+                    nodes_map, forward, context, satisfied, pruned,
+                )
 
             if instance.status in ("cancelled", "paused"):
                 return
@@ -687,6 +720,14 @@ def _execute_ready_queue(
             for node_id in ready:
                 if results.get(node_id) == "completed":
                     _propagate_edges(node_id, forward, nodes_map, context, satisfied, pruned)
+                    # CYCLIC-01.b — same loopback dispatch for the
+                    # parallel branch. Loopback sources should
+                    # rarely end up in a parallel batch (usually
+                    # a Condition is the source), but cover it.
+                    _fire_loopbacks(
+                        db, instance, node_id, loopbacks_by_source,
+                        nodes_map, forward, context, satisfied, pruned,
+                    )
 
             if _abort_if_cancel_or_pause(db, instance, context):
                 return
@@ -752,6 +793,261 @@ def _prune_subtree(
     pruned.add(node_id)
     for edge in forward.get(node_id, []):
         _prune_subtree(edge.target, forward, pruned)
+
+
+# ---------------------------------------------------------------------------
+# CYCLIC-01.b — loopback edge execution
+# ---------------------------------------------------------------------------
+
+
+def _build_loopback_map(edges: list[_Edge]) -> dict[str, list[_Edge]]:
+    """source_node_id → list of loopback edges originating there. Built
+    once per execution; O(1) lookup when a node completes so the
+    per-node overhead when loopbacks are empty is a single dict miss.
+    """
+    out: dict[str, list[_Edge]] = defaultdict(list)
+    for edge in edges:
+        if edge.is_loopback:
+            out[edge.source].append(edge)
+    return dict(out)
+
+
+def _compute_cycle_body(
+    target: str,
+    source: str,
+    forward: dict[str, list[_Edge]],
+) -> set[str]:
+    """Nodes that belong to the cycle a ``source→target`` loopback
+    closes. Computed as ``forward_descendants(target) ∩ ({source} ∪
+    forward_ancestors(source))`` over the forward subgraph — every
+    node that sits on at least one forward path from target to
+    source, inclusive of both endpoints.
+
+    Worked example — a diamond with tail cycling back to head::
+
+        A → B → D          loopback: D → A
+          ↘ C ↗
+
+        forward_descendants(A) = {A, B, C, D}
+        forward_ancestors(D) ∪ {D} = {A, B, C, D}
+        cycle_body = {A, B, C, D}   ← the whole diamond re-fires
+    """
+    # Forward reachable from target (includes target).
+    descendants: set[str] = set()
+    stack = [target]
+    while stack:
+        nid = stack.pop()
+        if nid in descendants:
+            continue
+        descendants.add(nid)
+        for e in forward.get(nid, []):
+            stack.append(e.target)
+
+    # Reverse reachable from source (includes source). Building a
+    # reverse adjacency inline keeps this function self-contained and
+    # avoids forcing callers to pre-compute it.
+    reverse_adj: dict[str, list[str]] = defaultdict(list)
+    for src_id, out_edges in forward.items():
+        for e in out_edges:
+            reverse_adj[e.target].append(src_id)
+    ancestors: set[str] = set()
+    stack = [source]
+    while stack:
+        nid = stack.pop()
+        if nid in ancestors:
+            continue
+        ancestors.add(nid)
+        for src_id in reverse_adj.get(nid, []):
+            stack.append(src_id)
+
+    return descendants & ancestors
+
+
+def _should_fire_loopback(
+    edge: _Edge,
+    source_node_data: dict,
+    source_output: Any,
+) -> bool:
+    """Decide whether a loopback edge's continue predicate fires.
+
+    Two gates, in order:
+
+    1. If the source is a Condition and the edge has a
+       ``source_handle``, the edge fires iff the Condition's
+       chosen branch matches the handle. This is the same gating
+       used by ``_propagate_edges`` for forward edges — it lets
+       authors write "if still_thinking → loop back to planner"
+       as a true/false branch without needing a separate
+       continue-expression API.
+    2. Otherwise the edge fires unconditionally. A future slice
+       can add a dedicated ``continueExpression`` field if authors
+       need expression-level gating on non-Condition sources.
+    """
+    is_condition = (
+        source_node_data.get("nodeCategory") == "logic"
+        and source_node_data.get("label") == "Condition"
+    )
+    if is_condition and edge.source_handle is not None:
+        chosen = source_output.get("branch") if isinstance(source_output, dict) else None
+        return chosen == edge.source_handle
+    # No source-handle routing — fire unconditionally.
+    return True
+
+
+def _fire_loopbacks(
+    db: Session,
+    instance: WorkflowInstance,
+    node_id: str,
+    loopbacks_by_source: dict[str, list[_Edge]],
+    nodes_map: dict,
+    forward: dict[str, list[_Edge]],
+    context: dict[str, Any],
+    satisfied: dict[str, set[str]],
+    pruned: set[str],
+) -> bool:
+    """Evaluate every loopback edge originating at ``node_id``.
+
+    For each edge whose continue predicate fires AND whose
+    per-cycle iteration counter is under ``max_iterations``:
+
+    * Increment the counter in ``context["_cycle_iterations"]``.
+    * Write a ``loopback_iteration`` ExecutionLog row on the
+      loopback target so the debug UI can show
+      "iteration 1 → 2 → …".
+    * Clear every cycle-body node's output from ``context`` and
+      drop its satisfaction bookkeeping for edges internal to the
+      cycle, so the next ``_find_ready_nodes`` call finds the
+      target fresh.
+
+    Returns ``True`` if at least one loopback fired (the caller
+    must re-scan ``_find_ready_nodes`` before deciding the
+    workflow is done).
+    """
+    loopbacks = loopbacks_by_source.get(node_id)
+    if not loopbacks:
+        return False
+
+    source_node = nodes_map.get(node_id, {})
+    source_data = source_node.get("data", {}) or {}
+    source_output = context.get(node_id, {})
+
+    fired_any = False
+    for edge in loopbacks:
+        if not _should_fire_loopback(edge, source_data, source_output):
+            continue
+
+        # Per-cycle iteration counter lives in _cycle_iterations.
+        # Internal (underscore-prefixed) so _get_clean_context
+        # strips it before the instance row is written out.
+        counters = context.setdefault("_cycle_iterations", {})
+        current = int(counters.get(edge.id, 0))
+        cap = edge.max_iterations or LOOPBACK_DEFAULT_MAX_ITERATIONS
+        cap = min(cap, LOOPBACK_HARD_CAP)  # defence-in-depth
+
+        if current >= cap:
+            # Cap hit — fall through to forward edges. Log an
+            # audit row so the UI can say "loopback capped after
+            # N iterations" instead of silently continuing.
+            _log_loopback_cap_hit(db, instance, edge, current, cap)
+            logger.info(
+                "Workflow %s: loopback edge %s hit cap %d — continuing forward",
+                instance.id, edge.id, cap,
+            )
+            continue
+
+        counters[edge.id] = current + 1
+        logger.info(
+            "Workflow %s: loopback edge %s firing iteration %d/%d (%s→%s)",
+            instance.id, edge.id, current + 1, cap, edge.source, edge.target,
+        )
+        _log_loopback_iteration(db, instance, edge, current + 1, cap)
+
+        cycle_body = _compute_cycle_body(edge.target, edge.source, forward)
+
+        # Clear cycle-body node outputs from context — "un-execute"
+        # them so _find_ready_nodes sees them as pending again.
+        for nid in cycle_body:
+            context.pop(nid, None)
+            # Pruned status is cycle-local: re-entering the cycle
+            # should let previously pruned branches re-evaluate
+            # fresh against the new iteration's condition output.
+            pruned.discard(nid)
+
+        # Un-satisfy forward edges internal to the cycle so
+        # downstream cycle nodes wait for their upstream cycle
+        # nodes to re-fire. Edges crossing the cycle boundary
+        # (in from outside, or out to outside) stay satisfied —
+        # those upstream sources are still executed.
+        for src_id in cycle_body:
+            for e in forward.get(src_id, []):
+                if e.target in cycle_body:
+                    satisfied.get(e.target, set()).discard(e.source)
+
+        fired_any = True
+
+    if fired_any:
+        db.commit()
+    return fired_any
+
+
+def _log_loopback_iteration(
+    db: Session,
+    instance: WorkflowInstance,
+    edge: _Edge,
+    iteration: int,
+    cap: int,
+) -> None:
+    """Write a ``loopback_iteration`` ExecutionLog row on the
+    loopback target so the debug UI can show per-iteration progress
+    alongside the per-node logs.
+    """
+    log = ExecutionLog(
+        instance_id=instance.id,
+        node_id=edge.target,
+        node_type="loopback",
+        status="loopback_iteration",
+        input_json=None,
+        output_json={
+            "edge_id": edge.id,
+            "source_node_id": edge.source,
+            "iteration": iteration,
+            "max_iterations": cap,
+        },
+        error=None,
+        started_at=_utcnow(),
+        completed_at=_utcnow(),
+    )
+    db.add(log)
+
+
+def _log_loopback_cap_hit(
+    db: Session,
+    instance: WorkflowInstance,
+    edge: _Edge,
+    iterations_used: int,
+    cap: int,
+) -> None:
+    """Same shape as the iteration log but ``status=
+    loopback_cap_reached``. Lets the debug UI render "stopped
+    looping after N passes" inline with the other node logs.
+    """
+    log = ExecutionLog(
+        instance_id=instance.id,
+        node_id=edge.target,
+        node_type="loopback",
+        status="loopback_cap_reached",
+        input_json=None,
+        output_json={
+            "edge_id": edge.id,
+            "source_node_id": edge.source,
+            "iterations_used": iterations_used,
+            "max_iterations": cap,
+        },
+        error=None,
+        started_at=_utcnow(),
+        completed_at=_utcnow(),
+    )
+    db.add(log)
 
 
 def _find_ready_nodes(
