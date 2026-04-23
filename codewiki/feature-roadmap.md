@@ -77,6 +77,16 @@ ADMIN-01 adds the `tenant_policies` table (migration `0020`) + the resolver + AP
 
 ADMIN-02 extends `tenant_policies` with two rate-limit columns (migration `0021`) and adds a `TenantRateLimitMiddleware`. **Notably, this is the first real API rate-limit enforcement in the orchestrator** — the previous `slowapi.Limiter` was instantiated but never wired into a middleware, so the pre-ADMIN-02 `RATE_LIMIT_*` env vars were inert. The new middleware does Redis INCR+EXPIRE per `(tenant, time-bucket)` with graceful fail-open on Redis errors. See [tenant-policies.md §4](tenant-policies.md) for the full env-var-by-env-var rationale.
 
+### Sprint 2G in flight — Cyclic graph support (LangGraph parity)
+
+| # | Feature | Status |
+|---|---------|--------|
+| CYCLIC-01.a | Loopback edge schema + types — edges gain `type: "loopback"` + `maxIterations`; `_Edge` dataclass grows `kind` / `max_iterations`; `_build_graph_structures` excludes loopbacks from forward adjacency so Kahn's cycle detection still runs on the forward subgraph (which stays a DAG). Runtime impact: **zero** — loopbacks parsed but invisible to execution until 01.b lands. | **Done** — regression-safe; zero-loopback graphs bit-identical |
+| CYCLIC-01.b | dag_runner loopback execution semantics — re-enqueue target, clear cycle body, per-cycle iteration counters via `context_json._cycle_iterations`, hard cap 100 | Planned |
+| CYCLIC-01.c | Validator rules + SMART-04 lints — `LOOPBACK_NO_EXIT` (body must have a forward exit), `LOOPBACK_NO_CAP`, target-is-ancestor check | Planned |
+| CYCLIC-01.d | Canvas UX — dashed curved loopback edge type + right-click convert + drag-upstream auto-suggest + edge PropertyInspector + live iteration badge | Planned |
+| CYCLIC-01.e | E2E tests (agent↔tool loop, reflection, retry) + new `codewiki/cyclic-graphs.md` + roadmap/node-types/api-reference/copilot.md sweeps | Planned |
+
 ### Sprint 2F in flight — Enterprise-grade HITL
 
 | # | Feature | Status |
@@ -290,7 +300,7 @@ Reuses the existing RAG pipeline (pgvector + markdown chunker + embedding provid
 | **P0** | 4 | Credential Management UI | n8n, Dify | **Done** |
 | **P1** | 5 | In-Process Multi-Agent Patterns | CrewAI, LangGraph, AutoGen | Planned |
 | **P1** | 6 | Subgraphs / Nested Workflows | LangGraph, Dify | **Done** |
-| **P1** | 7 | Cyclic Graph Support | LangGraph | Planned |
+| **P1** | 7 | Cyclic Graph Support | LangGraph | **In flight** (CYCLIC-01 series) |
 | **P1** | 8 | Built-in Observability Dashboard | Dify, LangSmith | Planned |
 | **P1** | 9 | Per-Node Error Handling & Retry | n8n | Planned |
 | **P1** | 10 | Dynamic Fan-Out Map-Reduce | LangGraph | Planned |

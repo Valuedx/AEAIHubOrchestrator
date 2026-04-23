@@ -137,3 +137,157 @@ class TestParseGraphStickyNoteFiltering:
         nodes_map, edges = parse_graph(graph)
         assert nodes_map == {}
         assert edges == []
+
+
+# ---------------------------------------------------------------------------
+# CYCLIC-01.a — loopback edge schema + cycle-detection exclusion
+# ---------------------------------------------------------------------------
+
+
+class TestLoopbackEdges:
+    """A loopback edge exists in the parsed graph (for downstream
+    tooling + CYCLIC-01.b's runtime) but is EXCLUDED from the
+    forward-adjacency used for execution + cycle detection. The
+    forward subgraph therefore stays strictly acyclic even when
+    loopback edges are present.
+    """
+
+    def _loopback_graph(self) -> dict:
+        """3-node classic: planner → tool → check, with a
+        ``check → planner`` loopback. Forward subgraph is the
+        linear chain; loopback edge is the cycle-closing link."""
+        return {
+            "nodes": [
+                {"id": "planner", "type": "agenticNode", "data": {"label": "LLM Agent"}},
+                {"id": "tool",    "type": "agenticNode", "data": {"label": "MCP Tool"}},
+                {"id": "check",   "type": "agenticNode", "data": {"label": "Condition"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "planner", "target": "tool"},
+                {"id": "e2", "source": "tool",    "target": "check"},
+                {
+                    "id": "e3",
+                    "source": "check",
+                    "target": "planner",
+                    "type": "loopback",
+                    "maxIterations": 5,
+                    "sourceHandle": "true",
+                },
+            ],
+        }
+
+    def test_loopback_edge_is_parsed_with_kind_and_max_iterations(self):
+        nodes_map, edges = parse_graph(self._loopback_graph())
+        assert set(nodes_map) == {"planner", "tool", "check"}
+        assert len(edges) == 3
+        loopbacks = [e for e in edges if e.is_loopback]
+        assert len(loopbacks) == 1
+        lb = loopbacks[0]
+        assert lb.source == "check"
+        assert lb.target == "planner"
+        assert lb.source_handle == "true"
+        assert lb.max_iterations == 5
+
+    def test_loopback_edge_excluded_from_forward_adjacency(self):
+        """The forward subgraph must be exactly the non-loopback
+        edges — anything else makes Kahn's check wrong."""
+        nodes_map, edges = parse_graph(self._loopback_graph())
+        forward, reverse, in_degree = _build_graph_structures(nodes_map, edges)
+
+        # Forward: planner → tool → check; NO check → planner.
+        assert [e.target for e in forward.get("planner", [])] == ["tool"]
+        assert [e.target for e in forward.get("tool", [])] == ["check"]
+        assert forward.get("check", []) == []
+        # Reverse mirrors the same exclusion.
+        assert reverse.get("planner", []) == []
+        # In-degree reflects only forward edges.
+        assert in_degree == {"planner": 0, "tool": 1, "check": 1}
+
+    def test_cycle_detection_passes_with_loopback_edges(self):
+        """Same graph that WOULD be a cycle if loopback were a
+        forward edge — must pass Kahn's check because loopbacks
+        are excluded from forward adjacency."""
+        nodes_map, edges = parse_graph(self._loopback_graph())
+        forward, _reverse, in_degree = _build_graph_structures(nodes_map, edges)
+        _detect_cycles(nodes_map, forward, in_degree)  # no raise
+
+    def test_missing_max_iterations_falls_back_to_default(self):
+        from app.engine.dag_runner import LOOPBACK_DEFAULT_MAX_ITERATIONS
+
+        graph = {
+            "nodes": [
+                {"id": "a", "type": "agenticNode", "data": {}},
+                {"id": "b", "type": "agenticNode", "data": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "a", "target": "b"},
+                {"id": "e2", "source": "b", "target": "a", "type": "loopback"},
+            ],
+        }
+        _nodes, edges = parse_graph(graph)
+        lb = next(e for e in edges if e.is_loopback)
+        assert lb.max_iterations == LOOPBACK_DEFAULT_MAX_ITERATIONS
+
+    def test_oversized_max_iterations_clamped_to_hard_cap(self):
+        from app.engine.dag_runner import LOOPBACK_HARD_CAP
+
+        graph = {
+            "nodes": [
+                {"id": "a", "type": "agenticNode", "data": {}},
+                {"id": "b", "type": "agenticNode", "data": {}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "a", "target": "b"},
+                {"id": "e2", "source": "b", "target": "a",
+                 "type": "loopback", "maxIterations": 999_999},
+            ],
+        }
+        _nodes, edges = parse_graph(graph)
+        lb = next(e for e in edges if e.is_loopback)
+        assert lb.max_iterations == LOOPBACK_HARD_CAP
+
+    def test_non_integer_max_iterations_falls_back_to_default(self):
+        from app.engine.dag_runner import LOOPBACK_DEFAULT_MAX_ITERATIONS
+
+        graph = {
+            "nodes": [
+                {"id": "a", "type": "agenticNode", "data": {}},
+                {"id": "b", "type": "agenticNode", "data": {}},
+            ],
+            "edges": [
+                {"id": "e2", "source": "b", "target": "a",
+                 "type": "loopback", "maxIterations": "bogus"},
+            ],
+        }
+        _nodes, edges = parse_graph(graph)
+        lb = next(e for e in edges if e.is_loopback)
+        assert lb.max_iterations == LOOPBACK_DEFAULT_MAX_ITERATIONS
+
+    def test_loopback_edges_helper_filters_correctly(self):
+        from app.engine.dag_runner import loopback_edges
+
+        _nodes, edges = parse_graph(self._loopback_graph())
+        loops = loopback_edges(edges)
+        assert len(loops) == 1
+        assert loops[0].kind == "loopback"
+
+    def test_zero_loopback_graphs_are_bit_identical(self):
+        """Regression guard: a graph with ZERO loopback edges must
+        parse into the same structures as before the feature
+        landed. Anything else risks silent breakage across the
+        existing 700+ tests."""
+        graph = _graph(
+            ["a", "b", "c", "d"],
+            [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")],
+        )
+        nodes_map, edges = parse_graph(graph)
+        forward, reverse, in_degree = _build_graph_structures(nodes_map, edges)
+
+        # Every edge is forward; the helper returns nothing.
+        from app.engine.dag_runner import loopback_edges
+        assert loopback_edges(edges) == []
+        # Edge count + shape unchanged — diamond has 4 edges.
+        assert len(edges) == 4
+        assert all(e.kind == "forward" for e in edges)
+        # In-degree is the classic diamond distribution.
+        assert in_degree == {"a": 0, "b": 1, "c": 1, "d": 2}

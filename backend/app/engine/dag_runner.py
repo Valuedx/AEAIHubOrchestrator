@@ -158,12 +158,54 @@ def _abort_if_cancel_or_pause(
 # ---------------------------------------------------------------------------
 
 class _Edge:
-    __slots__ = ("source", "target", "source_handle")
+    """One edge in the parsed graph.
 
-    def __init__(self, source: str, target: str, source_handle: str | None):
+    * ``source`` / ``target`` — node ids.
+    * ``source_handle`` — optional handle id used by Condition to
+      route true/false branches.
+    * ``kind`` — ``"forward"`` (default) or ``"loopback"``. Loopback
+      edges (CYCLIC-01.a) carry a re-entry target back to an
+      upstream node; they are EXCLUDED from the forward subgraph
+      used for cycle detection + execution so the forward graph
+      stays strictly acyclic. CYCLIC-01.b adds the runtime semantic
+      of actually re-enqueuing the target.
+    * ``max_iterations`` — per-cycle iteration cap (loopback edges
+      only). Backend hard-cap 100 regardless of what the edge
+      attribute says; validator clamps author-supplied values to
+      1-100 in CYCLIC-01.c.
+    """
+    __slots__ = ("source", "target", "source_handle", "kind", "max_iterations")
+
+    def __init__(
+        self,
+        source: str,
+        target: str,
+        source_handle: str | None,
+        kind: str = "forward",
+        max_iterations: int | None = None,
+    ):
         self.source = source
         self.target = target
         self.source_handle = source_handle
+        self.kind = kind
+        self.max_iterations = max_iterations
+
+    @property
+    def is_loopback(self) -> bool:
+        return self.kind == "loopback"
+
+
+# CYCLIC-01.a — default iteration cap for loopback edges when the
+# author omits ``maxIterations``. Kept aligned with the existing
+# Loop node's default so operators don't have to remember two
+# different numbers. CYCLIC-01.b enforces it at runtime; CYCLIC-01.c
+# adds a validator lint warning ``LOOPBACK_NO_CAP`` when the edge
+# relies on this default.
+LOOPBACK_DEFAULT_MAX_ITERATIONS = 10
+# Hard ceiling regardless of author-supplied value. Keeps a runaway
+# loop from burning the execution budget even if someone ships a
+# graph with ``maxIterations: 999999``.
+LOOPBACK_HARD_CAP = 100
 
 
 def parse_graph(graph_json: dict) -> tuple[dict, list[_Edge]]:
@@ -175,6 +217,13 @@ def parse_graph(graph_json: dict) -> tuple[dict, list[_Edge]]:
     it never enters the ready queue or the cycle check. Edges that
     reference filtered-out nodes are dropped too — a stray connection
     to a sticky can't corrupt in-degree computations downstream.
+
+    **Loopback edges (CYCLIC-01.a):** edges with ``type == "loopback"``
+    are parsed into ``_Edge.kind = "loopback"`` + ``max_iterations``
+    carried through. ``_build_graph_structures`` excludes them from
+    forward adjacency + in-degree so the forward subgraph stays
+    acyclic. The runtime semantics (actually re-enqueueing the
+    target on a "continue" branch) land in CYCLIC-01.b.
 
     Returns:
         nodes_map: {node_id: node_dict} — executable nodes only
@@ -190,32 +239,69 @@ def parse_graph(graph_json: dict) -> tuple[dict, list[_Edge]]:
         # addition and are all executable nodes.
         if n.get("type", "agenticNode") == "agenticNode"
     }
-    edges = [
-        _Edge(
-            source=e["source"],
-            target=e["target"],
-            source_handle=e.get("sourceHandle"),
-        )
-        for e in edges_list
-        if e["source"] in nodes_map and e["target"] in nodes_map
-    ]
+    edges: list[_Edge] = []
+    for e in edges_list:
+        if e["source"] not in nodes_map or e["target"] not in nodes_map:
+            continue
+        edge_type = e.get("type")
+        if edge_type == "loopback":
+            raw_max = e.get("maxIterations")
+            try:
+                max_iter = int(raw_max) if raw_max is not None else LOOPBACK_DEFAULT_MAX_ITERATIONS
+            except (TypeError, ValueError):
+                max_iter = LOOPBACK_DEFAULT_MAX_ITERATIONS
+            # Clamp defensively even without the validator — a runtime
+            # surprise from a 999k iteration cap would be worse than
+            # a clamped one.
+            max_iter = max(1, min(max_iter, LOOPBACK_HARD_CAP))
+            edges.append(_Edge(
+                source=e["source"],
+                target=e["target"],
+                source_handle=e.get("sourceHandle"),
+                kind="loopback",
+                max_iterations=max_iter,
+            ))
+        else:
+            edges.append(_Edge(
+                source=e["source"],
+                target=e["target"],
+                source_handle=e.get("sourceHandle"),
+                kind="forward",
+            ))
     return nodes_map, edges
 
 
 def _build_graph_structures(
     nodes_map: dict, edges: list[_Edge]
 ) -> tuple[dict[str, list[_Edge]], dict[str, list[_Edge]], dict[str, int]]:
-    """Build forward adjacency, reverse adjacency, and in-degree maps."""
+    """Build forward adjacency, reverse adjacency, and in-degree maps.
+
+    **Loopback edges are EXCLUDED here (CYCLIC-01.a).** Including them
+    would create cycles in the forward subgraph, which ``_detect_cycles``
+    would (correctly) flag as an error. Downstream execution uses
+    only the forward subgraph, so loopbacks are invisible to the
+    runtime until CYCLIC-01.b wires up the re-enqueue semantics via
+    a dedicated lookup (not via ``forward``).
+    """
     forward: dict[str, list[_Edge]] = defaultdict(list)
     reverse: dict[str, list[_Edge]] = defaultdict(list)
     in_degree: dict[str, int] = {nid: 0 for nid in nodes_map}
 
     for edge in edges:
+        if edge.is_loopback:
+            continue
         forward[edge.source].append(edge)
         reverse[edge.target].append(edge)
         in_degree[edge.target] = in_degree.get(edge.target, 0) + 1
 
     return dict(forward), dict(reverse), in_degree
+
+
+def loopback_edges(edges: list[_Edge]) -> list[_Edge]:
+    """Filter a parsed edge list to just the loopback edges. Exposed
+    for CYCLIC-01.b's runtime execution + CYCLIC-01.c's validator.
+    """
+    return [e for e in edges if e.is_loopback]
 
 
 def _detect_cycles(nodes_map: dict, forward: dict, in_degree: dict) -> None:
