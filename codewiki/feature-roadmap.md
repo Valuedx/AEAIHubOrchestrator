@@ -82,7 +82,7 @@ ADMIN-02 extends `tenant_policies` with two rate-limit columns (migration `0021`
 | # | Feature | Status |
 |---|---------|--------|
 | HITL-01.a | Approval audit log (migration 0030) + claimed-identity capture on resume + `GET /approvals` list + redesigned dialog with approver/reason/advanced-patch | **Done** — see [hitl.md](hitl.md) |
-| HITL-01.b | Pending-approvals toolbar badge + aggregated dropdown so operators don't have to open each suspended instance to find pending work | Planned |
+| HITL-01.b | Pending-approvals toolbar badge (pulsing amber dot, count capped at 9+) + aggregated dropdown grouped by workflow + 30s poll + `GET /pending-approvals` + `suspended_at` column (migration 0031) | **Done** — see [hitl.md](hitl.md) |
 | HITL-01.c | Timeout enforcement via Beat sweep — `timeoutAction: "reject" \| "escalate" \| "none"` per HITL node; stale suspensions don't pile up | Planned |
 | HITL-01.d | Per-node approvers allowlist — `approvers: {emails, allowlist}`; 403 on non-allowlisted attempts; audit still captures the attempt for bypass-detection | Planned |
 | HITL-01.e | Notification channels (Slack / email / webhook) on suspend — reuses Notification node transport where possible; webhook HMAC-signed | Planned |

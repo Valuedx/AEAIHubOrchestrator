@@ -50,6 +50,7 @@ import { TenantPolicyDialog } from "@/components/toolbar/TenantPolicyDialog";
 import { LlmCredentialsDialog } from "@/components/toolbar/LlmCredentialsDialog";
 import { HotkeyCheatsheet } from "@/components/toolbar/HotkeyCheatsheet";
 import { ApiPlaygroundDialog } from "@/components/toolbar/ApiPlaygroundDialog";
+import { PendingApprovalsButton } from "@/components/toolbar/PendingApprovalsButton";
 import { validateWorkflow, type ValidationError } from "@/lib/validateWorkflow";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
 
@@ -342,6 +343,11 @@ export function Toolbar() {
         >
           <SlidersHorizontal className="h-4 w-4" />
         </Button>
+
+        {/* HITL-01.b — tenant-wide pending-approvals badge + dropdown.
+            Polls every 30s while mounted; pulsing amber dot when
+            count > 0. Clicking a row opens the HITLResumeDialog. */}
+        <PendingApprovalsButton />
 
         <Button
           variant="ghost"

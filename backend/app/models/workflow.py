@@ -87,6 +87,11 @@ class WorkflowInstance(Base):
     # suspended ('async_external'). Cleared on resume. Used by the UI to pick
     # between the Review dialog and the "waiting-on-external" badge.
     suspended_reason = Column(String(32), nullable=True)
+    # HITL-01.b — timestamp of the most-recent suspension, used for
+    # age display on the pending-approvals dashboard and for the
+    # HITL-01.c timeout sweep. NULL on (a) never-suspended instances
+    # and (b) rows that suspended before migration 0031 ran.
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
     # Sub-workflow lineage: links a child instance back to the parent that spawned it.
     parent_instance_id = Column(
         UUID(as_uuid=True),

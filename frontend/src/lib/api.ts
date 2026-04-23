@@ -321,6 +321,24 @@ export interface InstanceContextOut {
   context_json: Record<string, unknown>;
 }
 
+// HITL-01.b — one row on the pending-approvals dashboard. Exposed
+// via GET /api/v1/workflows/pending-approvals. The toolbar badge
+// counts these rows; the dropdown renders them grouped by workflow.
+export interface PendingApproval {
+  instance_id: string;
+  workflow_id: string;
+  workflow_name: string;
+  node_id: string;
+  approval_message: string | null;
+  /** ISO timestamp of when the instance transitioned to suspended.
+   *  v0 rows (suspended before migration 0031) fall back to
+   *  `started_at`. */
+  suspended_at: string;
+  /** Non-negative integer seconds since the instance suspended.
+   *  The frontend renders this as "3m ago" / "2h ago" / etc. */
+  age_seconds: number;
+}
+
 // HITL-01.a — one row from the approval_audit_log table, exposed
 // via GET /workflows/{id}/instances/{id}/approvals. Each row
 // captures one approve / reject / timeout_rejected / timeout_escalated
@@ -934,6 +952,10 @@ export const api = {
     return request(
       `/api/v1/workflows/${workflowId}/instances/${instanceId}/approvals`,
     );
+  },
+
+  listPendingApprovals(): Promise<PendingApproval[]> {
+    return request("/api/v1/workflows/pending-approvals");
   },
 
   getInstanceContext(

@@ -141,6 +141,28 @@ class CallbackRequest(BaseModel):
     )
 
 
+class PendingApprovalOut(BaseModel):
+    """HITL-01.b — one row on the pending-approvals dashboard.
+
+    Returned by ``GET /api/v1/workflows/pending-approvals``. The
+    endpoint filters the tenant's suspended instances down to the
+    ones waiting on human decisions (i.e. HITL, not
+    ``async_external``), sorted oldest-first so the row at the top
+    is the one that's been waiting longest. The toolbar badge +
+    dropdown consume this shape directly.
+    """
+    instance_id: uuid.UUID
+    workflow_id: uuid.UUID
+    workflow_name: str
+    node_id: str
+    approval_message: str | None
+    # Timestamp the instance transitioned to suspended. v0 rows
+    # that suspended before migration 0031 return ``started_at``
+    # as a fallback (noted in hitl.md §2).
+    suspended_at: datetime
+    age_seconds: int
+
+
 class ApprovalAuditOut(BaseModel):
     """One approval_audit_log row. Returned by
     ``GET /workflows/{workflow_id}/instances/{instance_id}/approvals``

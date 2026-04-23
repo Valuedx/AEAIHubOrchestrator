@@ -43,6 +43,7 @@ from app.api.schemas import (
     ChildInstanceSummary,
     AsyncJobOut,
     ApprovalAuditOut,
+    PendingApprovalOut,
 )
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
@@ -141,6 +142,81 @@ def list_workflows(
         .order_by(WorkflowDefinition.updated_at.desc())
         .all()
     )
+
+
+# IMPORTANT: /pending-approvals must be declared BEFORE any
+# /{workflow_id} route. FastAPI matches routes in declaration
+# order — a late static path gets captured by the earlier
+# parameterised path and 422s with "invalid UUID".
+@router.get("/pending-approvals", response_model=list[PendingApprovalOut])
+def list_pending_approvals(
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_tenant_db),
+):
+    """HITL-01.b — the tenant's suspended-awaiting-human backlog.
+
+    Filters down to *human* suspensions (``suspended_reason`` NULL)
+    — async-external suspensions wait on webhooks, not operators,
+    so they don't belong on this dashboard. Ordered oldest-first
+    so the row at the top of the toolbar dropdown is the one that's
+    been waiting longest, which is also the one most likely to be
+    close to its timeout.
+    """
+    rows = (
+        db.query(WorkflowInstance, WorkflowDefinition)
+        .join(WorkflowDefinition, WorkflowInstance.workflow_def_id == WorkflowDefinition.id)
+        .filter(
+            WorkflowInstance.tenant_id == tenant_id,
+            WorkflowInstance.status == "suspended",
+            WorkflowInstance.suspended_reason.is_(None),
+        )
+        .order_by(WorkflowInstance.suspended_at.asc().nulls_last())
+        .all()
+    )
+
+    now = _utcnow()
+    out: list[PendingApprovalOut] = []
+    for instance, wf in rows:
+        # Pull approvalMessage from the suspended node's config —
+        # same extraction path as the single-instance context
+        # endpoint, so cosmetic tweaks to one read the same on both.
+        approval_message: str | None = None
+        if instance.current_node_id:
+            graph = _resolve_graph_json_for_version(
+                db, wf, tenant_id,
+                instance.definition_version_at_start, strict=False,
+            )
+            node = next(
+                (n for n in graph.get("nodes", []) if n.get("id") == instance.current_node_id),
+                None,
+            )
+            if node:
+                approval_message = node.get("data", {}).get("config", {}).get("approvalMessage")
+
+        # Fallback to started_at for v0 rows that suspended before
+        # migration 0031. Age is "seconds this instance has been
+        # waiting on a human"; close enough with started_at given
+        # most workflows run < 30s before the HITL pause.
+        suspended_at = instance.suspended_at or instance.started_at
+        if suspended_at is None:
+            # Truly malformed row — skip rather than report a
+            # negative age. Shouldn't happen on a healthy deployment.
+            continue
+        age_seconds = max(0, int((now - suspended_at).total_seconds()))
+
+        out.append(
+            PendingApprovalOut(
+                instance_id=instance.id,
+                workflow_id=wf.id,
+                workflow_name=wf.name,
+                node_id=instance.current_node_id or "",
+                approval_message=approval_message,
+                suspended_at=suspended_at,
+                age_seconds=age_seconds,
+            )
+        )
+
+    return out
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)

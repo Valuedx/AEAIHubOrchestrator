@@ -99,6 +99,7 @@ See [Developer Workflow](dev-workflow.md) for the full UX + edge cases.
 |--------|------|--------|-------------|
 | `POST` | `.../{instance_id}/callback` | 200 | Resume a suspended (HITL) instance |
 | `GET`  | `.../{instance_id}/approvals` | 200 | **HITL-01.a** — list the approval_audit_log rows for this instance (compliance export) |
+| `GET`  | `/api/v1/workflows/pending-approvals` | 200 | **HITL-01.b** — tenant-wide list of suspended-awaiting-human instances, ordered oldest-first. Toolbar badge + dropdown consume this. Returns `[{instance_id, workflow_id, workflow_name, node_id, approval_message, suspended_at, age_seconds}]`. |
 | `POST` | `.../{instance_id}/retry` | 200 | Retry a failed instance, optionally from a specific node |
 | `POST` | `.../{instance_id}/pause` | 200 | Pause a running/queued instance |
 | `POST` | `.../{instance_id}/resume-paused` | 200 | Resume a paused instance |

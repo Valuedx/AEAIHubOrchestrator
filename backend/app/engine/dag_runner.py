@@ -353,6 +353,9 @@ def resume_graph(
     # Clear the async-external flag (if set) so the UI flips back to
     # running. NULL remains the default for plain HITL resumes too.
     instance.suspended_reason = None
+    # HITL-01.b — clear the suspended-at stamp on resume so the
+    # dashboard stops counting age once the human has responded.
+    instance.suspended_at = None
     db.commit()
 
     graph = instance.definition.graph_json
@@ -735,6 +738,10 @@ def _execute_single_node(
     if node_category == "action" and node_data.get("config", {}).get("approvalMessage") is not None:
         if "approval" not in context:
             instance.status = "suspended"
+            # HITL-01.b — stamp the moment we transition to suspended
+            # so the pending-approvals dashboard can show age and
+            # HITL-01.c's sweep can compute timeout elapsed.
+            instance.suspended_at = datetime.now(timezone.utc)
             instance.context_json = _get_clean_context(context)
             log_entry.status = "suspended"
             db.commit()
@@ -783,6 +790,10 @@ def _execute_single_node(
 
             instance.status = "suspended"
             instance.suspended_reason = "async_external"
+            # HITL-01.b — same age-stamping as the HITL path so
+            # the pending-approvals dashboard + 01.c timeout sweep
+            # treat async suspensions the same way.
+            instance.suspended_at = datetime.now(timezone.utc)
             instance.context_json = _get_clean_context(context)
             db.commit()
             span.update(output={
@@ -916,6 +927,12 @@ def _execute_parallel(
         elif status == "suspended":
             log_entry.status = "suspended"
             instance.status = "suspended"
+            # HITL-01.b — third suspend path (handler returned
+            # "suspended" directly, e.g. the HITL approval handler).
+            # Stamp the timestamp here too so every suspend path is
+            # symmetric for the dashboard + timeout sweep.
+            if instance.suspended_at is None:
+                instance.suspended_at = datetime.now(timezone.utc)
             instance.context_json = _get_clean_context(context)
         elif status == "failed":
             log_entry.status = "failed"
