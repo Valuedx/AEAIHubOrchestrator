@@ -104,10 +104,22 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
   // Draft + session bootstrap — runs each time the panel opens.
   // ----------------------------------------------------------------
 
+  //
+  // NOTE: ``bootstrap`` MUST NOT appear in this effect's dependency
+  // array. We call ``setBootstrap("loading")`` at the top; if
+  // ``bootstrap`` were a dep, that state update would retrigger the
+  // effect and fire the previous run's cleanup (``cancelled = true``)
+  // before ``await api.listDrafts()`` resolves — the in-flight
+  // bootstrap aborts silently and the spinner stays on forever.
+  // The ``bootstrappedRef`` guard below prevents double bootstrap
+  // within a single open session without depending on the state.
+  const bootstrappedRef = useRef(false);
+
   useEffect(() => {
     if (!open) return;
-    if (bootstrap === "ready" || bootstrap === "loading") return;
+    if (bootstrappedRef.current) return;
 
+    bootstrappedRef.current = true;
     setBootstrap("loading");
     setBootstrapError(null);
     let cancelled = false;
@@ -169,13 +181,16 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
         const msg = err instanceof Error ? err.message : String(err);
         setBootstrapError(msg);
         setBootstrap("error");
+        // Reset the ref so the "Retry" button in BootstrapError
+        // can re-trigger bootstrap by toggling open or workflow.
+        bootstrappedRef.current = false;
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [open, bootstrap, currentWorkflow?.id, currentWorkflow?.name]);
+  }, [open, currentWorkflow?.id, currentWorkflow?.name]);
 
   // Reset the in-memory chat when the panel is closed so a reopen
   // starts fresh. Backend turns are still preserved and readable
@@ -191,6 +206,10 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
     setDraft(null);
     setStreaming(false);
     setBootstrap("idle");
+    // Reset the bootstrap guard so re-opening the panel triggers a
+    // fresh bootstrap — otherwise the ref would stay truthy and the
+    // useEffect above would skip.
+    bootstrappedRef.current = false;
     // COPILOT-02.ii.b — exit the canvas preview so the user returns
     // to editing the base workflow when the panel closes.
     clearCopilotPreview();
@@ -349,7 +368,14 @@ export function CopilotPanel({ open, onClose, width = 460 }: Props) {
       {bootstrap === "error" && (
         <BootstrapError
           message={bootstrapError ?? "Could not start session"}
-          onRetry={() => setBootstrap("idle")}
+          onRetry={() => {
+            // Reset both the ref AND the state so the bootstrap
+            // useEffect picks up a clean idle transition on the
+            // next currentWorkflow?.id toggle — or the user can
+            // close+reopen which definitely re-fires.
+            bootstrappedRef.current = false;
+            setBootstrap("idle");
+          }}
         />
       )}
 
