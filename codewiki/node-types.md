@@ -350,6 +350,8 @@ Thin twin of Loop with a **required** condition — clearer UX for authors reach
 | `condition` | string | `""` (required) | safe_eval expression evaluated before each iteration (e.g. `node_3.is_ready == false`, `_loop_index < 5`) |
 | `maxIterations` | integer | `10` | Safety cap on iteration count (hard cap: 25). Prevents runaway loops when the condition never flips. |
 
+**Ready-to-use example in the template gallery (TMPL-01.f):** the **Retry until success (While)** template shows a flaky-API retry pattern — `_loop_index == 0 OR node_3.status_code < 200 OR node_3.status_code >= 300` — with a Notification node reporting the final state after the loop exits.
+
 ### Switch (`switch`) — NODES-01.a
 
 Multi-branch routing on an expression's value. Evaluates the expression once and routes to the first case whose value matches via string equality; unmatched values flow through the always-present `default` output handle. **Clearer than chaining Condition nodes** when you have more than two branches (e.g. LLM Router intent labels → per-intent paths).
@@ -364,6 +366,12 @@ Multi-branch routing on an expression's value. Evaluates the expression once and
 **Output:** `{ branch: <matched-case-value> \| "default", evaluated: <stringified-value>, match: "case" \| "default" }`. The dag_runner's branch-pruning path (shared with Condition) prunes every outgoing edge whose `sourceHandle` doesn't match `branch`.
 
 **UX:** The Property Inspector renders a `CaseListEditor` with add / remove / up-down reorder buttons and flags duplicate values with a red border. `AgenticNode` paints one teal handle per case (labelled by `label || value`) plus one amber `default` handle; the card auto-grows so handles never overlap.
+
+**Ready-to-use examples in the template gallery (TMPL-01.f):**
+
+* **Priority router (Switch)** — `Webhook → Switch(trigger.priority, matchMode=equals_ci) → PagerDuty / Slack-hi / Slack-std / Email`. Demonstrates Switch driven directly from a structured trigger payload (no upstream classifier).
+* **IT Ticket Triage** / **Ops Routing** — `Intent Classifier → Switch(node_3.intents[0])` replacing legacy `LLM Router + N Condition` chains. Canonical Intent Classifier → Switch pattern.
+* **Agent ↔ tool loopback** — Switch-free but uses Condition at the same branch point; pair with Switch when the planner returns more than `use_tool | done` (e.g. explicit tool-category routing).
 
 ### Sub-Workflow (`sub_workflow`)
 

@@ -118,6 +118,19 @@ Goal: one registry drives every LLM and embedding choice — copilot, engine nod
 | NODES-01.a | **Switch node** — multi-branch routing on an expression's value. Config: `expression` + `cases: [{value, label}]` + `matchMode` (equals / equals_ci) + `defaultLabel`. Handler returns `{branch: <value-or-default>}`. dag_runner generalises `is_condition` → `is_branch_node` so the same prune path handles N cases. Inspector renders a `CaseListEditor` with add/remove/reorder + duplicate-value detection; `AgenticNode` renders N+1 handles (teal for cases, amber for default) with per-handle labels and auto-growing card height. | **Done** |
 | NODES-01.b | **While node** — thin twin of Loop with a required condition for clearer authoring UX. Handler maps `condition` → `continueExpression`, reuses dag_runner's existing iteration runner (`_run_loop_iterations`). Palette entry with `rotate-cw` icon; card shows `⟳ while <expr>` + iteration-cap badge. | **Done** |
 
+### Sprint 2J in flight — Template modernisation (TMPL-01)
+
+Reviewed the 10 starter templates against everything shipped since they were originally written and refactored them to use the newer primitives. Every template now either demonstrates a current best-practice pattern or points at one.
+
+| # | Feature | Status |
+|---|---------|--------|
+| TMPL-01.a | **Switch refactors** — IT Ticket Triage (17→16 nodes) and Ops Routing (19→17 nodes) swap `LLM Router + 2-to-3 serial Condition nodes` for `Intent Classifier (hybrid, with examples/priority/confidence threshold) + Switch`. Unknown intents fall through the amber default handle so no customer message is dropped. | **Done** |
+| TMPL-01.b | **Model tier escalation** — Multi-Agent Research synthesizer, Ops Routing RCA agent, and Document Review summary/risk agent all promoted to `TEMPLATE_TIER_BALANCED` (Gemini 2.5 Pro). Rest stays on `TEMPLATE_TIER_FAST`; each escalated node carries an inline comment explaining the tier choice. | **Done** |
+| TMPL-01.c | **HITL polish on Document Review** — clearer approvalMessage, realistic 4-hour timeout, description calls out the approval audit log + pending-approvals badge (HITL-01.a/b) and forward-references `approvers` allowlist + `timeoutAction` (HITL-01.c/d planned). | **Done** |
+| TMPL-01.d | **MCP discovery hints** — ReAct nodes in IT Triage (technical) and Ops Routing (diagnostics + remediation) now carry `mcpServerLabel: ""` (tenant-default resolution) + dense author-facing comments naming the specific tool classes each specialist should wire (see [mcp-audit.md](mcp-audit.md)). | **Done** |
+| TMPL-01.e | **RAG + `gemini-embedding-2`** — Knowledge Retrieval node comment + RAG template description now explicitly recommend `gemini-embedding-2` for mixed-media KBs (text + image + video + audio, 3072-dim Matryoshka). See [rag-knowledge-base.md](rag-knowledge-base.md). | **Done** |
+| TMPL-01.f | **Three primitive showcase templates** — **Priority router (Switch)**: `Webhook → Switch(trigger.priority, equals_ci) → PagerDuty / Slack hi / Slack std / Email` with amber default fallback. **Retry until success (While)**: `Webhook → While(status ≠ 2xx OR first iter) → HTTP Request → Notification` with hard cap 5. **Agent ↔ tool loopback**: `Webhook → Planner LLM → Condition(use_tool?) → { MCP Tool ↻ loopback → Planner } OR Final LLM`. Together they surface NODES-01.a, NODES-01.b, and CYCLIC-01 loopback edges as first-class starter patterns. | **Done** |
+
 ---
 
 ## Pending backlog

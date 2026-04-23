@@ -66,15 +66,55 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       type: "agenticNode",
       position: { x: 500, y: 220 },
       data: {
-        label: "LLM Router",
+        label: "Intent Classifier",
         displayName: "Classify: orders / technical / general",
-        nodeCategory: "agent",
+        nodeCategory: "nlp",
         config: {
-          icon: "route",
+          icon: "target",
+          utteranceExpression: "trigger.message",
+          intents: [
+            {
+              name: "orders_and_shipping",
+              description:
+                "Questions about orders, billing, returns, refunds, shipment status, or tracking.",
+              examples: [
+                "where is my order",
+                "I want a refund",
+                "can you change my shipping address",
+                "invoice is wrong",
+              ],
+              priority: 100,
+            },
+            {
+              name: "technical_issue",
+              description:
+                "Product errors, crashes, login issues, outages, diagnostics — anything requiring troubleshooting.",
+              examples: [
+                "my app keeps crashing",
+                "can't log in",
+                "seeing error 502 on the dashboard",
+                "VPN disconnects every hour",
+              ],
+              priority: 100,
+            },
+            {
+              name: "general_inquiry",
+              description:
+                "Greetings, vague questions, out-of-scope messages, or general clarification requests.",
+              examples: [
+                "hello",
+                "what can you do",
+                "is there a human I can talk to",
+              ],
+              priority: 50,
+            },
+          ],
+          mode: "hybrid",
           ...TEMPLATE_TIER_FAST,
-          intents: ["orders_and_shipping", "technical_issue", "general_inquiry"],
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          confidenceThreshold: 0.6,
           historyNodeId: "node_2",
-          userMessageExpression: "trigger.message",
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -84,14 +124,24 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       type: "agenticNode",
       position: { x: 760, y: 220 },
       data: {
-        label: "Condition",
-        displayName: "If orders & shipping",
+        label: "Switch",
+        displayName: "Route by intent",
         nodeCategory: "logic",
         config: {
-          icon: "git-branch",
-          condition: 'node_3.intent == "orders_and_shipping"',
-          trueLabel: "Orders / shipping",
-          falseLabel: "Else",
+          icon: "git-fork",
+          // NODES-01.a Switch replaces the earlier LLM Router + two
+          // serial Condition nodes. ``intents[0]`` is Intent
+          // Classifier's top-scoring label; unmatched values flow
+          // through the amber default handle (hooked to the general
+          // path so unknown classes still get a polite reply).
+          expression: "node_3.intents[0]",
+          cases: [
+            { value: "orders_and_shipping", label: "Orders / shipping" },
+            { value: "technical_issue", label: "Technical" },
+            { value: "general_inquiry", label: "General" },
+          ],
+          defaultLabel: "Unknown",
+          matchMode: "equals",
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -121,23 +171,6 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       } satisfies AgenticNodeData,
     },
     {
-      id: "node_6",
-      type: "agenticNode",
-      position: { x: 1020, y: 260 },
-      data: {
-        label: "Condition",
-        displayName: "Else if technical issue",
-        nodeCategory: "logic",
-        config: {
-          icon: "git-branch",
-          condition: 'node_3.intent == "technical_issue"',
-          trueLabel: "Technical",
-          falseLabel: "General",
-        },
-        status: "idle",
-      } satisfies AgenticNodeData,
-    },
-    {
       id: "node_7",
       type: "agenticNode",
       position: { x: 1240, y: 140 },
@@ -154,7 +187,17 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
             "If severity is high (data loss, outage, security), say you are escalating and summarize for L2. " +
             "Stay within safe guidance; do not ask for passwords.",
           maxIterations: 10,
+          // MCP tool hints (SMART-06): populate ``tools`` with the
+          // specific names the tenant's default MCP server exposes
+          // (open the MCP Servers dialog → pick a server → copy tool
+          // names). Leave ``mcpServerLabel`` blank to resolve to the
+          // tenant default; set it to a label if you have multiple
+          // registered servers (e.g. "runbooks", "diagnostics").
+          // Empty list here = ReAct calls no tools (pure reasoning
+          // loop). See codewiki/mcp-audit.md for the per-tenant
+          // registry and MCP-06 fingerprint-drift protections.
           tools: [],
+          mcpServerLabel: "",
           historyNodeId: "node_2",
           memoryEnabled: true,
         },
@@ -346,40 +389,43 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
     { id: "e_1_2", source: "node_1", target: "node_2" },
     { id: "e_2_3", source: "node_2", target: "node_3" },
     { id: "e_3_4", source: "node_3", target: "node_4" },
+    // Switch fan-out: edge.sourceHandle equals the matched case value.
+    // Unmatched values flow through the 'default' handle into the
+    // general/deflection agent — never drops a customer message.
     {
       id: "e_4_5",
       source: "node_4",
       target: "node_5",
-      sourceHandle: "true",
-      label: "Yes",
-      style: { stroke: "#22c55e", strokeWidth: 2 },
+      sourceHandle: "orders_and_shipping",
+      label: "Orders / shipping",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
       animated: true,
     },
     {
-      id: "e_4_6",
+      id: "e_4_7",
       source: "node_4",
-      target: "node_6",
-      sourceHandle: "false",
-      label: "No",
-      style: { stroke: "#ef4444", strokeWidth: 2 },
-      animated: true,
-    },
-    {
-      id: "e_6_7",
-      source: "node_6",
       target: "node_7",
-      sourceHandle: "true",
-      label: "Yes",
-      style: { stroke: "#22c55e", strokeWidth: 2 },
+      sourceHandle: "technical_issue",
+      label: "Technical",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
       animated: true,
     },
     {
-      id: "e_6_8",
-      source: "node_6",
+      id: "e_4_8",
+      source: "node_4",
       target: "node_8",
-      sourceHandle: "false",
-      label: "No",
-      style: { stroke: "#ef4444", strokeWidth: 2 },
+      sourceHandle: "general_inquiry",
+      label: "General",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_4_8_default",
+      source: "node_4",
+      target: "node_8",
+      sourceHandle: "default",
+      label: "Unknown → general",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "4 3" },
       animated: true,
     },
     { id: "e_5_15", source: "node_5", target: "node_15" },

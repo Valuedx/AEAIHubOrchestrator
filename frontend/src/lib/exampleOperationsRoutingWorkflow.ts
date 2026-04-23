@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { AgenticNodeData } from "@/types/nodes";
-import { TEMPLATE_TIER_FAST } from "@/lib/modelTiers";
+import { TEMPLATE_TIER_FAST, TEMPLATE_TIER_BALANCED } from "@/lib/modelTiers";
 
 /**
  * Operations routing workflow with four specialist paths: diagnostics,
@@ -77,16 +77,66 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       type: "agenticNode",
       position: { x: 460, y: 260 },
       data: {
-        label: "LLM Router",
-        displayName: "Route message to specialist",
-        nodeCategory: "agent",
+        label: "Intent Classifier",
+        displayName: "Classify: diagnostics / remediation / RCA / ops",
+        nodeCategory: "nlp",
         config: {
-          icon: "route",
+          icon: "target",
+          utteranceExpression: "trigger.message",
+          intents: [
+            {
+              name: "diagnostics",
+              description:
+                "Investigate a failure: pull status, logs, dependencies, or trace a specific incident.",
+              examples: [
+                "why did the payroll workflow fail last night",
+                "show me logs for job abc-123",
+                "what went wrong with the nightly ETL",
+                "investigate the 502 errors",
+              ],
+              priority: 100,
+            },
+            {
+              name: "remediation",
+              description:
+                "Take a corrective action: restart, retry, roll back, disable, or safely reconfigure.",
+              examples: [
+                "restart the workflow and clear the stuck items",
+                "retry the failed job",
+                "roll back to the last known good config",
+                "disable the flapping schedule",
+              ],
+              priority: 100,
+            },
+            {
+              name: "rca_report",
+              description:
+                "Produce a structured root-cause / postmortem report for an incident that already happened.",
+              examples: [
+                "write an RCA for yesterday's outage",
+                "postmortem for the queue backlog",
+                "incident report for exec review",
+              ],
+              priority: 100,
+            },
+            {
+              name: "ops_orchestrator",
+              description:
+                "General operations guidance — workflows, queues, schedules, batch jobs — when the request isn't cleanly diagnostics/remediation/RCA.",
+              examples: [
+                "help me plan the migration",
+                "what's the recommended pattern here",
+                "review my workflow design",
+              ],
+              priority: 50,
+            },
+          ],
+          mode: "hybrid",
           ...TEMPLATE_TIER_FAST,
-          // First = fallback when the model returns an unknown label (matches ops_orchestrator as default catch-all).
-          intents: ["ops_orchestrator", "diagnostics", "remediation", "rca_report"],
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          confidenceThreshold: 0.6,
           historyNodeId: "node_2",
-          userMessageExpression: "trigger.message",
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -96,48 +146,25 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
       type: "agenticNode",
       position: { x: 700, y: 260 },
       data: {
-        label: "Condition",
-        displayName: "If intent = diagnostics",
+        label: "Switch",
+        displayName: "Route by intent",
         nodeCategory: "logic",
         config: {
-          icon: "git-branch",
-          condition: 'node_3.intent == "diagnostics"',
-          trueLabel: "Diagnostics",
-          falseLabel: "Next",
-        },
-        status: "idle",
-      } satisfies AgenticNodeData,
-    },
-    {
-      id: "node_5",
-      type: "agenticNode",
-      position: { x: 940, y: 360 },
-      data: {
-        label: "Condition",
-        displayName: "Else if intent = remediation",
-        nodeCategory: "logic",
-        config: {
-          icon: "git-branch",
-          condition: 'node_3.intent == "remediation"',
-          trueLabel: "Remediation",
-          falseLabel: "Next",
-        },
-        status: "idle",
-      } satisfies AgenticNodeData,
-    },
-    {
-      id: "node_6",
-      type: "agenticNode",
-      position: { x: 1180, y: 460 },
-      data: {
-        label: "Condition",
-        displayName: "Else if intent = RCA report",
-        nodeCategory: "logic",
-        config: {
-          icon: "git-branch",
-          condition: 'node_3.intent == "rca_report"',
-          trueLabel: "RCA",
-          falseLabel: "Ops default",
+          icon: "git-fork",
+          // NODES-01.a Switch replaces the earlier 3-deep Condition
+          // chain. ``intents[0]`` is Intent Classifier's top-scoring
+          // label; unmatched values flow through the amber default
+          // handle into the ops-orchestrator fallback so no message is
+          // ever dropped.
+          expression: "node_3.intents[0]",
+          cases: [
+            { value: "diagnostics", label: "Diagnostics" },
+            { value: "remediation", label: "Remediation" },
+            { value: "rca_report", label: "RCA report" },
+            { value: "ops_orchestrator", label: "Default ops" },
+          ],
+          defaultLabel: "Unknown → default ops",
+          matchMode: "equals",
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -158,7 +185,15 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
             "Investigate RPA/workflow failures: pull status, logs, dependencies, files. " +
             "Prefer MCP tools for status, logs, and diagnostics. Summarize evidence before suggesting fixes.",
           maxIterations: 12,
+          // MCP hints (SMART-06): register your diagnostics/runbook
+          // MCP server via the toolbar's MCP Servers dialog, then
+          // list the tools this specialist should call (e.g.
+          // ``get_workflow_status``, ``get_execution_logs``,
+          // ``list_dependencies``). Blank ``mcpServerLabel``
+          // resolves to the tenant default server. See
+          // codewiki/mcp-audit.md.
           tools: [],
+          mcpServerLabel: "",
           historyNodeId: "node_2",
           memoryEnabled: true,
         },
@@ -181,7 +216,16 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
             "Execute corrective actions: restart workflows, notifications, safe config changes. " +
             "Use MCP remediation/notification tools when available. Confirm impact before destructive steps.",
           maxIterations: 12,
+          // MCP hints (SMART-06): remediation tools tend to be the
+          // ones flagged ``destructiveHint=true`` in the MCP spec —
+          // pair this specialist with an MCP server that exposes
+          // e.g. ``restart_workflow``, ``retry_failed_job``,
+          // ``send_incident_notification``. The Human Approval gate
+          // at node_11 holds before the remediation reply reaches
+          // the user; HITL confirmation on destructive MCP calls is
+          // the MCP-04 follow-up. See codewiki/mcp-audit.md.
           tools: [],
+          mcpServerLabel: "",
           historyNodeId: "node_2",
           memoryEnabled: true,
         },
@@ -198,7 +242,12 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          ...TEMPLATE_TIER_FAST,
+          // Tier escalation: incident postmortems require synthesis
+          // across sparse signals + an exec-ready narrative. The
+          // balanced tier (gemini-2.5-pro) handles the reasoning
+          // load; the faster flash tier tends to produce shorter,
+          // more surface-level root cause analyses.
+          ...TEMPLATE_TIER_BALANCED,
           systemPrompt:
             "You are the RCA Specialist. " +
             "Produce a structured incident report: Summary, Timeline, Root cause, Impact, Prevention, " +
@@ -390,58 +439,52 @@ export const EXAMPLE_OPERATIONS_ROUTING_WORKFLOW: { nodes: Node[]; edges: Edge[]
     { id: "e_1_2", source: "node_1", target: "node_2" },
     { id: "e_2_3", source: "node_2", target: "node_3" },
     { id: "e_3_4", source: "node_3", target: "node_4" },
+    // Switch fan-out: edge.sourceHandle equals the matched intent
+    // value. Unmatched cases flow through 'default' into the ops
+    // orchestrator fallback so every message gets a reply.
     {
       id: "e_4_7",
       source: "node_4",
       target: "node_7",
-      sourceHandle: "true",
-      label: "Yes",
-      style: { stroke: "#22c55e", strokeWidth: 2 },
+      sourceHandle: "diagnostics",
+      label: "Diagnostics",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
       animated: true,
     },
     {
-      id: "e_4_5",
+      id: "e_4_8",
       source: "node_4",
-      target: "node_5",
-      sourceHandle: "false",
-      label: "No",
-      style: { stroke: "#ef4444", strokeWidth: 2 },
-      animated: true,
-    },
-    {
-      id: "e_5_8",
-      source: "node_5",
       target: "node_8",
-      sourceHandle: "true",
-      label: "Yes",
-      style: { stroke: "#22c55e", strokeWidth: 2 },
+      sourceHandle: "remediation",
+      label: "Remediation",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
       animated: true,
     },
     {
-      id: "e_5_6",
-      source: "node_5",
-      target: "node_6",
-      sourceHandle: "false",
-      label: "No",
-      style: { stroke: "#ef4444", strokeWidth: 2 },
-      animated: true,
-    },
-    {
-      id: "e_6_9",
-      source: "node_6",
+      id: "e_4_9",
+      source: "node_4",
       target: "node_9",
-      sourceHandle: "true",
-      label: "Yes",
-      style: { stroke: "#22c55e", strokeWidth: 2 },
+      sourceHandle: "rca_report",
+      label: "RCA",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
       animated: true,
     },
     {
-      id: "e_6_10",
-      source: "node_6",
+      id: "e_4_10",
+      source: "node_4",
       target: "node_10",
-      sourceHandle: "false",
-      label: "No",
-      style: { stroke: "#ef4444", strokeWidth: 2 },
+      sourceHandle: "ops_orchestrator",
+      label: "Default ops",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_4_10_default",
+      source: "node_4",
+      target: "node_10",
+      sourceHandle: "default",
+      label: "Unknown → default ops",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "4 3" },
       animated: true,
     },
     { id: "e_7_16", source: "node_7", target: "node_16" },

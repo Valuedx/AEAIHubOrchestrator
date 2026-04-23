@@ -96,6 +96,8 @@ The registry maps four user-facing roles to a concrete model ID per provider. Te
 
 **Default policy.** GA variants are preferred for `fast` and `balanced` so workflows don't silently run on preview models. `powerful` and `copilot` roles opt into Gemini 3.x preview explicitly — any tenant that disables preview via the allowlist falls back to 2.5-pro automatically.
 
+**Templates already on BALANCED** (TMPL-01.b): Multi-Agent Research synthesizer, Ops Routing RCA agent, Document Review summary/risk agent — every node where reasoning quality dominates latency/cost. Researcher, critic, chat, notification, and intake nodes stay on `FAST`.
+
 `default_llm_for(provider, role)` resolves the role. Missing roles fall back in this order: `copilot → powerful → balanced → fast`, so adding a new provider needs at most one role populated.
 
 **Default embedding.** Global default is `openai` / `text-embedding-3-small` (GA, cheapest, widest compatibility). Vertex / Google tenants are offered `gemini-embedding-2` at picker time — see [§5](#5-kb-picker-ux).

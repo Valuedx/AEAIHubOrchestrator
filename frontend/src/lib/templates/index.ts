@@ -74,7 +74,11 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          ...TEMPLATE_TIER_FAST,
+          // Tier escalation: risk identification + compliance reasoning
+          // benefits from the balanced tier (gemini-2.5-pro) over the
+          // faster flash default. A missed legal/policy risk is much
+          // more expensive than a few extra ms of latency.
+          ...TEMPLATE_TIER_BALANCED,
           systemPrompt:
             "You review documents submitted via webhook. Summarize key points, list compliance or policy risks, " +
             "and suggest whether a human should approve before external send. Use trigger.document_text or trigger.body when present.",
@@ -96,9 +100,21 @@ const DOCUMENT_REVIEW_HITL: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "action",
         config: {
           icon: "user-check",
+          // HITL-01 note: every approval submit is captured by the
+          // approval_audit_log (claimed approver + reason + patch +
+          // timestamp), and pending approvals appear in the toolbar
+          // badge for visibility. Per-node approvers allowlist and
+          // timeoutAction knobs are planned (HITL-01.c/d) and will
+          // extend this config; no schema change needed for today's
+          // approvers.
           approvalMessage:
-            "Review the LLM summary and risks. Approve to release the reply, or reject with edits in the resume payload.",
-          timeout: 86400,
+            "Review the document summary and flagged risks below. " +
+            "Approve to send the reply, or reject with edits in the resume payload's patch field. " +
+            "Your claimed approver name is captured for the audit trail.",
+          // 4 hours — realistic for legal/manager review without
+          // letting stale approvals pile up. The pending-approvals
+          // badge (HITL-01.b) shows the full queue regardless.
+          timeout: 14400,
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -225,7 +241,12 @@ const MULTI_AGENT_RESEARCH: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          ...TEMPLATE_TIER_FAST,
+          // Tier escalation: the synthesizer resolves conflicting
+          // claims from researcher + critic — that's reasoning-heavy,
+          // which is what the balanced tier (gemini-2.5-pro) is
+          // optimised for. Researcher + critic themselves stay on
+          // FAST to keep the parallel fan-out cheap.
+          ...TEMPLATE_TIER_BALANCED,
           systemPrompt:
             "Combine node_2 (researcher) and node_3 (critic) outputs into one clear answer for the user. " +
             "Resolve disagreements; note remaining uncertainties.",
@@ -468,6 +489,14 @@ const RAG_KNOWLEDGE_QA: { nodes: Node[]; edges: Edge[] } = {
         nodeCategory: "knowledge",
         config: {
           icon: "database",
+          // knowledgeBaseIds: attach one or more KBs in the
+          // inspector. The KB's own embedding_model drives retrieval
+          // — pick ``gemini-embedding-2`` at KB-create time for
+          // MULTIMODAL corpora (text + image + video + audio, 3072d
+          // Matryoshka). Stick with OpenAI ``text-embedding-3-small``
+          // (1536d) for text-only KBs that need the cheapest option.
+          // See codewiki/rag-knowledge-base.md for the full embedding
+          // picker matrix.
           knowledgeBaseIds: [],
           queryExpression: "trigger.message",
           topK: 5,
@@ -1023,6 +1052,421 @@ const EPISODE_ARCHIVE_SUPPORT: { nodes: Node[]; edges: Edge[] } = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// NODES-01 showcase templates — demonstrate the logic primitives shipped
+// in the 2026 spring sprint (Switch, While, CYCLIC-01 loopback edges).
+// Each is intentionally small so the pattern reads at a glance.
+// ---------------------------------------------------------------------------
+
+/** Priority routing: webhook → Switch → per-tier notification. Demonstrates
+ *  NODES-01.a with no upstream classifier — the Switch reads directly from
+ *  the trigger payload's `priority` field. ``matchMode: "equals_ci"`` keeps
+ *  it robust to `"P1"` vs `"p1"`. */
+const PRIORITY_ROUTING_SWITCH: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 220 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Incident intake",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/incidents/new" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 280, y: 220 },
+      data: {
+        label: "Switch",
+        displayName: "Route by priority tier",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-fork",
+          // NODES-01.a Switch — no classifier needed when the payload
+          // already carries a structured field. equals_ci so a
+          // caller sending "p1" matches case value "P1".
+          expression: "trigger.priority",
+          cases: [
+            { value: "P1", label: "P1 · page oncall" },
+            { value: "P2", label: "P2 · Slack high-pri" },
+            { value: "P3", label: "P3 · Slack standard" },
+            { value: "P4", label: "P4 · email" },
+          ],
+          defaultLabel: "Unknown → email",
+          matchMode: "equals_ci",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 620, y: 40 },
+      data: {
+        label: "Notification",
+        displayName: "PagerDuty page (P1)",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "pagerduty",
+          destination: "{{ env.PAGERDUTY_ROUTING_KEY }}",
+          severity: "critical",
+          eventAction: "trigger",
+          messageTemplate:
+            "[P1] {{ trigger.title }} — {{ trigger.description }} ({{ trigger.service }})",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 620, y: 180 },
+      data: {
+        label: "Notification",
+        displayName: "Slack high-pri (P2)",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_INCIDENTS_WEBHOOK }}",
+          username: "Incident Bot",
+          iconEmoji: ":rotating_light:",
+          messageTemplate:
+            ":rotating_light: *P2* — *{{ trigger.title }}*\n{{ trigger.description }}\nService: {{ trigger.service }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 620, y: 320 },
+      data: {
+        label: "Notification",
+        displayName: "Slack standard (P3)",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_OPS_WEBHOOK }}",
+          username: "Ops Bot",
+          iconEmoji: ":mag:",
+          messageTemplate:
+            ":mag: P3 — {{ trigger.title }} ({{ trigger.service }})",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_6",
+      type: "agenticNode",
+      position: { x: 620, y: 460 },
+      data: {
+        label: "Notification",
+        displayName: "Email digest (P4 / default)",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "email",
+          destination: "{{ env.OPS_DIGEST_EMAIL }}",
+          emailProvider: "sendgrid",
+          subject: "P4 ticket filed: {{ trigger.title }}",
+          messageTemplate:
+            "P4 ticket filed.\n\nTitle: {{ trigger.title }}\nService: {{ trigger.service }}\nDescription: {{ trigger.description }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    {
+      id: "e_2_3",
+      source: "node_2",
+      target: "node_3",
+      sourceHandle: "P1",
+      label: "P1",
+      style: { stroke: "#ef4444", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_2_4",
+      source: "node_2",
+      target: "node_4",
+      sourceHandle: "P2",
+      label: "P2",
+      style: { stroke: "#f97316", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_2_5",
+      source: "node_2",
+      target: "node_5",
+      sourceHandle: "P3",
+      label: "P3",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_2_6",
+      source: "node_2",
+      target: "node_6",
+      sourceHandle: "P4",
+      label: "P4",
+      style: { stroke: "#64748b", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_2_6_default",
+      source: "node_2",
+      target: "node_6",
+      sourceHandle: "default",
+      label: "Unknown → email",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "4 3" },
+      animated: true,
+    },
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+  ],
+};
+
+/** Retry-until-success: webhook → While → HTTP Request → Notification.
+ *  Demonstrates NODES-01.b — the body node (HTTP Request) re-executes
+ *  each iteration; the loop exits the moment the response is 2xx OR the
+ *  iteration cap hits. `_loop_index` is available in the condition for
+ *  ``do at least N tries`` style expressions. */
+const RETRY_UNTIL_SUCCESS_WHILE: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 200 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Start retry flow",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/flaky-api/retry" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 260, y: 200 },
+      data: {
+        label: "While",
+        displayName: "Retry while non-2xx",
+        nodeCategory: "logic",
+        config: {
+          icon: "rotate-cw",
+          // NODES-01.b While — ``_loop_index`` is 0 on the first pass
+          // (before any body node has run), so short-circuit that
+          // case via the index guard. Once node_3 exists in context,
+          // the status_code check takes over.
+          condition:
+            "_loop_index == 0 or node_3.status_code < 200 or node_3.status_code >= 300",
+          maxIterations: 5,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 520, y: 200 },
+      data: {
+        label: "HTTP Request",
+        displayName: "Call upstream API",
+        nodeCategory: "action",
+        config: {
+          icon: "globe",
+          url: "{{ trigger.target_url }}",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer {{ env.UPSTREAM_API_TOKEN }}",
+          },
+          body: "{{ trigger.payload | tojson }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 820, y: 200 },
+      data: {
+        label: "Notification",
+        displayName: "Report outcome",
+        nodeCategory: "notification",
+        config: {
+          icon: "bell",
+          channel: "slack_webhook",
+          destination: "{{ env.SLACK_OPS_WEBHOOK }}",
+          username: "Retry Bot",
+          iconEmoji: ":arrows_counterclockwise:",
+          // Reports the final HTTP state + number of attempts the
+          // While loop made. node_3 is the last-iteration's output.
+          messageTemplate:
+            "Retry complete. Final status: `{{ node_3.status_code }}` after attempt(s). Target: {{ trigger.target_url }}",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+    { id: "e_2_3", source: "node_2", target: "node_3" },
+    { id: "e_3_4", source: "node_3", target: "node_4" },
+  ],
+};
+
+/** Agent ↔ tool loopback: webhook → planner LLM → Condition (need a tool?) →
+ *  either MCP Tool (loops back to planner) OR final-response LLM. Demonstrates
+ *  CYCLIC-01 — a loopback edge on the tool's output brings control back to
+ *  the planner so the next iteration runs with the tool result in context.
+ *  Explicit node-level version of what ReAct Agent does internally; useful
+ *  when you want per-step observability, data pins, or custom gating. */
+const AGENT_TOOL_LOOPBACK: { nodes: Node[]; edges: Edge[] } = {
+  nodes: [
+    {
+      id: "node_1",
+      type: "agenticNode",
+      position: { x: 0, y: 200 },
+      data: {
+        label: "Webhook Trigger",
+        displayName: "Agent task intake",
+        nodeCategory: "trigger",
+        config: { icon: "webhook", method: "POST", path: "/agent-loop/start" },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_2",
+      type: "agenticNode",
+      position: { x: 260, y: 200 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Planner · decide next action",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          ...TEMPLATE_TIER_BALANCED,
+          systemPrompt:
+            "You are a planning agent. Each turn, decide the single best next step. " +
+            "Respond as STRICT JSON: " +
+            '{"action": "use_tool" | "done", "tool_name": "string", "tool_args": {}, "final_answer": "string"}. ' +
+            "When action=use_tool, include tool_name + tool_args. " +
+            "When action=done, include final_answer and set tool_name/tool_args to null. " +
+            "Use prior tool results in context (node_4.result on subsequent loops) to refine your plan.",
+          temperature: 0.2,
+          maxTokens: 1024,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_3",
+      type: "agenticNode",
+      position: { x: 560, y: 200 },
+      data: {
+        label: "Condition",
+        displayName: "Planner said use_tool?",
+        nodeCategory: "logic",
+        config: {
+          icon: "git-branch",
+          condition: 'node_2.action == "use_tool"',
+          trueLabel: "Call tool",
+          falseLabel: "Done",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_4",
+      type: "agenticNode",
+      position: { x: 820, y: 100 },
+      data: {
+        label: "MCP Tool",
+        displayName: "Execute planner's tool",
+        nodeCategory: "action",
+        config: {
+          icon: "wrench",
+          // Tool name + args come from the planner's JSON output. The
+          // MCP server resolver uses the tenant's default registry
+          // row when ``mcpServerLabel`` is blank (see MCP-02).
+          toolName: "{{ node_2.tool_name }}",
+          arguments: "{{ node_2.tool_args | tojson }}",
+          mcpServerLabel: "",
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+    {
+      id: "node_5",
+      type: "agenticNode",
+      position: { x: 820, y: 320 },
+      data: {
+        label: "LLM Agent",
+        displayName: "Final response",
+        nodeCategory: "agent",
+        config: {
+          icon: "brain",
+          ...TEMPLATE_TIER_FAST,
+          systemPrompt:
+            "The planner is done. Echo ``node_2.final_answer`` as a polished, user-facing reply. " +
+            "If final_answer is missing, explain what information was gathered and what's still open.",
+          temperature: 0.4,
+          maxTokens: 1024,
+          memoryEnabled: false,
+        },
+        status: "idle",
+      } satisfies AgenticNodeData,
+    },
+  ],
+  edges: [
+    { id: "e_1_2", source: "node_1", target: "node_2" },
+    { id: "e_2_3", source: "node_2", target: "node_3" },
+    {
+      id: "e_3_4",
+      source: "node_3",
+      target: "node_4",
+      sourceHandle: "true",
+      label: "Use tool",
+      style: { stroke: "#22c55e", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_3_5",
+      source: "node_3",
+      target: "node_5",
+      sourceHandle: "false",
+      label: "Done",
+      style: { stroke: "#0ea5e9", strokeWidth: 2 },
+      animated: true,
+    },
+    // CYCLIC-01 loopback: after the tool runs, control flows BACK to
+    // the planner so the next iteration sees node_4.result. Hard cap
+    // of 5 stops runaway loops; planner can end earlier by setting
+    // ``action: "done"``.
+    {
+      id: "e_4_2_loopback",
+      source: "node_4",
+      target: "node_2",
+      type: "loopback",
+      data: { maxIterations: 5 },
+      label: "↻ replan with tool result",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "6 4" },
+      animated: true,
+    },
+  ],
+};
+
+
 function asTemplate(
   t: Omit<WorkflowTemplate, "nodeCount">,
 ): WorkflowTemplate {
@@ -1064,9 +1508,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: "document-review-hitl",
     name: "Document review with HITL",
     description:
-      "Summarize submissions with an LLM, pause for human approval, then bridge the approved reply and persist.",
+      "Summarize submissions with a balanced-tier LLM (Gemini 2.5 Pro for legal/risk reasoning), pause for human approval with full audit trail, then bridge the approved reply and persist. The pending-approvals toolbar badge surfaces queued items; every approval submit is captured with approver + reason for compliance.",
     category: "operations",
-    tags: ["compliance", "approval", "documents"],
+    tags: ["compliance", "approval", "documents", "audit"],
     graph: DOCUMENT_REVIEW_HITL,
   }),
   asTemplate({
@@ -1091,9 +1535,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: "rag-knowledge-qa",
     name: "RAG knowledge base Q&A",
     description:
-      "Search a knowledge base for relevant chunks, then answer the user's question with grounded context and multi-turn memory.",
+      "Search a knowledge base for relevant chunks, then answer the user's question with grounded context and multi-turn memory. For mixed-media KBs (screenshots, PDFs, audio transcripts), pick gemini-embedding-2 at KB creation time — a single 3072-dim multimodal vector space covers text + image + video + audio.",
     category: "research",
-    tags: ["RAG", "knowledge", "retrieval", "grounded"],
+    tags: ["RAG", "knowledge", "retrieval", "grounded", "multimodal"],
     graph: RAG_KNOWLEDGE_QA,
   }),
   asTemplate({
@@ -1122,6 +1566,34 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     category: "customer-support",
     tags: ["archive", "episode", "memory", "chatbot", "HITL"],
     graph: EPISODE_ARCHIVE_SUPPORT,
+  }),
+  // NODES-01 showcase templates — logic-primitive demos.
+  asTemplate({
+    id: "priority-router-switch",
+    name: "Priority router (Switch)",
+    description:
+      "Route incidents by priority (P1/P2/P3/P4) to PagerDuty, Slack, or email in one Switch node — no classifier required when the payload already carries the tier. Showcases NODES-01.a with matchMode=equals_ci so 'p1' and 'P1' both match.",
+    category: "notification",
+    tags: ["switch", "routing", "multi-branch", "priority", "notification"],
+    graph: PRIORITY_ROUTING_SWITCH,
+  }),
+  asTemplate({
+    id: "retry-until-success-while",
+    name: "Retry until success (While)",
+    description:
+      "Hit a flaky upstream API until it returns 2xx — or give up after 5 attempts and report the final status to Slack. Showcases NODES-01.b: the While node re-evaluates its condition before each iteration and _loop_index is available inside the expression.",
+    category: "operations",
+    tags: ["while", "loop", "retry", "http", "backoff"],
+    graph: RETRY_UNTIL_SUCCESS_WHILE,
+  }),
+  asTemplate({
+    id: "agent-tool-loopback",
+    name: "Agent ↔ tool loopback",
+    description:
+      "Planner LLM picks a tool, MCP Tool executes it, and the result loops back to the planner for the next step. Capped at 5 loops. Showcases CYCLIC-01 loopback edges — the explicit node-level version of what ReAct Agent does internally, giving you per-step pins, observability, and custom gating.",
+    category: "research",
+    tags: ["loopback", "cyclic", "agent", "tools", "MCP", "ReAct"],
+    graph: AGENT_TOOL_LOOPBACK,
   }),
 ];
 
