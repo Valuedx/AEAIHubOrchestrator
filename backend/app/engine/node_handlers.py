@@ -168,7 +168,7 @@ def _handle_agent(
     from app.engine.memory_service import assemble_agent_messages
     from app.engine.prompt_template import render_prompt
 
-    provider = config.get("provider", "google")
+    provider = config.get("provider", "vertex")
     model = config.get("model", "gemini-2.5-flash")
     raw_prompt = config.get("systemPrompt", "")
     temperature = float(config.get("temperature", 0.7))

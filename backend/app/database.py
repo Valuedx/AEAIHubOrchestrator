@@ -1,5 +1,5 @@
 from fastapi import Depends
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import Session, sessionmaker, DeclarativeBase
 
 from app.config import settings
@@ -22,7 +22,20 @@ def set_tenant_context(db: Session, tenant_id: str) -> None:
     """
     if not tenant_id:
         raise ValueError("set_tenant_context: tenant_id must be non-empty")
+    db.info["tenant_id"] = tenant_id
     db.execute(text("SELECT set_tenant_id(:tid)"), {"tid": tenant_id})
+
+
+@event.listens_for(Session, "after_begin")
+def _set_tenant_id_after_begin(session, transaction, connection):
+    """Restore the tenant_id GUC at the start of every transaction if the
+    session was bound to a tenant. This prevents RLS policies from failing
+    on operations (like db.refresh) that occur after a commit() clears the
+    transaction-local configuration.
+    """
+    tenant_id = session.info.get("tenant_id")
+    if tenant_id:
+        connection.execute(text("SELECT set_tenant_id(:tid)"), {"tid": tenant_id})
 
 
 def get_db():
