@@ -161,6 +161,16 @@ class Settings(BaseSettings):
     vertex_project: str = ""
     vertex_location: str = "us-central1"
 
+    # Read-timeout (seconds) for every google-genai client call (both
+    # AI Studio + Vertex). google-genai's underlying httpx client
+    # defaults to a 5-second read timeout, which is far too short for
+    # Gemini 3.1 Pro "thinking" + tool-calling round-trips that can
+    # easily take 30-90 s and occasionally multi-minute. 300 s gives
+    # the copilot + engine nodes enough headroom without hanging
+    # forever on a truly stuck call. Applied uniformly via the client
+    # factory in engine/llm_providers.py::_google_client.
+    google_llm_timeout_seconds: int = 300
+
     # Code Execution Sandbox
     code_sandbox_enabled: bool = True
     code_sandbox_timeout_max: int = 120

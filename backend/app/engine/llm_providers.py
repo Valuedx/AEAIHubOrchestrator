@@ -206,6 +206,21 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
     know exactly which setting to populate.
     """
     from google import genai
+    from google.genai.types import HttpOptions
+
+    from app.config import settings
+
+    # Read-timeout shared by every google-genai call through this
+    # factory. google-genai's underlying httpx client defaults to a
+    # 5-second read timeout, which is much shorter than a realistic
+    # Gemini 3.1 Pro thinking + tool-calling round-trip (30-90s common,
+    # multi-minute on heavy reasoning). Without this override, the
+    # copilot on Vertex raises ``httpx.ReadTimeout`` on its first turn.
+    # Tuned via ``ORCHESTRATOR_GOOGLE_LLM_TIMEOUT_SECONDS``. The SDK
+    # takes milliseconds.
+    http_options = HttpOptions(
+        timeout=int(settings.google_llm_timeout_seconds) * 1000,
+    )
 
     if backend == "vertex":
         project, location = _resolve_vertex_target(tenant_id)
@@ -215,6 +230,7 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
             vertexai=True,
             project=project,
             location=location,
+            http_options=http_options,
         )
     if backend == "genai":
         # ADMIN-03 — per-tenant Google AI Studio key via the LLM
@@ -222,7 +238,10 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
         # a remediation-bearing ValueError if neither is set.
         from app.engine.llm_credentials_resolver import get_google_api_key
 
-        return genai.Client(api_key=get_google_api_key(tenant_id))
+        return genai.Client(
+            api_key=get_google_api_key(tenant_id),
+            http_options=http_options,
+        )
     raise ValueError(f"Unknown google backend: {backend!r}")
 
 
