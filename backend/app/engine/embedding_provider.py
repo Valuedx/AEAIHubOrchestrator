@@ -143,19 +143,38 @@ async def _embed_google(texts: list[str], model: str) -> list[list[float]]:
 async def _embed_vertex(
     texts: list[str], model: str, task_type: str
 ) -> list[list[float]]:
+    """Vertex AI embeddings via the unified ``google-genai`` SDK.
+
+    Mirrors :func:`_embed_google` — same client class, same
+    ``embed_content`` call — but constructed with ``vertexai=True`` so
+    requests route through Vertex (ADC auth, per-project billing) instead
+    of AI Studio. Replaces the legacy ``vertexai.language_models``
+    ``TextEmbeddingModel`` path, which wrapped a synchronous HTTP call
+    inside ``async def`` and blocked the shared event loop for the full
+    Vertex round-trip.
+    """
     if not settings.vertex_project:
         raise ValueError(
             "ORCHESTRATOR_VERTEX_PROJECT is not configured (required for Vertex AI embeddings)"
         )
 
-    import vertexai  # type: ignore[import-untyped]
-    from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput  # type: ignore[import-untyped]
+    from google import genai
+    from google.genai import types
 
-    vertexai.init(project=settings.vertex_project, location=settings.vertex_location)
-    vtx_model = TextEmbeddingModel.from_pretrained(model)
-    inputs = [TextEmbeddingInput(text=t, task_type=task_type) for t in texts]
-    embeddings = vtx_model.get_embeddings(inputs)
-    return [e.values for e in embeddings]
+    client = genai.Client(
+        vertexai=True,
+        project=settings.vertex_project,
+        location=settings.vertex_location,
+    )
+    result = client.models.embed_content(
+        model=model,
+        contents=texts,
+        config=types.EmbedContentConfig(
+            task_type=task_type,
+            output_dimensionality=get_embedding_dimension("vertex", model),
+        ),
+    )
+    return [e.values for e in result.embeddings]
 
 
 # ---------------------------------------------------------------------------

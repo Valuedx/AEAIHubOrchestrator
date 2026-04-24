@@ -102,14 +102,14 @@ class Settings(BaseSettings):
     smart_05_vector_docs_enabled: bool = False
     # Which embedding provider / model to use for SMART-05. The
     # model must exist in ``embedding_provider.EMBEDDING_REGISTRY``.
-    # Default is OpenAI so operators with existing OpenAI creds
-    # get a working default out of the box; Gemini-native tenants
-    # should set these to ``vertex`` + ``gemini-embedding-001``
-    # (3072-dim) or ``text-embedding-005`` (768-dim) to stay on
-    # their preferred stack end-to-end. Any provider registered in
-    # ``embedding_provider.EMBEDDING_REGISTRY`` is valid.
-    smart_05_embedding_provider: str = "openai"
-    smart_05_embedding_model: str = "text-embedding-3-small"
+    # Defaults to Vertex ``text-embedding-005`` (768-dim) to match the
+    # orchestrator-wide KB default and keep Gemini-native deployments
+    # on one stack. Operators running an OpenAI-first stack should
+    # set these back to ``openai`` + ``text-embedding-3-small``. Any
+    # provider registered in ``embedding_provider.EMBEDDING_REGISTRY``
+    # is valid.
+    smart_05_embedding_provider: str = "vertex"
+    smart_05_embedding_model: str = "text-embedding-005"
 
     # COPILOT-03.c — provider + model that ``suggest_fix`` falls back
     # to when no active CopilotSession exists on the draft (e.g.
@@ -149,8 +149,14 @@ class Settings(BaseSettings):
     use_celery: bool = False
 
     # Knowledge Base / RAG
-    embedding_default_provider: str = "openai"
-    embedding_default_model: str = "text-embedding-3-small"
+    #
+    # Defaults to Vertex AI ``text-embedding-005`` (768-dim) so tenants
+    # without an OpenAI API key don't trip the legacy OpenAI fallback
+    # path at the first embedding call. Operators running an OpenAI-first
+    # stack should set both env vars back to ``openai`` /
+    # ``text-embedding-3-small``.
+    embedding_default_provider: str = "vertex"
+    embedding_default_model: str = "text-embedding-005"
     embedding_batch_size: int = 100
     kb_max_file_size_mb: int = 50
     kb_default_vector_store: str = "pgvector"
