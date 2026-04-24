@@ -70,12 +70,12 @@ _PGVECTOR_UPDATE = text(
 
 _PGVECTOR_SEARCH = text(
     """
-    SELECT id, 1 - (embedding <=> :query::vector) AS score
+    SELECT id, 1 - (embedding <=> CAST(:query AS vector)) AS score
     FROM memory_records
     WHERE tenant_id = :tenant_id
       AND id IN :record_ids
       AND embedding IS NOT NULL
-    ORDER BY embedding <=> :query::vector
+    ORDER BY embedding <=> CAST(:query AS vector)
     LIMIT :top_k
     """
 ).bindparams(bindparam("record_ids", expanding=True))

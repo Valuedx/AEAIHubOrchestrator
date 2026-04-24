@@ -66,10 +66,18 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
           <ScrollArea className="flex-1 min-h-0">
             <div className="space-y-1 p-1">
               {workflows.map((wf) => (
-                <button
+                <div
                   key={wf.id}
                   onClick={() => handleLoad(wf.id)}
-                  className={`w-full flex items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-accent ${
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handleLoad(wf.id);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  className={`w-full flex items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-accent cursor-pointer ${
                     currentWorkflow?.id === wf.id ? "bg-accent" : ""
                   } ${wf.is_active === false ? "opacity-60" : ""}`}
                 >
@@ -114,7 +122,7 @@ export function WorkflowListDialog({ open, onOpenChange }: Props) {
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           </ScrollArea>

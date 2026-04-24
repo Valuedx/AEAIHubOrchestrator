@@ -1219,7 +1219,8 @@ export function DynamicConfigForm({
       {Object.entries(schema).map(([key, field]) => {
         if (field.visibleWhen) {
           const depValue = config[field.visibleWhen.field];
-          if (!field.visibleWhen.values.includes(depValue as string | boolean)) {
+          const visibleValues = field.visibleWhen.values || [];
+          if (!visibleValues.includes(depValue as string | boolean)) {
             return null;
           }
         }

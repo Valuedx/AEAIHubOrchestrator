@@ -113,7 +113,7 @@ def _handle_reflection(
 
     config = node_data.get("config", {})
 
-    provider: str = config.get("provider", "google")
+    provider: str = config.get("provider", "vertex")
     model: str = config.get("model") or default_llm_for(provider, role="fast")
     reflection_prompt_template: str = config.get("reflectionPrompt", "")
     output_keys: list[str] = config.get("outputKeys", [])

@@ -143,19 +143,15 @@ async def _embed_google(texts: list[str], model: str) -> list[list[float]]:
 async def _embed_vertex(
     texts: list[str], model: str, task_type: str
 ) -> list[list[float]]:
-    if not settings.vertex_project:
-        raise ValueError(
-            "ORCHESTRATOR_VERTEX_PROJECT is not configured (required for Vertex AI embeddings)"
-        )
-
-    import vertexai  # type: ignore[import-untyped]
-    from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput  # type: ignore[import-untyped]
-
-    vertexai.init(project=settings.vertex_project, location=settings.vertex_location)
-    vtx_model = TextEmbeddingModel.from_pretrained(model)
-    inputs = [TextEmbeddingInput(text=t, task_type=task_type) for t in texts]
-    embeddings = vtx_model.get_embeddings(inputs)
-    return [e.values for e in embeddings]
+    from app.engine.llm_providers import _google_client
+    # Pass None for tenant_id to use env defaults in the sync/batch path
+    client = _google_client(backend="vertex", tenant_id=None)
+    
+    result = await client.models.embed_content(
+        model=model,
+        contents=texts,
+    )
+    return [e.values for e in result.embeddings]
 
 
 # ---------------------------------------------------------------------------

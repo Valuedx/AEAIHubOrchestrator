@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { AgenticNodeData } from "@/types/nodes";
 import { EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW } from "@/lib/exampleComplexWorkflow";
 import { EXAMPLE_OPERATIONS_ROUTING_WORKFLOW } from "@/lib/exampleOperationsRoutingWorkflow";
+import { AE_OPS_ROUTING_TEMPLATE } from "@/lib/aeOpsRoutingTemplate";
 // MODEL-01.f — tier constants live in their own module to avoid a
 // circular import with the example workflow files above.
 import {
@@ -3007,6 +3008,15 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     category: "operations",
     tags: ["router", "ReAct", "AIOps", "HITL"],
     graph: EXAMPLE_OPERATIONS_ROUTING_WORKFLOW,
+  }),
+  asTemplate({
+    id: "316da27c-7fc0-4535-b246-757dac1aafc7",
+    name: "AE_Ops_Routing_Template",
+    description:
+      "AE_Ops_Routing_Template: Modern AIOps routing with specialist specialists for diagnostics, remediation, and RCA. Features a ReAct-powered Ops Orchestrator for real-time AutomationEdge status checks and guidance. Gates destructive remediation behind human approval.",
+    category: "operations",
+    tags: ["AE_Ops_Routing_Template", "automationedge", "AIOps", "ReAct", "HITL", "router"],
+    graph: AE_OPS_ROUTING_TEMPLATE,
   }),
   asTemplate({
     id: "rag-knowledge-qa",

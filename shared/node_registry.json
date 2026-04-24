@@ -81,7 +81,7 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider to use for this agent"
         },
@@ -155,7 +155,7 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider powering the ReAct reasoning loop"
         },
@@ -593,7 +593,7 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider used to classify the user intent"
         },
@@ -630,7 +630,7 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider used for the reflection call"
         },

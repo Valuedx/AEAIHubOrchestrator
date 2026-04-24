@@ -67,7 +67,7 @@ class ExecuteRequest(BaseModel):
         ),
     )
     sync_timeout: int = Field(
-        120,
+        180,
         ge=5,
         le=3600,
         description="Seconds to wait for a synchronous run before returning 504 Gateway Timeout.",

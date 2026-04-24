@@ -108,8 +108,8 @@ class Settings(BaseSettings):
     # (3072-dim) or ``text-embedding-005`` (768-dim) to stay on
     # their preferred stack end-to-end. Any provider registered in
     # ``embedding_provider.EMBEDDING_REGISTRY`` is valid.
-    smart_05_embedding_provider: str = "openai"
-    smart_05_embedding_model: str = "text-embedding-3-small"
+    smart_05_embedding_provider: str = "vertex"
+    smart_05_embedding_model: str = "text-embedding-005"
 
     # COPILOT-03.c — provider + model that ``suggest_fix`` falls back
     # to when no active CopilotSession exists on the draft (e.g.
@@ -119,7 +119,10 @@ class Settings(BaseSettings):
     # fix suggestions through a different engine. Set to ``vertex``
     # for Gemini-native deployments. Valid providers: ``anthropic``
     # / ``google`` / ``vertex``.
-    copilot_default_provider: str = "anthropic"
+    copilot_default_provider: str = "vertex"
+
+    # MODEL-01.e — default LLM provider / model when the tenant policy is null
+    llm_default_provider: str | None = None
 
     # A2A-01.b — provider info surfaced on the public agent card so
     # remote agents know which org is answering. None of these are
@@ -149,8 +152,8 @@ class Settings(BaseSettings):
     use_celery: bool = False
 
     # Knowledge Base / RAG
-    embedding_default_provider: str = "openai"
-    embedding_default_model: str = "text-embedding-3-small"
+    embedding_default_provider: str = "vertex"
+    embedding_default_model: str = "text-embedding-005"
     embedding_batch_size: int = 100
     kb_max_file_size_mb: int = 50
     kb_default_vector_store: str = "pgvector"

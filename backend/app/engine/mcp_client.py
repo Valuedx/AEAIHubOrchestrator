@@ -218,24 +218,25 @@ async def _list_tools_async(
 # ---------------------------------------------------------------------------
 
 
+import threading
+
+_loop: asyncio.AbstractEventLoop | None = None
+_loop_lock = threading.Lock()
+
 def _get_or_create_loop() -> asyncio.AbstractEventLoop:
-    try:
-        loop = asyncio.get_running_loop()
-        return loop
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
+    global _loop
+    with _loop_lock:
+        if _loop is None or _loop.is_closed():
+            _loop = asyncio.new_event_loop()
+            t = threading.Thread(target=_loop.run_forever, daemon=True)
+            t.start()
+        return _loop
 
 
 def _run_async(coro, timeout: float):
     loop = _get_or_create_loop()
-    if loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=timeout)
-    return loop.run_until_complete(coro)
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
 
 
 def call_tool(
@@ -250,7 +251,7 @@ def call_tool(
         target = resolve_mcp_server(tenant_id, server_label)
         return _run_async(
             _call_tool_async(tool_name, arguments, target, tenant_id),
-            timeout=120,
+            timeout=60,
         )
     except Exception as exc:
         logger.error("MCP call_tool(%s) failed: %s", tool_name, exc)

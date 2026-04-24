@@ -176,7 +176,8 @@ def _handle_agent(
     from app.engine.model_registry import default_llm_for
     from app.engine.prompt_template import render_prompt
 
-    provider = config.get("provider", "vertex")
+    from app.config import settings
+    provider = config.get("provider", settings.llm_default_provider or "vertex")
     model = config.get("model") or default_llm_for(provider, role="fast")
     raw_prompt = config.get("systemPrompt", "")
     temperature = float(config.get("temperature", 0.7))
@@ -864,7 +865,9 @@ def _handle_llm_router(
     from app.engine.model_registry import default_llm_for
 
     config = node_data.get("config", {})
-    provider = config.get("provider", "google")
+    from app.config import settings
+    provider = config.get("provider", settings.llm_default_provider or "vertex")
+    logger.info("LLMRouter: node_id=%s, provider=%s, config_keys=%s", node_data.get("id"), provider, list(config.keys()))
     model = config.get("model") or default_llm_for(provider, role="fast")
     intents: list[str] = config.get("intents", [])
     user_msg_expr = config.get("userMessageExpression", "trigger.message")

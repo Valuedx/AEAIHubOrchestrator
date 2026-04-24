@@ -111,7 +111,7 @@ def _handle_entity_extractor(
     scope_from_node = config.get("scopeFromNode", "")
     intent_entity_mapping: dict = config.get("intentEntityMapping", {})
     llm_fallback = bool(config.get("llmFallback", False))
-    provider = config.get("provider", "google")
+    provider = config.get("provider", "vertex")
     from app.engine.model_registry import default_llm_for
     model = config.get("model") or default_llm_for(provider, role="fast")
 

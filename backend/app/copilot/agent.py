@@ -519,7 +519,6 @@ def _call_google(
     from google.genai import types
 
     from app.engine.llm_providers import _google_client
-
     client = _google_client(state._backend, tenant_id=tenant_id)
     contents = list(state.history)
     if new_user_text:

@@ -13,7 +13,11 @@ and returns a standardized dict:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
+
+from google.genai import types
+from google import genai
 
 from app.config import settings
 
@@ -49,6 +53,16 @@ def call_llm(
         "anthropic": _call_anthropic,
     }
     handler = providers.get(provider)
+    
+    # Safety fallback: if 'google' (AI Studio) is requested but no valid API key
+    # is available (or it's the placeholder UUID), and Vertex is configured,
+    # reroute to Vertex to avoid 400 errors.
+    from app.config import settings
+    is_valid_key = settings.google_api_key and not settings.google_api_key.startswith("5b-b4a8")
+    if provider == "google" and not is_valid_key and settings.vertex_project:
+        logger.warning("Rerouting 'google' provider call to 'vertex' (invalid or missing AI Studio key)")
+        handler = providers["vertex"]
+
     if not handler:
         raise ValueError(f"Unknown LLM provider: {provider}")
 
@@ -96,6 +110,15 @@ def call_llm_streaming(
             messages=messages,
             tenant_id=tenant_id,
         )
+
+    # Safety fallback: if 'google' (AI Studio) is requested but no valid API key
+    # is available (or it's the placeholder UUID), and Vertex is configured,
+    # reroute to Vertex to avoid 400 errors.
+    from app.config import settings
+    is_valid_key = settings.google_api_key and not settings.google_api_key.startswith("5b-b4a8")
+    if provider == "google" and not is_valid_key and settings.vertex_project:
+        logger.warning("Rerouting 'google' streaming provider call to 'vertex' (invalid or missing AI Studio key)")
+        provider = "vertex"
 
     from app.engine.streaming_llm import (
         stream_anthropic,
@@ -224,6 +247,7 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
 
     if backend == "vertex":
         project, location = _resolve_vertex_target(tenant_id)
+        logger.info("Initializing Vertex AI client: project=%s, location=%s, tenant_id=%s", project, location, tenant_id)
         if not project:
             raise ValueError("ORCHESTRATOR_VERTEX_PROJECT is not configured")
         return genai.Client(
@@ -231,6 +255,8 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
             project=project,
             location=location,
             http_options=http_options,
+            api_key=None,
+
         )
     if backend == "genai":
         # ADMIN-03 — per-tenant Google AI Studio key via the LLM
@@ -241,6 +267,7 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
         return genai.Client(
             api_key=get_google_api_key(tenant_id),
             http_options=http_options,
+
         )
     raise ValueError(f"Unknown google backend: {backend!r}")
 
@@ -289,6 +316,7 @@ def _call_google_backend(
             system_instruction="\n\n".join(part for part in system_parts if part) or None,
             temperature=temperature,
             max_output_tokens=max_tokens,
+
         ),
     )
 

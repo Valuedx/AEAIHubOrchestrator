@@ -97,7 +97,7 @@ def _env_defaults() -> EffectivePolicy:
         smart_01_strict_promote_gate_enabled=settings.smart_01_strict_promote_gate_enabled,
         smart_05_vector_docs_enabled=settings.smart_05_vector_docs_enabled,
         # MODEL-01.e — registry owns the defaults; tenant has no override.
-        default_llm_provider=None,
+        default_llm_provider=getattr(settings, "llm_default_provider", None),
         default_llm_model=None,
         default_embedding_provider=None,
         default_embedding_model=None,
@@ -169,14 +169,14 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
             source[field] = "tenant_policy"
             return col_value
 
-        def _pick_opt_str(col_value: str | None, field: str) -> str | None:
+        def _pick_opt_str(col_value: str | None, env_value: str | None, field: str) -> str | None:
             """Optional-string variant for MODEL-01.e fields — null is a
             valid end state meaning "inherit registry default". Source
             flips between tenant_policy (explicit override) and
             env_default (null)."""
             if col_value is None:
                 source[field] = "env_default"
-                return None
+                return env_value
             source[field] = "tenant_policy"
             return col_value
 
@@ -249,18 +249,22 @@ def get_effective_policy(tenant_id: str | None) -> EffectivePolicy:
             # "tenant_policy" when set, "env_default" when null.
             default_llm_provider=_pick_opt_str(
                 getattr(row, "default_llm_provider", None),
+                getattr(settings, "llm_default_provider", None),
                 "default_llm_provider",
             ),
             default_llm_model=_pick_opt_str(
                 getattr(row, "default_llm_model", None),
+                None,
                 "default_llm_model",
             ),
             default_embedding_provider=_pick_opt_str(
                 getattr(row, "default_embedding_provider", None),
+                None,
                 "default_embedding_provider",
             ),
             default_embedding_model=_pick_opt_str(
                 getattr(row, "default_embedding_model", None),
+                None,
                 "default_embedding_model",
             ),
             allowed_model_families=_pick_opt_list(

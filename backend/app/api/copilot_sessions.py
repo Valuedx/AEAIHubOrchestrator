@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from app.config import settings
 
 from app.copilot.agent import (
     AgentRunner,
@@ -60,7 +61,7 @@ router = APIRouter(prefix="/api/v1/copilot/sessions", tags=["copilot-sessions"])
 
 class SessionCreate(BaseModel):
     draft_id: str
-    provider: str = Field(default="anthropic")
+    provider: str = Field(default_factory=lambda: settings.copilot_default_provider or "anthropic")
     # Optional override; falls through to DEFAULT_MODEL_BY_PROVIDER.
     model: str | None = None
 

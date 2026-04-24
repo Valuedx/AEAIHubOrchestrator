@@ -372,8 +372,8 @@ LLM_TIER_DEFAULTS: dict[ModelRole, dict[str, str]] = {
         "openai": "gpt-4o",
     },
     "copilot": {
-        "google": "gemini-3.1-pro-preview-customtools",
-        "vertex": "gemini-3.1-pro-preview-customtools",
+        "google": "gemini-2.5-flash",
+        "vertex": "gemini-2.5-flash",
         "anthropic": "claude-sonnet-4-6",
     },
 }
