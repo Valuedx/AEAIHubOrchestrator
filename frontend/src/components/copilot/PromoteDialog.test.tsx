@@ -94,6 +94,7 @@ describe("PromoteDialog", () => {
             severity: "warn",
             node_id: null,
             message: "Workflow name looks terse",
+            fix_hint: null,
           },
         ],
       },

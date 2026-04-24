@@ -74,6 +74,47 @@ async function request<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Local password auth
+// ---------------------------------------------------------------------------
+
+export interface LocalUser {
+  id: string;
+  tenant_id: string;
+  username: string;
+  email: string | null;
+  is_admin: boolean;
+  disabled: boolean;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: LocalUser;
+}
+
+/** POST /auth/local/login. Sends tenant+username+password and stores the
+ *  issued JWT via setAuthToken() on success. The caller is responsible
+ *  for the follow-up UI transition (usually a reload or navigation). */
+export async function loginLocal(
+  tenantId: string,
+  username: string,
+  password: string,
+): Promise<LoginResponse> {
+  const res = await fetch(`${API_BASE}/auth/local/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tenant_id: tenantId, username, password }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(`Login failed: ${res.status}`, res.status, body);
+  }
+  const data = (await res.json()) as LoginResponse;
+  setAuthToken(data.access_token);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
 // Types matching backend Pydantic schemas
 // ---------------------------------------------------------------------------
 

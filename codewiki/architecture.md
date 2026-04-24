@@ -48,7 +48,7 @@ AE AI Hub Orchestrator is a **no-code visual DAG workflow builder** for agentic 
 
 | Component | File(s) | Role |
 |-----------|---------|------|
-| **App shell** | `App.tsx` | Single-page layout; optional OIDC gate |
+| **App shell** | `App.tsx` | Single-page layout; optional OIDC / local-password login gate keyed off `VITE_AUTH_MODE` |
 | **Toolbar** | `toolbar/Toolbar.tsx` | Workflow save, run, templates, versions, knowledge bases |
 | **Canvas** | `canvas/FlowCanvas.tsx` | React Flow graph; drag-drop from palette; edge creation |
 | **Node Palette** | `sidebar/NodePalette.tsx` | Draggable node types grouped by category |

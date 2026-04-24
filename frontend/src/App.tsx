@@ -16,8 +16,12 @@ import { getAuthToken } from "@/lib/api";
 import { isTextEditingTarget } from "@/lib/keyboardUtils";
 import { prefetchModelDefaults } from "@/lib/useModels";
 
-// OIDC auth gate: only active when VITE_AUTH_MODE=oidc
+// Auth gate: active when VITE_AUTH_MODE=oidc (SSO) or "local"
+// (username/password). In other modes (dev, jwt) the frontend assumes
+// the operator has wired the token into sessionStorage some other way
+// and renders the workspace unconditionally.
 const AUTH_MODE = import.meta.env.VITE_AUTH_MODE;
+const AUTH_GATED = AUTH_MODE === "oidc" || AUTH_MODE === "local";
 
 export default function App() {
   const [paletteCollapsed, setPaletteCollapsed] = useState(false);
@@ -71,7 +75,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [togglePalette]);
 
-  if (AUTH_MODE === "oidc" && !getAuthToken()) {
+  if (AUTH_GATED && !getAuthToken()) {
     return <LoginPage />;
   }
 

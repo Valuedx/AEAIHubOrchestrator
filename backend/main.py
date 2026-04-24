@@ -66,6 +66,18 @@ async def lifespan(app: FastAPI):
             )
         else:
             logging.getLogger(__name__).info("All startup checks passed.")
+
+    # LOCAL-AUTH-01 — idempotent admin seed. No-op unless auth_mode=local
+    # AND ORCHESTRATOR_LOCAL_ADMIN_USERNAME/PASSWORD are set. Runs after
+    # startup checks so a DB outage surfaces via the normal health
+    # signal rather than an opaque seed failure.
+    try:
+        from app.security.local_auth import ensure_admin_seeded
+        ensure_admin_seeded()
+    except Exception as exc:  # pragma: no cover — seed is best-effort
+        logging.getLogger(__name__).warning(
+            "local-auth admin seed skipped: %s", exc,
+        )
     yield
 
 
@@ -133,6 +145,17 @@ if settings.oidc_enabled:
     from app.api.auth import router as oidc_router
     app.include_router(oidc_router)
     logging.getLogger(__name__).info("OIDC federation enabled (issuer: %s)", settings.oidc_issuer)
+
+# LOCAL-AUTH-01 — local username/password auth. The login + /auth/me
+# routes are only mounted when auth_mode=local so dev/jwt/oidc
+# deployments don't expose a surface they can't service. Admin user
+# CRUD is on the same gate.
+if settings.auth_mode == "local":
+    from app.api.auth_local import router as auth_local_router
+    from app.api.users import router as users_router
+    app.include_router(auth_local_router)
+    app.include_router(users_router, prefix="/api/v1/users", tags=["users"])
+    logging.getLogger(__name__).info("Local password auth enabled")
 
 from app.observability import shutdown as _shutdown_langfuse
 atexit.register(_shutdown_langfuse)

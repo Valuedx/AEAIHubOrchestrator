@@ -52,7 +52,7 @@ async def get_tenant_id(
     x_tenant_id_query: str | None = Query(default=None, alias="x_tenant_id"),
 ) -> str:
     """Extract tenant_id from JWT bearer token or fall back to header/query in dev mode."""
-    if settings.auth_mode == "jwt":
+    if settings.auth_mode in ("jwt", "local"):
         token = _extract_bearer_token(request)
         if not token:
             raise HTTPException(

@@ -58,7 +58,7 @@ celery -A app.worker worker --loglevel=info
 ## Optional Integrations
 
 - MCP tools: point `ORCHESTRATOR_MCP_SERVER_URL` at any Streamable HTTP MCP server.
-- Auth: use `ORCHESTRATOR_AUTH_MODE=dev` for local `X-Tenant-Id` auth, or `jwt` for Bearer auth.
+- Auth: `ORCHESTRATOR_AUTH_MODE=dev` for local `X-Tenant-Id` auth, `jwt` for pre-issued Bearer tokens, or `local` for built-in username/password login backed by a `users` table (argon2id). OIDC SSO is an additive layer toggled by `ORCHESTRATOR_OIDC_ENABLED`. See `codewiki/security.md` for the full matrix.
 - Upstream callers: see `examples/python_client.py` for a minimal execute + poll client.
 - Local infra: `docker-compose.yml` starts PostgreSQL and Redis with the defaults used by `backend/.env.example`.
 - CI: `.github/workflows/ci.yml` runs backend portability tests plus a frontend production build.

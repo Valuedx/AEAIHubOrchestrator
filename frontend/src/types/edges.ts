@@ -74,7 +74,7 @@ export function clampLoopbackMaxIterations(
  */
 export function serialiseEdgesForSave<
   T extends { type?: string; data?: unknown; maxIterations?: number | null }
->(edges: T[]): T[] {
+>(edges: T[]): (T & { maxIterations?: number | null })[] {
   return edges.map((e) => {
     if (e.type !== "loopback") return e;
     const maxIter = (e.data as { maxIterations?: unknown } | undefined)
@@ -96,7 +96,7 @@ export function serialiseEdgesForSave<
  */
 export function hydrateEdgesFromLoad<
   T extends { type?: string; data?: unknown; maxIterations?: number | null }
->(edges: T[]): T[] {
+>(edges: T[]): (T & { data?: unknown; maxIterations?: number | null })[] {
   return edges.map((e) => {
     if (e.type !== "loopback") return e;
     if (e.maxIterations === undefined || e.maxIterations === null) return e;

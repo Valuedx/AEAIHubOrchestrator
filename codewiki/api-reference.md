@@ -9,7 +9,76 @@ All endpoints are served by the FastAPI backend (default `http://localhost:8000`
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/health` | None | Returns `{ "status": "ok" }` |
+| `GET` | `/health/ready` | None | STARTUP-01 readiness — runs all startup checks live, 503 on any fail |
 | `GET` | `/auth/token?tenant_id=<id>` | None | Dev-mode only — returns a signed JWT for the given tenant |
+| `GET` | `/auth/oidc/login` | None | OIDC SSO — redirects browser to the identity provider. Only mounted when `ORCHESTRATOR_OIDC_ENABLED=true`. |
+| `GET` | `/auth/oidc/callback?code=&state=` | None | OIDC callback — exchanges code + validates ID token, returns internal JWT. |
+| `POST` | `/auth/local/login` | None | **LOCAL-AUTH-01** — exchange tenant+username+password for a Bearer token. Mounted only when `ORCHESTRATOR_AUTH_MODE=local`. |
+| `GET` | `/auth/me` | Bearer | **LOCAL-AUTH-01** — return the caller's `users` row based on JWT `sub`. Mounted only when `ORCHESTRATOR_AUTH_MODE=local`. |
+
+### `POST /auth/local/login`
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `tenant_id` | string (1–64) | Yes | RLS scope for the user lookup |
+| `username` | string (1–128) | Yes | Case-insensitive within tenant |
+| `password` | string | Yes | Plaintext — compared against argon2id hash |
+
+**Response (200):**
+
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "bearer",
+  "user": {
+    "id": "uuid",
+    "tenant_id": "default",
+    "username": "alice",
+    "email": "alice@example.com",
+    "is_admin": false,
+    "disabled": false
+  }
+}
+```
+
+The issued JWT carries the usual `tenant_id` + `iat` + `exp` claims plus three local-auth extras: `sub=<user_id>`, `username`, `is_admin`. Pass it as `Authorization: Bearer <token>` on subsequent requests.
+
+**Failure modes:**
+
+- `401 Invalid credentials` — unknown user, wrong password, or disabled account. The body is deliberately generic to defeat account enumeration; which branch fired is logged at INFO level on the server.
+- `404 Local auth mode not enabled` — defence-in-depth when the endpoint is reachable but `auth_mode != "local"`.
+
+### `GET /auth/me`
+
+Requires a Bearer token. Returns the caller's `users` row (same shape as the `user` field from `/auth/local/login`). Returns `404` if the token's `sub` isn't a UUID present in `users` — e.g. a token minted by the dev `/auth/token` endpoint or an OIDC callback where no local user was created.
+
+---
+
+## Users (admin only) — `/api/v1/users`
+
+Mounted only when `ORCHESTRATOR_AUTH_MODE=local`. Every endpoint requires a Bearer token whose `is_admin` claim is `true`; otherwise `403 Admin privilege required`. `401 Missing / invalid token` comes back before the admin check when the Bearer header is missing or unparseable, so the two error modes stay distinguishable.
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `POST` | `/api/v1/users` | 201 | Create a user in the caller's tenant |
+| `GET` | `/api/v1/users` | 200 | List users in the caller's tenant |
+| `GET` | `/api/v1/users/{user_id}` | 200 | Fetch one user |
+| `PUT` | `/api/v1/users/{user_id}/password` | 200 | Reset password (enforces `ORCHESTRATOR_PASSWORD_MIN_LENGTH`) |
+| `PUT` | `/api/v1/users/{user_id}/disabled` | 200 | Toggle `disabled`. Self-disable refused with `400`. |
+| `DELETE` | `/api/v1/users/{user_id}` | 204 | Delete. Self-delete refused with `400`. |
+
+**UserCreate** (request body for `POST /api/v1/users`):
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `username` | string (1–128) | Yes | Matches `^[A-Za-z0-9_.\-]+$`; unique per tenant (case-insensitive) |
+| `password` | string | Yes | Must meet `ORCHESTRATOR_PASSWORD_MIN_LENGTH` (default 8) |
+| `email` | email (RFC 5321) | No | Pydantic `EmailStr`; null allowed |
+| `is_admin` | bool | No (default `false`) | Admin users can call `/api/v1/users/*` |
+
+Returns `409` on username collision (case-insensitive, within the caller's tenant) and `400` on policy violation (weak password, bad username characters).
 
 ---
 

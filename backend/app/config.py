@@ -10,8 +10,26 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     cors_origins: list[str] = ["http://localhost:8080", "http://localhost:8082"]
 
-    # Auth: "dev" = X-Tenant-Id header, "jwt" = Bearer token required
+    # Auth: "dev" = X-Tenant-Id header, "jwt" = Bearer token required,
+    # "local" = username/password against the ``users`` table (issues JWT).
+    # OIDC is an additive layer enabled by ``oidc_enabled`` and coexists
+    # with any of the above.
     auth_mode: str = "dev"
+
+    # LOCAL-AUTH-01 — username/password policy. Length-only for v1; see
+    # ``security/local_auth.py::validate_password_strength`` for why.
+    password_min_length: int = 8
+
+    # LOCAL-AUTH-01 — optional bootstrap admin. When ``auth_mode=local``
+    # and both username + password are set, the lifespan seed hook
+    # creates the row on first boot into the tenant configured by
+    # ``local_admin_tenant_id`` (defaulting to ``"default"``). After
+    # the row exists, changing the env vars here has NO effect — use
+    # the admin password-reset endpoint instead. Active Directory /
+    # LDAP binding is out of scope for this revision.
+    local_admin_username: str = ""
+    local_admin_password: str = ""
+    local_admin_tenant_id: str = "default"
 
     # LLM provider keys
     google_api_key: str = ""

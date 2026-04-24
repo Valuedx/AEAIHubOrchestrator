@@ -235,15 +235,20 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         get().edges,
       );
 
+    // React Flow's ``addEdge`` helper assigns the final ``id`` when the
+    // passed-in shape omits it, so the ``Edge`` cast is safe despite
+    // ``id`` being absent at this point. The ``unknown`` hop silences
+    // TS2352 — the discriminated ``Edge`` union is too narrow for the
+    // structural shape we hand React Flow.
     const edge: Edge = isAutoLoopback
-      ? {
+      ? ({
           ...connection,
           type: "loopback",
           // Seed the default cap so the runtime + EdgeInspector have
           // something sensible to show. Author can tune it in the
           // inspector right after.
           data: { maxIterations: LOOPBACK_DEFAULT_MAX_ITERATIONS },
-        } as Edge
+        } as unknown as Edge)
       : ({
           ...connection,
           label: isCondition

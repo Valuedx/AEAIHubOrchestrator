@@ -38,6 +38,7 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `copilot_accepted_patterns` | SMART-02 — snapshot of every promoted draft (graph + NL intent + tags) so the agent can retrieve nearest prior patterns as few-shot (0026) | Yes |
 | `copilot_test_scenarios` | COPILOT-03.a — persisted regression scenarios the agent saves and re-runs; bound to either `draft_id` or `workflow_id` via an XOR check constraint (0027) | Yes |
 | `approval_audit_log` | HITL-01.a — one row per approve / reject / timeout_rejected / timeout_escalated event; captures approver, reason, and before/after context snapshots (0030) | Yes |
+| `users` | LOCAL-AUTH-01 — local password-auth users (tenant-scoped argon2id hashes, is_admin flag, disabled flag) (0033) | Yes |
 
 **DV-07 (migration 0018):** `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` — when false, Schedule Triggers skip the workflow. Manual Run, PATCH, and duplicate all stay active.
 
@@ -328,6 +329,36 @@ Fernet-encrypted key-value secrets per tenant, exposed as `{{ env.KEY }}` in nod
 | `created_at` | `TIMESTAMPTZ` | | |
 | `updated_at` | `TIMESTAMPTZ` | | Auto-updated |
 
+### `users` (LOCAL-AUTH-01, migration 0033)
+
+Local password auth users. Only consulted when `ORCHESTRATOR_AUTH_MODE=local` — in other modes the table stays empty and inert.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | RLS scope |
+| `username` | `VARCHAR(128)` | NOT NULL | Case-insensitive unique within tenant (functional index below) |
+| `email` | `VARCHAR(256)` | nullable | Pydantic `EmailStr` on the API layer |
+| `password_hash` | `TEXT` | NOT NULL | argon2id hash string (`$argon2id$...`) |
+| `is_admin` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Gates `/api/v1/users/*` |
+| `disabled` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Disabled users cannot log in; existing tokens continue to work until expiry |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL | |
+| `updated_at` | `TIMESTAMPTZ` | NOT NULL | Auto-updated |
+| `last_login_at` | `TIMESTAMPTZ` | nullable | Stamped on successful login |
+
+**Indexes:**
+
+- `ix_users_tenant_username` — `UNIQUE (tenant_id, lower(username))` (functional). Lets two tenants share the username `admin` but forbids `Admin` / `ADMIN` / `admin` co-existing in the same tenant.
+- `ix_users_tenant_id` — plain B-tree on `tenant_id` for RLS-filter planning.
+
+**RLS:** Enabled + forced with the standard policy:
+
+```sql
+CREATE POLICY tenant_isolation_users ON users
+  USING      (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+```
+
 ---
 
 ## Knowledge Base tables
@@ -530,6 +561,8 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0029 | `0029_tenant_policies_smart_05.py` | **SMART-05** — add `smart_05_vector_docs_enabled BOOLEAN NOT NULL DEFAULT FALSE` to `tenant_policies`. Opt-in because embedding calls cost tokens; word-overlap search (01b.iii) stays the fallback + auto-degrade path when the embedding provider is unreachable. |
 | 0030 | `0030_approval_audit_log.py` | **HITL-01.a** — create `approval_audit_log` (tenant-scoped RLS): one row per approve / reject / timeout_rejected / timeout_escalated event with `approver, decision, reason, context_before_json, context_after_json`. Indexes on `(tenant_id, created_at)` and `(instance_id, created_at)`. `parent_instance_id` and `approvers_allowlist_matched` are reserved for HITL-01.f and HITL-01.d respectively — NULL on all v0 rows. |
 | 0031 | `0031_workflow_instance_suspended_at.py` | **HITL-01.b** — add `suspended_at TIMESTAMPTZ NULL` to `workflow_instances`. Stamped by all three suspend paths in the dag_runner; cleared on resume. Drives the `GET /pending-approvals` age column and reserved for HITL-01.c's timeout sweep. NULL on rows that suspended before this migration ran (the endpoint falls back to `started_at`). |
+| 0032 | `0032_tenant_policies_model_overrides.py` | **MODEL-01.e** — add `default_llm_provider`, `default_llm_model`, `default_embedding_provider`, `default_embedding_model` (VARCHAR), and `allowed_model_families` (JSONB array) to `tenant_policies`. All nullable — null = fall through to tier-based resolution. |
+| 0033 | `0033_users_local_auth.py` | **LOCAL-AUTH-01** — `users` table for local password authentication. Columns: `id UUID PK`, `tenant_id VARCHAR(64)`, `username VARCHAR(128)`, `email VARCHAR(256)`, `password_hash TEXT` (argon2id), `is_admin`/`disabled BOOLEAN`, `created_at`/`updated_at`/`last_login_at TIMESTAMPTZ`. Case-insensitive unique index on `(tenant_id, lower(username))` — two tenants can share a username; within a tenant the match is case-insensitive. RLS enabled + forced with the standard `app.tenant_id` GUC policy. |
 
 ### Running migrations
 

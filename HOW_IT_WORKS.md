@@ -112,7 +112,7 @@
 11. [Step 10 — Completion and Callback](#11-step-10--completion-and-callback)
 12. [Step 11 — MCP Tool Bridge (Streamable HTTP)](#12-step-11--mcp-tool-bridge-streamable-http)
 13. [Step 12 — Version History and Rollback](#13-step-12--version-history-and-rollback)
-14. [Step 13 — OIDC Authentication Flow](#14-step-13--oidc-authentication-flow)
+14. [Step 13 — Authentication Flows (OIDC + Local Password)](#14-step-13--authentication-flows)
 15. [Step 14 — ForEach Loop Iteration](#15-step-14--foreach-loop-iteration)
 16. [Step 15 — Retry from Failed Node](#16-step-15--retry-from-failed-node)
 17. [Step 17 — External Gateway Bridge](#18-step-17--external-gateway-bridge)
@@ -165,7 +165,7 @@ When the user opens the orchestrator at `http://localhost:8080`, they see a thre
 
 The entire app is wrapped in `ReactFlowProvider` (required by React Flow for coordinate transforms) and `TooltipProvider` (required by shadcn tooltips).
 
-If `VITE_AUTH_MODE=oidc` and no token is stored in `localStorage`, the OIDC `LoginPage` is shown instead.
+If `VITE_AUTH_MODE` is `oidc` (SSO) or `local` (username/password) and no token is stored in `sessionStorage` as `ae_access_token`, the `LoginPage` is shown instead. Under `oidc` the page is a single "Sign in with SSO" button; under `local` it renders a tenant/username/password form that POSTs to `/auth/local/login`.
 
 ### Node card visual indicators
 
@@ -818,17 +818,28 @@ The **History** (clock) button in the Toolbar opens `VersionHistoryDialog`. It s
 
 ---
 
-## 14. Step 13 — OIDC Authentication Flow
+## 14. Step 13 — Authentication Flows
 
-**Code:** `backend/app/api/auth.py`, `frontend/src/components/auth/LoginPage.tsx`, `frontend/src/lib/api.ts`
+**Code:** `backend/app/api/auth.py` (OIDC), `backend/app/api/auth_local.py` (local password), `backend/app/api/users.py` (admin user CRUD), `backend/app/security/jwt_auth.py`, `backend/app/security/local_auth.py`, `frontend/src/components/auth/LoginPage.tsx`, `frontend/src/lib/api.ts`.
 
-The OIDC flow is opt-in. It activates when `ORCHESTRATOR_OIDC_ENABLED=true` (backend) and `VITE_AUTH_MODE=oidc` (frontend).
+The backend exposes four authentication surfaces; a single deployment typically uses one or two. All of them converge on an internal HS256 JWT validated by `security/jwt_auth.py::get_tenant_id`.
+
+| Surface | Activated by | Token source |
+|---------|--------------|--------------|
+| **`dev`** — header-based | `ORCHESTRATOR_AUTH_MODE=dev` (default) | None — client sends `X-Tenant-Id` directly |
+| **`jwt`** — external IdP | `ORCHESTRATOR_AUTH_MODE=jwt` | Pre-issued Bearer, signed with `ORCHESTRATOR_SECRET_KEY` |
+| **`local`** — username/password (LOCAL-AUTH-01) | `ORCHESTRATOR_AUTH_MODE=local` | `POST /auth/local/login` returns a Bearer |
+| **OIDC SSO** (additive) | `ORCHESTRATOR_OIDC_ENABLED=true` | `/auth/oidc/callback` returns a Bearer after ID-token validation |
+
+### 14.1 OIDC flow
+
+Opt-in. Activates when `ORCHESTRATOR_OIDC_ENABLED=true` (backend) and `VITE_AUTH_MODE=oidc` (frontend).
 
 ```
 Browser                        FastAPI (/auth/oidc)        Identity Provider
 ───────                        ───────────────────        ─────────────────
 App.tsx: no token in                  │                          │
-  localStorage → show LoginPage       │                          │
+  sessionStorage → show LoginPage     │                          │
                                       │                          │
 "Sign in with SSO" clicked            │                          │
   └── GET /auth/oidc/login            │                          │
@@ -855,11 +866,54 @@ App.tsx: no token in                  │                          │
                               Return { access_token, tenant_id }  │
                                                                   │
   Frontend stores token in           │                            │
-    localStorage ("ae_access_token") │                            │
+    sessionStorage                   │                            │
+    ("ae_access_token")              │                            │
   App renders normally               │                            │
 ```
 
-Once stored, all API calls use `Authorization: Bearer <token>` instead of `X-Tenant-Id`. The backend validates the JWT via `app/security/jwt_auth.py`.
+Once stored, all API calls use `Authorization: Bearer <token>` instead of `X-Tenant-Id`. The backend validates the JWT via `app/security/jwt_auth.py`. The token is kept in `sessionStorage` (not `localStorage`) so it doesn't survive a browser restart — tab-scoped lifetime meaningfully reduces XSS blast radius.
+
+### 14.2 Local password flow (LOCAL-AUTH-01)
+
+Activates when `ORCHESTRATOR_AUTH_MODE=local` (backend) and `VITE_AUTH_MODE=local` (frontend). The `users` table (migration 0033) owns credentials; passwords are hashed with argon2id. Tenant isolation is enforced by RLS on the table itself.
+
+```
+Browser                       FastAPI                        Postgres
+───────                       ───────                        ────────
+App.tsx: no token in          │                             │
+  sessionStorage → LoginPage  │                             │
+                              │                             │
+LocalLoginForm submits:       │                             │
+  POST /auth/local/login      │                             │
+  { tenant_id, username,      │                             │
+    password }                │                             │
+                              │                             │
+                      set_tenant_context(tenant_id)        │
+                      SELECT * FROM users WHERE           │
+                         tenant_id = :t AND               │
+                         lower(username) = :u             │
+                              ────────────────────────────▶│
+                              ◀────────────────────────────│
+                      argon2.verify(password, hash)        │
+                      If disabled/bad-pass/missing: 401    │
+                      On success:                          │
+                        UPDATE users SET last_login_at     │
+                        create_access_token(               │
+                          tenant_id=user.tenant_id,        │
+                          subject=str(user.id),            │
+                          extra_claims={ username,         │
+                                         is_admin })       │
+  Frontend stores token in    │                            │
+    sessionStorage            │                            │
+    ("ae_access_token")       │                            │
+  window.location.reload()    │                            │
+```
+
+**Admin user CRUD** (`/api/v1/users`) — create / list / reset-password / disable / delete — is mounted only when `auth_mode=local`, and every endpoint requires a Bearer with `is_admin=true`. Self-disable and self-delete are refused so a lone admin can't accidentally lock the tenant out.
+
+**Bootstrap admin.** On first boot into `auth_mode=local`, `security/local_auth.py::ensure_admin_seeded` creates the seed user if `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` + `ORCHESTRATOR_LOCAL_ADMIN_PASSWORD` are set and no user with that username exists in the seed tenant. Subsequent boots are no-ops.
+
+**Deferred — Active Directory / LDAP.** The current `authenticate(db, tenant_id, username, password)` only checks the `users` table. The `/auth/local/login` endpoint will gain an `authenticate_external(...)` path in a follow-up revision, letting a single tenant mix local users with AD-backed users without a breaking schema change or frontend change.
 
 ---
 
