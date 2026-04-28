@@ -447,6 +447,10 @@ File: `app/config.py`
 | `openai_base_url` | `ORCHESTRATOR_OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | `anthropic_api_key` | `ORCHESTRATOR_ANTHROPIC_API_KEY` | `""` |
 | `auth_mode` | `ORCHESTRATOR_AUTH_MODE` | `dev` |
+| `password_min_length` | `ORCHESTRATOR_PASSWORD_MIN_LENGTH` | `8` |
+| `local_admin_username` | `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` | `""` |
+| `local_admin_password` | `ORCHESTRATOR_LOCAL_ADMIN_PASSWORD` | `""` |
+| `local_admin_tenant_id` | `ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID` | `default` |
 | `vault_key` | `ORCHESTRATOR_VAULT_KEY` | `""` |
 | `rate_limit_requests` | `ORCHESTRATOR_RATE_LIMIT_REQUESTS` | `100` |
 | `rate_limit_window` | `ORCHESTRATOR_RATE_LIMIT_WINDOW` | `1 minute` |
@@ -1021,17 +1025,21 @@ The MCP server must be running with `--transport streamable-http`.
 
 ### 8.1 Authentication
 
-File: `app/security/jwt_auth.py`
+Files: `app/security/jwt_auth.py`, `app/security/local_auth.py`, `app/api/auth.py` (OIDC), `app/api/auth_local.py` (local password), `app/api/users.py` (admin user CRUD).
 
-The `get_tenant_id()` dependency supports two modes controlled by `ORCHESTRATOR_AUTH_MODE`:
+The `get_tenant_id()` dependency supports three modes controlled by `ORCHESTRATOR_AUTH_MODE`:
 
-| Mode | Header | Behavior |
-|------|--------|----------|
-| `dev` (default) | `X-Tenant-Id` | Extracts tenant from plain header — for local development only |
+| Mode | Credential | Behavior |
+|------|------------|----------|
+| `dev` (default) | `X-Tenant-Id` header | Extracts tenant from plain header — local development only |
 | `jwt` | `Authorization: Bearer <token>` | Validates HS256-signed JWT, extracts `tenant_id` claim |
+| `local` | `Authorization: Bearer <token>` issued by `POST /auth/local/login` | Same JWT validation as `jwt`; token additionally carries `sub=user_id`, `username`, `is_admin` extra claims |
 
-A development-only `/auth/token?tenant_id=xxx` endpoint generates test JWTs.
-In production, tokens are issued by the organization's identity provider.
+**OIDC** is an independent, additive layer toggled by `ORCHESTRATOR_OIDC_ENABLED`. When on, the backend exposes `/auth/oidc/login` + `/auth/oidc/callback` and mints the same internal JWT on successful ID-token validation. It composes with any of the three `auth_mode` values.
+
+**Local password auth (LOCAL-AUTH-01)** stores usernames in the `users` table (migration 0033) with argon2id password hashes. The table is tenant-scoped, RLS-enforced, with a case-insensitive `(tenant_id, lower(username))` unique index. An optional bootstrap admin can be seeded via `ORCHESTRATOR_LOCAL_ADMIN_*` env vars — consumed only on the very first boot when the target `users` row doesn't yet exist. Admin-only CRUD lives at `/api/v1/users`; self-disable and self-delete are refused to prevent lockouts. Active Directory / LDAP binding is deliberately out of scope and will land as a sibling `authenticate_external(...)` path in `local_auth.py` without a breaking schema change.
+
+A development-only `/auth/token?tenant_id=xxx` endpoint generates test JWTs in `dev` mode. In production, tokens come from (a) the local login endpoint, (b) the OIDC callback, or (c) an external IdP when `auth_mode=jwt`.
 
 ### 8.2 Database-Level Tenant Isolation (RLS)
 
@@ -1041,7 +1049,7 @@ PostgreSQL Row-Level Security policies enforce that every query only sees rows
 belonging to the current tenant. The application sets `app.tenant_id` via
 `SET LOCAL` at the start of each database session.
 
-Tables with RLS: `workflow_definitions`, `workflow_instances`, `tenant_tool_overrides`, `tenant_secrets`.
+Tables with RLS: `workflow_definitions`, `workflow_instances`, `tenant_tool_overrides`, `tenant_secrets`, `users` (migration 0033), plus the memory / conversation / A2A-key / snapshot set wired in migration 0014 and the integrations / MCP / policy tables wired in later migrations.
 
 This provides defense-in-depth on top of application-level `WHERE tenant_id = ...` filtering.
 
@@ -1318,12 +1326,14 @@ A version-controlled JSON file defining all node types with their `config_schema
 - ReAct auto-discovery: when `tools` config is empty, `react_loop.py` calls `list_tools()` and passes all MCP tools. Tool cache upgraded to 5-minute TTL; `POST /api/v1/tools/invalidate-cache` for manual refresh.
 - Workflow version history: `workflow_snapshots` table (Alembic 0002); snapshot inserted before each graph overwrite; `GET /{id}/versions`, `POST /{id}/rollback/{v}` endpoints; `VersionHistoryDialog` in Toolbar with Restore button.
 - OIDC federation: Authorization Code + PKCE flow (`app/api/auth.py`), `authlib` for ID token validation, Redis PKCE state (5-min TTL); issues internal JWT; frontend `LoginPage` + `VITE_AUTH_MODE=oidc` gate.
+- **LOCAL-AUTH-01** — Local password authentication (`app/api/auth_local.py`, `app/security/local_auth.py`): `users` table (migration 0033) with argon2id hashes + RLS; `POST /auth/local/login`, `GET /auth/me`, admin `/api/v1/users` CRUD; `ORCHESTRATOR_AUTH_MODE=local`; frontend `VITE_AUTH_MODE=local` renders a username/password form that reuses the `LoginPage` shell. Active Directory / LDAP binding explicitly deferred.
 
 **V0.9 — Planned**
 - SAML 2.0 federation (python3-saml).
 - Snapshot pruning (max N snapshots per workflow via Celery task).
 - OIDC frontend callback route that auto-stores token.
 - Pluggable condition expression functions.
+- Local Active Directory / LDAP binding (sibling `authenticate_external(...)` path in `local_auth.py`).
 
 ---
 

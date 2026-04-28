@@ -24,5 +24,5 @@ VITE_AUTH_MODE=dev
 ## Notes
 
 - The shared node registry is loaded from `../shared/node_registry.json`.
-- OIDC login is enabled only when `VITE_AUTH_MODE=oidc`.
+- The login gate (`LoginPage`) only shows when `VITE_AUTH_MODE=oidc` (SSO) or `VITE_AUTH_MODE=local` (username/password against the backend's `users` table — LOCAL-AUTH-01). `dev` mode skips the gate entirely.
 - The frontend can run without MCP, but MCP-backed tool pickers will be empty until the backend can reach an MCP server.

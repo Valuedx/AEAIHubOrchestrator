@@ -45,7 +45,42 @@ When `ORCHESTRATOR_OIDC_ENABLED=true`, the backend exposes an `/auth/oidc` route
 | `oidc_tenant_claim` | ID token claim used as `tenant_id` (default: `email`) |
 | `oidc_scopes` | OAuth scopes (default: `openid email profile`) |
 
-The frontend (`VITE_AUTH_MODE=oidc`) shows a `LoginPage` and stores the access token in `localStorage` as `ae_access_token`.
+The frontend (`VITE_AUTH_MODE=oidc`) shows a `LoginPage` and stores the access token in `sessionStorage` as `ae_access_token` — tab-scoped so the token doesn't survive a browser restart.
+
+### Local password mode (`auth_mode: local`)
+
+Username + password against a local `users` table. For deployments without an identity provider or where operators want the orchestrator to own credentials directly. Issues the same HS256 JWT as `jwt` mode, so every downstream endpoint is unchanged.
+
+**Routes (only mounted when `auth_mode=local`):**
+
+- `POST /auth/local/login` — body `{tenant_id, username, password}` → `{access_token, token_type: "bearer", user: {...}}`
+- `GET /auth/me` (any JWT-issuing mode) — returns the caller's `users` row based on the token's `sub` claim.
+- `POST /api/v1/users` (admin) — create a user.
+- `GET /api/v1/users` (admin) — list users within the caller's tenant.
+- `PUT /api/v1/users/{id}/password` (admin) — reset password.
+- `PUT /api/v1/users/{id}/disabled` (admin) — toggle disabled. Self-disable is refused — the only path back from a fully-locked tenant is a DB fix.
+- `DELETE /api/v1/users/{id}` (admin) — delete. Self-delete is refused.
+
+**Storage:**
+
+- `users` table: `id` (UUID PK), `tenant_id`, `username`, `email`, `password_hash`, `is_admin`, `disabled`, timestamps, `last_login_at`.
+- Username is case-insensitive within a tenant (unique index on `(tenant_id, lower(username))`). Two tenants can share a username.
+- Passwords are hashed with **argon2id** (argon2-cffi default parameters — 64 MiB, 3 passes). Bad passwords / unknown users / disabled accounts all return the same generic 401 to defeat account enumeration.
+- RLS is enabled and forced on `users` using the same `app.tenant_id` GUC pattern as every other tenant-scoped table.
+
+**Password policy:**
+
+Length only — minimum `ORCHESTRATOR_PASSWORD_MIN_LENGTH` characters (default 8). We deliberately skip complexity rules; they push users toward predictable substitutions without meaningfully improving security.
+
+**Bootstrap admin:**
+
+Set `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` and `ORCHESTRATOR_LOCAL_ADMIN_PASSWORD` (optionally `ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID`, default `"default"`). On first boot into `auth_mode=local` the lifespan hook creates an admin user with those credentials. Subsequent boots are no-ops; changing the env vars after the row exists has **no effect** — use the password-reset endpoint instead.
+
+**Local Active Directory / LDAP binding:**
+
+Explicitly **not** in this revision. When it ships, an `authenticate_external(...)` path will land next to `authenticate(...)` in `backend/app/security/local_auth.py`, routed through the same `POST /auth/local/login` endpoint so the frontend doesn't change. The `users` table already has room for an optional external-provider column without a breaking migration.
+
+The frontend (`VITE_AUTH_MODE=local`) shows a tenant/username/password form on the `LoginPage` that POSTs to `/auth/local/login` and stores the returned JWT the same way OIDC mode does.
 
 ### A2A authentication
 

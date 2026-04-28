@@ -118,7 +118,7 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │
 ├── frontend/                       # React + TypeScript visual builder
 │   └── src/
-│       ├── App.tsx                 # Three-panel layout + OIDC auth gate
+│       ├── App.tsx                 # Three-panel layout + OIDC/local auth gate
 │       ├── store/
 │       │   ├── flowStore.ts        # Zustand canvas state
 │       │   └── workflowStore.ts    # Zustand workflow CRUD + execution
@@ -129,7 +129,7 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │       │   └── utils.ts            # Tailwind cn() utility
 │       └── components/
 │           ├── auth/
-│           │   └── LoginPage.tsx   # OIDC SSO login screen
+│           │   └── LoginPage.tsx   # OIDC SSO OR local username/password login screen
 │           ├── canvas/
 │           │   └── FlowCanvas.tsx  # React Flow canvas
 │           ├── nodes/
@@ -156,9 +156,9 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │   ├── main.py                     # App entry point (v0.8.0)
 │   ├── requirements.txt            # Python dependencies
 │   ├── alembic.ini                 # Migration config
-│   ├── alembic/versions/           # 0001 … 0019 — see §5.2
+│   ├── alembic/versions/           # 0001 … 0033 — see §5.2
 │   └── app/
-│       ├── config.py               # Settings from env (incl. OIDC)
+│       ├── config.py               # Settings from env (incl. OIDC + local-auth seed)
 │       ├── database.py             # SQLAlchemy setup
 │       ├── observability.py        # Langfuse tracing
 │       ├── api/
@@ -171,7 +171,9 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │       │   ├── schemas.py          # Pydantic request/response models
 │       │   ├── conversations.py    # Conversation session inspection
 │       │   ├── memory.py           # Memory profile CRUD + memory inspection
-│       │   └── auth.py             # OIDC Authorization Code + PKCE flow
+│       │   ├── auth.py             # OIDC Authorization Code + PKCE flow
+│       │   ├── auth_local.py       # LOCAL-AUTH-01 — POST /auth/local/login + GET /auth/me
+│       │   └── users.py            # LOCAL-AUTH-01 — admin user CRUD under /api/v1/users
 │       ├── engine/
 │       │   ├── dag_runner.py       # Ready-queue DAG executor (sticky-note filter in parse_graph)
 │       │   ├── node_handlers.py    # Per-type dispatch (pin short-circuit, mcpServerLabel)
@@ -190,13 +192,15 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │       │   └── config_validator.py # Graph config validation
 │       ├── models/
 │       │   ├── workflow.py         # WorkflowDefinition, Instance, Snapshot, Log
-│       │   └── tenant.py           # TenantToolOverride, TenantSecret
+│       │   ├── tenant.py           # TenantToolOverride, TenantSecret
+│       │   └── user.py             # LOCAL-AUTH-01 — User (local password auth)
 │       ├── workers/
 │       │   ├── celery_app.py       # Celery configuration
 │       │   ├── tasks.py            # execute, resume, retry, resume_paused tasks
 │       │   └── scheduler.py        # Celery Beat cron scheduler + snapshot pruning
 │       └── security/
-│           ├── jwt_auth.py         # JWT creation + validation
+│           ├── jwt_auth.py         # JWT creation + validation (dev / jwt / local / oidc modes)
+│           ├── local_auth.py       # LOCAL-AUTH-01 — argon2 hashing + authenticate + admin seed
 │           ├── vault.py            # Fernet-encrypted credential vault
 │           ├── rate_limiter.py     # Per-tenant rate limiting
 │           └── tenant.py           # get_tenant_id dependency
@@ -304,6 +308,16 @@ ORCHESTRATOR_OIDC_CLIENT_ID=
 ORCHESTRATOR_OIDC_CLIENT_SECRET=
 ORCHESTRATOR_OIDC_REDIRECT_URI=http://localhost:8001/auth/oidc/callback
 ORCHESTRATOR_OIDC_TENANT_CLAIM=email
+
+# Optional — Local password auth (LOCAL-AUTH-01). Set auth_mode=local and
+# (on first boot only) seed a bootstrap admin via the env vars below.
+# After the admin row exists, change the password via the API instead.
+# Active Directory / LDAP binding is deferred to a follow-up revision.
+# ORCHESTRATOR_AUTH_MODE=local
+# ORCHESTRATOR_LOCAL_ADMIN_USERNAME=admin
+# ORCHESTRATOR_LOCAL_ADMIN_PASSWORD=change-me-in-production
+# ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID=default
+# ORCHESTRATOR_PASSWORD_MIN_LENGTH=8
 ```
 
 ---
@@ -340,6 +354,8 @@ This applies all revisions under `alembic/versions/`, including (among others):
 - **0017** — `async_jobs` (AutomationEdge poll queue with Diverted pause-the-clock accounting) + `tenant_integrations` (per-tenant external-system connection defaults) + `workflow_instances.suspended_reason` column
 - **0018** — **DV-07** — `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE`. Existing rows backfill to active; Schedule Triggers skip `is_active=false` workflows (manual Run / PATCH / duplicate still work)
 - **0019** — **MCP-02** — `tenant_mcp_servers` (per-tenant MCP registry with `auth_mode` discriminator + partial unique index enforcing one default per tenant) + empty `tenant_mcp_server_tool_fingerprints` side table forward-declared for MCP-06 drift detection
+- **0020–0032** — tenant policies, copilot drafts/sessions, accepted patterns, test scenarios, approval audit log, suspended-at timestamps, model-override columns (see individual migration files)
+- **0033** — **LOCAL-AUTH-01** — `users` table for local password authentication (tenant-scoped argon2id password_hash, is_admin flag, disabled flag, case-insensitive `(tenant_id, lower(username))` unique index, RLS enabled + forced)
 
 Use `alembic current` to verify the DB revision after upgrading.
 
@@ -519,6 +535,57 @@ npm run dev
 
 Open **http://localhost:8080**. You can drag nodes, connect them, and configure properties. Workflow execution requires the backend services.
 
+### 6.3 Local password auth mode — first-boot walkthrough (LOCAL-AUTH-01)
+
+Use this when you want the orchestrator to own usernames/passwords directly, without an external IdP. Active Directory / LDAP binding is deferred to a follow-up revision.
+
+1. **Set env vars** (backend `.env`):
+
+   ```env
+   ORCHESTRATOR_AUTH_MODE=local
+   ORCHESTRATOR_LOCAL_ADMIN_USERNAME=admin
+   ORCHESTRATOR_LOCAL_ADMIN_PASSWORD=a-sufficiently-long-password
+   ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID=default
+   ```
+
+   Frontend `.env.local`:
+
+   ```env
+   VITE_AUTH_MODE=local
+   VITE_TENANT_ID=default
+   ```
+
+2. **Run migrations to head** — adds `users` table with RLS (migration 0033):
+
+   ```bash
+   cd backend && alembic upgrade head
+   ```
+
+3. **Start the API.** On first boot the lifespan hook reads the seed env vars, creates the admin row under tenant `default`, and logs `local-auth: seeded admin user`. Subsequent boots are no-ops — changing the seed vars after the row exists has **no effect**.
+
+4. **Sign in.** Open the frontend, enter `default` / `admin` / your password. The token is stored in tab-scoped `sessionStorage` as `ae_access_token`.
+
+5. **Manage users via the admin API** (Bearer token from step 4 required; token must carry `is_admin: true`):
+
+   ```bash
+   # Create a regular user
+   curl -X POST http://localhost:8001/api/v1/users \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"username":"alice","password":"a-long-enough-passphrase","email":"alice@example.com","is_admin":false}'
+
+   # List users in the caller's tenant
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/v1/users
+
+   # Reset password
+   curl -X PUT http://localhost:8001/api/v1/users/$UID/password \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"password":"brand-new-passphrase"}'
+   ```
+
+   The endpoint refuses self-disable and self-delete, so a lone admin cannot accidentally lock the tenant out.
+
 ---
 
 ## 7. Environment Variables
@@ -542,7 +609,11 @@ Backend settings use the `ORCHESTRATOR_` prefix; frontend uses `VITE_` variables
 | `ORCHESTRATOR_OPENAI_API_KEY` | No | `""` | **Fallback** OpenAI API key when the tenant has no `LLM_OPENAI_API_KEY` vault row (ADMIN-03). |
 | `ORCHESTRATOR_OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | **Fallback** OpenAI-compatible base URL when the tenant has no `LLM_OPENAI_BASE_URL` vault row. |
 | `ORCHESTRATOR_ANTHROPIC_API_KEY` | No | `""` | **Fallback** Anthropic API key when the tenant has no `LLM_ANTHROPIC_API_KEY` vault row (ADMIN-03). |
-| `ORCHESTRATOR_AUTH_MODE` | No | `dev` | `dev` (X-Tenant-Id header) or `jwt` (Bearer token) |
+| `ORCHESTRATOR_AUTH_MODE` | No | `dev` | `dev` (X-Tenant-Id header), `jwt` (Bearer token), or `local` (username/password against the `users` table — issues JWT). OIDC is an additive layer toggled independently by `ORCHESTRATOR_OIDC_ENABLED`. |
+| `ORCHESTRATOR_PASSWORD_MIN_LENGTH` | No | `8` | Minimum password length for local auth (LOCAL-AUTH-01). |
+| `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` | No | `""` | Bootstrap admin username, seeded on first boot into `auth_mode=local`. Empty disables seeding. |
+| `ORCHESTRATOR_LOCAL_ADMIN_PASSWORD` | No | `""` | Bootstrap admin password. Only consulted when the seed admin row doesn't yet exist; changing it later has no effect — use the password-reset endpoint. |
+| `ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID` | No | `default` | Tenant the bootstrap admin is created under. |
 | `ORCHESTRATOR_VAULT_KEY` | No | `""` | Fernet encryption key for credential vault |
 | `ORCHESTRATOR_RATE_LIMIT_REQUESTS` | No | `100` | **Fallback** max API requests per tenant per window when no `tenant_policies.rate_limit_requests_per_window` override exists (ADMIN-02). |
 | `ORCHESTRATOR_RATE_LIMIT_WINDOW` | No | `1 minute` | **DEPRECATED** — slowapi-format string, not actually consumed post-ADMIN-02. Use `ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS` instead. |
@@ -667,10 +738,24 @@ ORCHESTRATOR_REDIS_URL=redis://redis:6379/0
 ORCHESTRATOR_SECRET_KEY=change-me-in-production
 ORCHESTRATOR_USE_CELERY=true
 
-# Security hardening
+# Security hardening — choose ONE of the three production auth modes:
+#
+#   jwt   — pre-issued Bearer tokens minted by an external IdP / service.
+#   local — built-in username/password login against the ``users`` table.
+#   oidc  — set ORCHESTRATOR_OIDC_ENABLED=true and configure the OIDC_* vars.
+#
+# The three are not mutually exclusive at the code level (OIDC adds a
+# /auth/oidc router on top of whichever mode resolves tenant_id), but
+# pick one primary flow for operators.
 ORCHESTRATOR_AUTH_MODE=jwt
 ORCHESTRATOR_VAULT_KEY=...
 ORCHESTRATOR_CORS_ORIGINS=["https://your-orchestrator-ui.example.com"]
+
+# If ORCHESTRATOR_AUTH_MODE=local, seed the bootstrap admin on first boot.
+# Only the very first boot with an empty ``users`` table consumes these.
+# ORCHESTRATOR_LOCAL_ADMIN_USERNAME=admin
+# ORCHESTRATOR_LOCAL_ADMIN_PASSWORD=change-me-in-production
+# ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID=default
 ```
 
 3. **Run migrations** (once per deploy):
@@ -693,7 +778,7 @@ alembic upgrade head
 |----------|----------|---------|-------------|
 | `VITE_API_URL` | No | `http://localhost:8001` | Backend base URL |
 | `VITE_TENANT_ID` | No | `default` | Tenant ID sent as `X-Tenant-Id` in dev mode |
-| `VITE_AUTH_MODE` | No | `""` | Set to `oidc` to show the SSO login gate and use Bearer tokens |
+| `VITE_AUTH_MODE` | No | `""` | Set to `oidc` to show the SSO login gate or `local` to show a username/password login form. Both use Bearer tokens stored tab-scoped in `sessionStorage`. |
 
 ---
 

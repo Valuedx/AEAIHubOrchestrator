@@ -24,7 +24,7 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [RAG & Knowledge Base](rag-knowledge-base.md) | Vector stores, embedding providers, chunking strategies, ingestion and retrieval pipelines |
 | [Frontend Guide](frontend-guide.md) | React component tree, Zustand stores, canvas, toolbar, and sidebar |
 | [Deployment](deployment.md) | Docker Compose, environment variables, Celery, migrations |
-| [Security](security.md) | Authentication modes, multi-tenancy, Row Level Security, vault, rate limits |
+| [Security](security.md) | Authentication modes (dev / jwt / **local password LOCAL-AUTH-01** / OIDC), multi-tenancy, Row Level Security, vault, rate limits |
 | [Feature Roadmap](feature-roadmap.md) | Gap analysis vs. competitors, 20 missing features with priority and status |
 
 ## Quick orientation
@@ -38,7 +38,7 @@ AEAIHubOrchestrator/
 │   │   ├── models/     SQLAlchemy ORM models, including advanced memory tables
 │   │   ├── security/   JWT, vault, rate limiter, tenant helpers
 │   │   └── workers/    Celery app, tasks, Beat scheduler
-│   ├── alembic/        Migration scripts (0000 – 0019)
+│   ├── alembic/        Migration scripts (0000 – 0033)
 │   └── main.py         App entrypoint, router wiring
 ├── frontend/           React + Vite + React Flow
 │   └── src/
@@ -55,5 +55,5 @@ AEAIHubOrchestrator/
 
 - **Env vars** use the prefix `ORCHESTRATOR_` (e.g. `ORCHESTRATOR_DATABASE_URL`).
 - **API paths** are relative to the backend root (default `http://localhost:8000`).
-- **Tenant ID** is passed via `X-Tenant-Id` header in dev mode, or extracted from a JWT in production.
+- **Tenant ID** is passed via `X-Tenant-Id` header in dev mode, or extracted from a JWT in production. Local-password mode (`ORCHESTRATOR_AUTH_MODE=local`) mints the JWT via `POST /auth/local/login`; see [Security](security.md) §Local password mode.
 - **Memory docs** live in [Memory Management](memory-management.md); use that page for the normalized conversation and semantic/entity memory model introduced in migration `0012`.

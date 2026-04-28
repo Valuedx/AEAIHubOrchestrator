@@ -20,7 +20,7 @@ The frontend is a React 19 single-page application built with Vite, React Flow, 
 
 ## App layout
 
-`App.tsx` renders a **single-screen** layout with no router. When `VITE_AUTH_MODE=oidc` and no token is stored, only the `LoginPage` is shown.
+`App.tsx` renders a **single-screen** layout with no router. When `VITE_AUTH_MODE` is `oidc` (SSO) or `local` (username/password) and no token is stored in `sessionStorage`, only the `LoginPage` is shown. The `dev` and empty values skip the gate entirely — the app renders directly and API calls fall back to the `X-Tenant-Id` header.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -45,7 +45,7 @@ The frontend is a React 19 single-page application built with Vite, React Flow, 
 
 | File | Description |
 |------|-------------|
-| `LoginPage.tsx` | OIDC login page, shown when `VITE_AUTH_MODE=oidc` and no access token |
+| `LoginPage.tsx` | Login gate shown when `VITE_AUTH_MODE` is `oidc` or `local` and no access token is stored. Branches on `VITE_AUTH_MODE` — `oidc` renders an SSO button, `local` renders a tenant/username/password form that POSTs to `/auth/local/login` and stores the issued JWT via `setAuthToken()`. |
 
 ### `components/banner/`
 
@@ -246,7 +246,7 @@ Manages the saved workflow, execution state, SSE streaming, and debug replay.
 |----------|---------|-------------|
 | `VITE_API_URL` | `http://localhost:8000` | Backend API base URL |
 | `VITE_TENANT_ID` | `default` | Tenant ID for dev mode |
-| `VITE_AUTH_MODE` | `dev` | `dev` (header-based) or `oidc` |
+| `VITE_AUTH_MODE` | `dev` | `dev` (header-based), `oidc` (SSO gate) or `local` (username/password gate). The `oidc` / `local` values show the `LoginPage` until a JWT is stored in `sessionStorage` as `ae_access_token`. |
 | `VITE_OIDC_AUTHORITY` | — | OIDC provider URL |
 | `VITE_OIDC_CLIENT_ID` | — | OIDC client ID |
 
