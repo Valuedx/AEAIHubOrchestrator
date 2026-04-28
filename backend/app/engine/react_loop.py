@@ -538,6 +538,7 @@ def _google_call_backend(
 
     tool_calls = []
     text_parts = []
+    thought_parts = []
     
     # SAFETY: Ensure we have candidates and a content object before iterating
     if resp.candidates and len(resp.candidates) > 0 and resp.candidates[0].content:
@@ -545,7 +546,12 @@ def _google_call_backend(
         # SAFETY: Some SDK versions or model states might return parts as None
         if content.parts:
             for part in content.parts:
-                if part.function_call:
+                if getattr(part, "thought", None):
+                    thought_parts.append({
+                        "thought": part.thought,
+                        "thought_signature": getattr(part, "thought_signature", None)
+                    })
+                elif part.function_call:
                     fc = part.function_call
                     tool_calls.append({
                         "id": fc.name,
@@ -558,6 +564,7 @@ def _google_call_backend(
     return {
         "content": "".join(text_parts),
         "tool_calls": tool_calls or None,
+        "thought_parts": thought_parts,
         "raw_response": resp,
         "usage": {
             "input_tokens": usage.prompt_token_count if usage else 0,
@@ -594,6 +601,14 @@ def _google_append(state: dict, response: dict, tool_results: list[dict]) -> dic
     history = list(state["history"])
 
     assistant_parts = []
+    
+    # GEMINI-3: Replay thought parts FIRST if present
+    for tp in response.get("thought_parts", []):
+        assistant_parts.append(types.Part(
+            thought=tp["thought"],
+            thought_signature=tp.get("thought_signature")
+        ))
+
     if response["content"]:
         assistant_parts.append(types.Part.from_text(text=response["content"]))
     for tc in (response["tool_calls"] or []):

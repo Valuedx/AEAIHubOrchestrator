@@ -540,15 +540,18 @@ def _call_google(
 
     text_blocks: list[str] = []
     tool_uses: list[dict[str, Any]] = []
+    thought_parts: list[dict[str, Any]] = []
+
     if resp.candidates and resp.candidates[0].content:
         for part in resp.candidates[0].content.parts:
-            if getattr(part, "function_call", None):
+            if getattr(part, "thought", None):
+                # Capture thought for replay (required by Gemini 3)
+                thought_parts.append({
+                    "thought": part.thought,
+                    "thought_signature": getattr(part, "thought_signature", None)
+                })
+            elif getattr(part, "function_call", None):
                 fc = part.function_call
-                # Google doesn't emit per-call unique ids — we synthesise
-                # one from name + position so tool_turn rows have a
-                # stable link back to their originating call for UI
-                # rendering. The LLM never sees this id; it links
-                # function_response by ``name`` in the next turn.
                 tool_uses.append({
                     "id": f"gfn_{fc.name}_{len(tool_uses)}",
                     "name": fc.name,
@@ -561,6 +564,7 @@ def _call_google(
     return {
         "text": "".join(text_blocks).strip(),
         "tool_uses": tool_uses,
+        "thought_parts": thought_parts,
         # raw_content is unused by the Google adapter — tool rounds
         # are replayed from normalised turns, not from raw blocks.
         "raw_content": [],
@@ -584,6 +588,14 @@ def _append_google_tool_round(
     from google.genai import types
 
     assistant_parts: list[Any] = []
+    
+    # GEMINI-3: Replay thought parts FIRST if present
+    for tp in response.get("thought_parts", []):
+        assistant_parts.append(types.Part(
+            thought=tp["thought"],
+            thought_signature=tp.get("thought_signature")
+        ))
+
     if response["text"]:
         assistant_parts.append(types.Part.from_text(text=response["text"]))
     for tc in response["tool_uses"]:
