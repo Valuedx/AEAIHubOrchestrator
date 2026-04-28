@@ -42,6 +42,7 @@ Downgrade reverses to 1536; the same null-out runbook applies in reverse.
 from typing import Sequence, Union
 
 from alembic import op
+from sqlalchemy import text
 
 
 revision: str = '384daed57459'
@@ -71,13 +72,15 @@ def _assert_no_rows_with_dim_other_than(target_dim: int) -> None:
         # vector_dims() returns NULL for NULL embeddings, so a non-embedded
         # row never trips the guard.
         row = bind.execute(
-            f"""
-            SELECT vector_dims(embedding) AS dim, COUNT(*) AS n
-            FROM {table}
-            WHERE embedding IS NOT NULL
-            GROUP BY vector_dims(embedding)
-            ORDER BY n DESC
-            """  # noqa: S608 — table name is from a fixed module-level constant
+            text(
+                f"""
+                SELECT vector_dims(embedding) AS dim, COUNT(*) AS n
+                FROM {table}
+                WHERE embedding IS NOT NULL
+                GROUP BY vector_dims(embedding)
+                ORDER BY n DESC
+                """  # noqa: S608 — table name is from a fixed module-level constant
+            )
         ).fetchall()
         for dim, n in row:
             if dim != target_dim:
