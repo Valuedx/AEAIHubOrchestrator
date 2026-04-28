@@ -757,6 +757,10 @@ def _handle_save_conversation_state(
             if active_episode is not None:
                 active_episode.last_activity_at = session.last_message_at or active_episode.last_activity_at
                 active_episode.updated_at = active_episode.last_activity_at
+        # Extract IDs before commit to avoid ObjectDeletedError (expired instance)
+        active_ep_id = str(active_episode.id) if active_episode else None
+        session_ref_id = str(session.id)
+        
         db.commit()
 
         total = session.message_count
@@ -765,10 +769,10 @@ def _handle_save_conversation_state(
         )
         return {
             "session_id": session_id,
-            "session_ref_id": str(session.id),
+            "session_ref_id": session_ref_id,
             "message_count": total,
             "saved": True,
-            "active_episode_id": str(active_episode.id) if active_episode else None,
+            "active_episode_id": active_ep_id,
             "summary_updated": summary_updated,
             "promoted_memory_records": len(memory_rows),
             "promoted_entity_facts": len(fact_rows),

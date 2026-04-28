@@ -36,6 +36,15 @@ def run_react_loop(
 
     config = node_data.get("config", {})
     provider = config.get("provider", "vertex")
+
+    # Safety fallback: if 'google' (AI Studio) is requested but no valid API key
+    # is available (or it's the placeholder UUID), and Vertex is configured,
+    # reroute to Vertex to avoid 400 errors.
+    is_valid_key = settings.google_api_key and not settings.google_api_key.startswith("5b-b4a8")
+    if provider == "google" and not is_valid_key and settings.vertex_project:
+        logger.warning("Rerouting 'google' provider call to 'vertex' (invalid or missing AI Studio key)")
+        provider = "vertex"
+
     model = config.get("model") or default_llm_for(provider, role="fast")
     raw_prompt = config.get("systemPrompt", "")
     max_iterations = min(int(config.get("maxIterations", 10)), _MAX_ITERATIONS_HARD_CAP)
@@ -529,17 +538,22 @@ def _google_call_backend(
 
     tool_calls = []
     text_parts = []
-    if resp.candidates and resp.candidates[0].content:
-        for part in resp.candidates[0].content.parts:
-            if part.function_call:
-                fc = part.function_call
-                tool_calls.append({
-                    "id": fc.name,
-                    "name": fc.name,
-                    "arguments": dict(fc.args) if fc.args else {},
-                })
-            elif part.text:
-                text_parts.append(part.text)
+    
+    # SAFETY: Ensure we have candidates and a content object before iterating
+    if resp.candidates and len(resp.candidates) > 0 and resp.candidates[0].content:
+        content = resp.candidates[0].content
+        # SAFETY: Some SDK versions or model states might return parts as None
+        if content.parts:
+            for part in content.parts:
+                if part.function_call:
+                    fc = part.function_call
+                    tool_calls.append({
+                        "id": fc.name,
+                        "name": fc.name,
+                        "arguments": dict(fc.args) if fc.args else {},
+                    })
+                elif part.text:
+                    text_parts.append(part.text)
 
     return {
         "content": "".join(text_parts),

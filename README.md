@@ -52,7 +52,7 @@ npm run dev
 ```powershell
 cd backend
 venv\Scripts\activate
-celery -A app.worker worker --loglevel=info
+celery -A app.workers.celery_app worker --loglevel=info
 ```
 
 ## Optional Integrations

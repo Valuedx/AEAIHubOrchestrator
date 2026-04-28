@@ -63,7 +63,7 @@ class MemoryVectorStore(ABC):
 _PGVECTOR_UPDATE = text(
     """
     UPDATE memory_records
-    SET embedding = :embedding::vector
+    SET embedding = CAST(:embedding AS vector)
     WHERE id = :record_id
     """
 )
