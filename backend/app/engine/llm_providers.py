@@ -255,8 +255,6 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
             project=project,
             location=location,
             http_options=http_options,
-            api_key=None,
-
         )
     if backend == "genai":
         # ADMIN-03 — per-tenant Google AI Studio key via the LLM
