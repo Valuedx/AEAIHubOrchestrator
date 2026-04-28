@@ -28,3 +28,12 @@ Thumbs.db
 
 # Root-level screenshots (Playwright MCP captures land here; not tracked)
 /*.png
+
+# Virtual environments
+backend/aevenv/
+
+# Database dumps
+dump.rdb
+
+# Frontend environment
+frontend/.env
