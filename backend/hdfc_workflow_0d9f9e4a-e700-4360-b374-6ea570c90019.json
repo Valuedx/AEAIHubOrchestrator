@@ -1,0 +1,604 @@
+{
+  "edges": [
+    {
+      "id": "e_1_2",
+      "source": "node_1",
+      "target": "node_2"
+    },
+    {
+      "id": "e_2_3",
+      "source": "node_2",
+      "target": "node_3"
+    },
+    {
+      "id": "e_3_4",
+      "source": "node_3",
+      "target": "node_4"
+    },
+    {
+      "id": "e_4_7",
+      "label": "Yes",
+      "style": {
+        "stroke": "#22c55e",
+        "strokeWidth": 2
+      },
+      "source": "node_4",
+      "target": "node_7",
+      "animated": true,
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e_4_5",
+      "label": "No",
+      "style": {
+        "stroke": "#ef4444",
+        "strokeWidth": 2
+      },
+      "source": "node_4",
+      "target": "node_5",
+      "animated": true,
+      "sourceHandle": "false"
+    },
+    {
+      "id": "e_5_8",
+      "label": "Yes",
+      "style": {
+        "stroke": "#22c55e",
+        "strokeWidth": 2
+      },
+      "source": "node_5",
+      "target": "node_8",
+      "animated": true,
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e_5_6",
+      "label": "No",
+      "style": {
+        "stroke": "#ef4444",
+        "strokeWidth": 2
+      },
+      "source": "node_5",
+      "target": "node_6",
+      "animated": true,
+      "sourceHandle": "false"
+    },
+    {
+      "id": "e_6_9",
+      "label": "Yes",
+      "style": {
+        "stroke": "#22c55e",
+        "strokeWidth": 2
+      },
+      "source": "node_6",
+      "target": "node_9",
+      "animated": true,
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e_6_10",
+      "label": "No",
+      "style": {
+        "stroke": "#ef4444",
+        "strokeWidth": 2
+      },
+      "source": "node_6",
+      "target": "node_10",
+      "animated": true,
+      "sourceHandle": "false"
+    },
+    {
+      "id": "e_7_16",
+      "source": "node_7",
+      "target": "node_16"
+    },
+    {
+      "id": "e_16_12",
+      "source": "node_16",
+      "target": "node_12"
+    },
+    {
+      "id": "e_8_17",
+      "source": "node_8",
+      "target": "node_17"
+    },
+    {
+      "id": "e_17_11",
+      "source": "node_17",
+      "target": "node_11"
+    },
+    {
+      "id": "e_11_13",
+      "source": "node_11",
+      "target": "node_13"
+    },
+    {
+      "id": "e_9_18",
+      "source": "node_9",
+      "target": "node_18"
+    },
+    {
+      "id": "e_18_14",
+      "source": "node_18",
+      "target": "node_14"
+    },
+    {
+      "id": "e_10_19",
+      "source": "node_10",
+      "target": "node_19"
+    },
+    {
+      "id": "e_19_15",
+      "source": "node_19",
+      "target": "node_15"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node_1",
+      "data": {
+        "label": "Webhook Trigger",
+        "config": {
+          "icon": "webhook",
+          "path": "/ae/ops/inbound",
+          "method": "POST"
+        },
+        "status": "idle",
+        "displayName": "Ops intake (webhook or Studio)",
+        "nodeCategory": "trigger"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 0,
+        "y": 260
+      }
+    },
+    {
+      "id": "node_2",
+      "data": {
+        "label": "Load Conversation State",
+        "config": {
+          "icon": "history",
+          "sessionIdExpression": "trigger.session_id"
+        },
+        "status": "idle",
+        "displayName": "Load session history",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 220,
+        "y": 260
+      }
+    },
+    {
+      "id": "node_3",
+      "data": {
+        "label": "LLM Router",
+        "config": {
+          "icon": "route",
+          "model": "gemini-3-flash-preview",
+          "intents": [
+            "ops_orchestrator",
+            "diagnostics",
+            "remediation",
+            "rca_report"
+          ],
+          "provider": "google",
+          "historyNodeId": "node_2",
+          "userMessageExpression": "trigger.message"
+        },
+        "status": "idle",
+        "displayName": "Route message to specialist",
+        "nodeCategory": "agent"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 460,
+        "y": 260
+      }
+    },
+    {
+      "id": "node_4",
+      "data": {
+        "label": "Condition",
+        "config": {
+          "icon": "git-branch",
+          "condition": "node_3.intent == \"diagnostics\"",
+          "trueLabel": "Diagnostics",
+          "falseLabel": "Next"
+        },
+        "status": "idle",
+        "displayName": "If intent = diagnostics",
+        "nodeCategory": "logic"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 700,
+        "y": 260
+      }
+    },
+    {
+      "id": "node_5",
+      "data": {
+        "label": "Condition",
+        "config": {
+          "icon": "git-branch",
+          "condition": "node_3.intent == \"remediation\"",
+          "trueLabel": "Remediation",
+          "falseLabel": "Next"
+        },
+        "status": "idle",
+        "displayName": "Else if intent = remediation",
+        "nodeCategory": "logic"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 940,
+        "y": 360
+      }
+    },
+    {
+      "id": "node_6",
+      "data": {
+        "label": "Condition",
+        "config": {
+          "icon": "git-branch",
+          "condition": "node_3.intent == \"rca_report\"",
+          "trueLabel": "RCA",
+          "falseLabel": "Ops default"
+        },
+        "status": "idle",
+        "displayName": "Else if intent = RCA report",
+        "nodeCategory": "logic"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1180,
+        "y": 460
+      }
+    },
+    {
+      "id": "node_7",
+      "data": {
+        "label": "ReAct Agent",
+        "config": {
+          "icon": "repeat",
+          "model": "gemini-3-flash-preview",
+          "tools": [],
+          "provider": "google",
+          "systemPrompt": "You are the Diagnostic Specialist (parity: agents/diagnostic_agent.py). Investigate RPA/workflow failures: pull status, logs, dependencies, files. Prefer MCP tools for status, logs, and diagnostics. Summarize evidence before suggesting fixes.",
+          "maxIterations": 12
+        },
+        "status": "idle",
+        "displayName": "Diagnostics specialist (ReAct + tools)",
+        "nodeCategory": "agent"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 980,
+        "y": 80
+      }
+    },
+    {
+      "id": "node_8",
+      "data": {
+        "label": "ReAct Agent",
+        "config": {
+          "icon": "repeat",
+          "model": "gemini-3-flash-preview",
+          "tools": [],
+          "provider": "google",
+          "systemPrompt": "You are the Remediation Specialist (parity: agents/remediation_agent.py). Execute corrective actions: restart workflows, notifications, safe config changes. Use MCP remediation/notification tools when available. Confirm impact before destructive steps.",
+          "maxIterations": 12
+        },
+        "status": "idle",
+        "displayName": "Remediation specialist (ReAct + tools)",
+        "nodeCategory": "agent"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1180,
+        "y": 220
+      }
+    },
+    {
+      "id": "node_9",
+      "data": {
+        "label": "LLM Agent",
+        "config": {
+          "icon": "brain",
+          "model": "gemini-3-flash-preview",
+          "provider": "google",
+          "maxTokens": 4096,
+          "temperature": 0.35,
+          "systemPrompt": "You are the RCA Specialist (parity: agents/rca_agent.py / generate_rca_report). Produce a structured incident report: Summary, Timeline, Root cause, Impact, Prevention, Audience (business vs technical) using trigger.user_role when present. Use conversation and prior node outputs in context; if data is thin, say what is missing."
+        },
+        "status": "idle",
+        "displayName": "RCA report author",
+        "nodeCategory": "agent"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1420,
+        "y": 400
+      },
+      "selected": true
+    },
+    {
+      "id": "node_10",
+      "data": {
+        "label": "ReAct Agent",
+        "config": {
+          "icon": "brain",
+          "model": "gemini-3-flash-preview",
+          "tools": [],
+          "provider": "google",
+          "systemPrompt": "You are the Ops Orchestrator (parity: agents/orchestrator_agent.py + agents/orchestrator.py). Default handler for AutomationEdge ops: workflows, queues, schedules, agents, batch jobs. Guide investigation, tool use, and next steps. If the user needs deep logs vs fixes vs RCA, note which specialist would own it in the main app.",
+          "maxIterations": 8
+        },
+        "status": "idle",
+        "displayName": "Default ops orchestrator",
+        "nodeCategory": "agent"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1420,
+        "y": 560
+      }
+    },
+    {
+      "id": "node_11",
+      "data": {
+        "label": "Human Approval",
+        "config": {
+          "icon": "user-check",
+          "timeout": 86400,
+          "approvalMessage": "Approve remediation actions before they are persisted to conversation history (parity: gateway AWAITING_APPROVAL)."
+        },
+        "status": "idle",
+        "displayName": "Human gate: approve remediation",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1420,
+        "y": 220
+      },
+      "selected": false
+    },
+    {
+      "id": "node_12",
+      "data": {
+        "label": "Save Conversation State",
+        "config": {
+          "icon": "save",
+          "responseNodeId": "node_7",
+          "sessionIdExpression": "trigger.session_id",
+          "userMessageExpression": "trigger.message"
+        },
+        "status": "idle",
+        "displayName": "Save turn \u00b7 diagnostics answer",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1680,
+        "y": 80
+      }
+    },
+    {
+      "id": "node_13",
+      "data": {
+        "label": "Save Conversation State",
+        "config": {
+          "icon": "save",
+          "responseNodeId": "node_8",
+          "sessionIdExpression": "trigger.session_id",
+          "userMessageExpression": "trigger.message"
+        },
+        "status": "idle",
+        "displayName": "Save turn \u00b7 remediation (after approval)",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1680,
+        "y": 220
+      }
+    },
+    {
+      "id": "node_14",
+      "data": {
+        "label": "Save Conversation State",
+        "config": {
+          "icon": "save",
+          "responseNodeId": "node_9",
+          "sessionIdExpression": "trigger.session_id",
+          "userMessageExpression": "trigger.message"
+        },
+        "status": "idle",
+        "displayName": "Save turn \u00b7 RCA answer",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1680,
+        "y": 400
+      },
+      "selected": false
+    },
+    {
+      "id": "node_15",
+      "data": {
+        "label": "Save Conversation State",
+        "config": {
+          "icon": "save",
+          "responseNodeId": "node_10",
+          "sessionIdExpression": "trigger.session_id",
+          "userMessageExpression": "trigger.message"
+        },
+        "status": "idle",
+        "displayName": "Save turn \u00b7 default ops answer",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1680,
+        "y": 560
+      }
+    },
+    {
+      "id": "node_16",
+      "data": {
+        "label": "Bridge User Reply",
+        "config": {
+          "icon": "message-square",
+          "responseNodeId": "node_7",
+          "messageExpression": ""
+        },
+        "status": "idle",
+        "displayName": "Chat reply \u00b7 diagnostics",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1320,
+        "y": 80
+      }
+    },
+    {
+      "id": "node_17",
+      "data": {
+        "label": "Bridge User Reply",
+        "config": {
+          "icon": "message-square",
+          "responseNodeId": "node_8",
+          "messageExpression": ""
+        },
+        "status": "idle",
+        "displayName": "Chat reply \u00b7 remediation",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1280,
+        "y": 220
+      }
+    },
+    {
+      "id": "node_18",
+      "data": {
+        "label": "Bridge User Reply",
+        "config": {
+          "icon": "message-square",
+          "responseNodeId": "node_9",
+          "messageExpression": ""
+        },
+        "status": "idle",
+        "displayName": "Chat reply \u00b7 RCA",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1540,
+        "y": 400
+      }
+    },
+    {
+      "id": "node_19",
+      "data": {
+        "label": "Bridge User Reply",
+        "config": {
+          "icon": "message-square",
+          "responseNodeId": "node_10",
+          "messageExpression": ""
+        },
+        "status": "idle",
+        "displayName": "Chat reply \u00b7 default ops",
+        "nodeCategory": "action"
+      },
+      "type": "agenticNode",
+      "measured": {
+        "width": 180,
+        "height": 114
+      },
+      "position": {
+        "x": 1540,
+        "y": 560
+      }
+    }
+  ]
+}

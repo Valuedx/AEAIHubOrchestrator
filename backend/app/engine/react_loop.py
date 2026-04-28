@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -80,6 +81,7 @@ def run_react_loop(
         tool_names if tool_names else None,
         tenant_id=tenant_id,
         server_label=mcp_server_label,
+        context=context,
     )
 
     total_usage = {"input_tokens": 0, "output_tokens": 0}
@@ -164,7 +166,23 @@ def run_react_loop(
                 result = _execute_tool(
                     tool_name, tool_args, tenant_id,
                     server_label=mcp_server_label,
+                    context=context,
                 )
+                
+                # HITL-01 — Detect tool-initiated approval requests.
+                # If a tool returns AWAITING_APPROVAL, we suspend the ReAct loop
+                # and the entire workflow instance.
+                if isinstance(result, dict) and result.get("status") == "AWAITING_APPROVAL":
+                    from app.engine.exceptions import NodeSuspendedAsync
+                    logger.info("Tool %s requested approval. Suspending workflow.", tool_name)
+                    raise NodeSuspendedAsync(
+                        async_job_id=f"hitl-{tool_name}",
+                        system="human_approval",
+                        external_job_id=result.get("agent_id", "system")
+                    )
+
+            except NodeSuspendedAsync:
+                raise  # propagate suspension up to dag_runner
             except Exception as exc:
                 logger.error("ReAct tool %s failed: %s", tool_name, exc)
                 result = {"error": f"Tool call failed: {exc}"}
@@ -235,8 +253,17 @@ def _execute_tool(
     tenant_id: str,
     *,
     server_label: str | None = None,
+    context: dict[str, Any] | None = None,
 ) -> Any:
     """Execute a tool on the MCP server resolved for this tenant + label."""
+    # HITL-02 — If we have a pending/approved HITL payload in context,
+    # pass the approval ID to the tool so it can bypass the guard.
+    if context and isinstance(context.get("approval"), dict):
+        approval = context["approval"]
+        # The Technical User screen passes the approval payload on resume.
+        if approval.get("approved"):
+            arguments["technical_approval_id"] = approval.get("approval_id") or "human-approved"
+
     from app.engine.mcp_client import call_tool
     return call_tool(
         tool_name, arguments,
@@ -250,15 +277,48 @@ def _load_tool_definitions(
     *,
     tenant_id: str,
     server_label: str | None = None,
+    context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Load tool definitions from the MCP server resolved for this tenant.
 
-    If tool_names is None (empty config), auto-discovers all tools.
-    Returns OpenAI-style function definitions.
+    If tool_names is None (empty config), auto-discovers all tools and
+    filters them based on semantic relevance to the current query.
     """
     from app.engine.mcp_client import get_openai_style_tool_defs, list_tools
+    
     if tool_names is None:
         raw = list_tools(tenant_id=tenant_id, server_label=server_label)
+        
+        # SMART-FILTER: If we have context, prune tools that are clearly irrelevant
+        # to the current user query to save tokens and avoid LLM confusion.
+        filtered_tools = raw
+        query = str(context.get("trigger", {}).get("message", "") or "").lower()
+        if query and context:
+            # Simple keyword scoring for "Smart" filtering
+            keywords = set(re.findall(r"\w+", query))
+            if keywords:
+                scored = []
+                for t in raw:
+                    name = t["name"].lower()
+                    desc = t["description"].lower()
+                    score = 0
+                    # Boost for direct matches in name/desc
+                    for kw in keywords:
+                        if kw in name: score += 5
+                        if kw in desc: score += 2
+                    # Base score for essential diagnostic/status tools
+                    if any(x in name for x in ("status", "health", "summary")):
+                        score += 1
+                    scored.append((score, t))
+                
+                # Take tools with score > 0, or at least the top 15 most relevant
+                scored.sort(key=lambda x: x[0], reverse=True)
+                filtered_tools = [t for score, t in scored if score > 0][:15]
+                
+                # Ensure we have at least SOME tools if scoring was too aggressive
+                if not filtered_tools:
+                    filtered_tools = raw[:10]
+        
         return [
             {
                 "type": "function",
@@ -268,8 +328,9 @@ def _load_tool_definitions(
                     "parameters": t["parameters"],
                 },
             }
-            for t in raw
+            for t in filtered_tools
         ]
+        
     return get_openai_style_tool_defs(
         tool_names,
         tenant_id=tenant_id,
