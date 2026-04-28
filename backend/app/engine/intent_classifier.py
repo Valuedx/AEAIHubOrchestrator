@@ -113,7 +113,10 @@ def _handle_intent_classifier(
     intents_cfg: list[dict] = config.get("intents", [])
     allow_multi = bool(config.get("allowMultiIntent", False))
     mode = config.get("mode", "hybrid")
-    provider = config.get("provider", "google")
+    from app.config import settings
+    provider = config.get("provider")
+    if not provider or (provider == "google" and settings.llm_default_provider == "vertex"):
+        provider = settings.llm_default_provider
     from app.engine.model_registry import default_llm_for
     model = config.get("model") or default_llm_for(provider, role="fast")
     emb_provider = config.get("embeddingProvider", "openai")

@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     google_project: str = ""
     google_location: str = "us-central1"
     google_application_credentials: str = ""
+    llm_default_provider: str = "vertex"
+
 
 
 

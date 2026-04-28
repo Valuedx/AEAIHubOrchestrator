@@ -112,8 +112,11 @@ def _handle_reflection(
     from app.observability import record_generation
 
     config = node_data.get("config", {})
+    from app.config import settings
+    provider: str = config.get("provider")
+    if not provider or (provider == "google" and settings.llm_default_provider == "vertex"):
+        provider = settings.llm_default_provider
 
-    provider: str = config.get("provider", "google")
     model: str = config.get("model") or default_llm_for(provider, role="fast")
     reflection_prompt_template: str = config.get("reflectionPrompt", "")
     output_keys: list[str] = config.get("outputKeys", [])

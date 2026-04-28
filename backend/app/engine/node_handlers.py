@@ -170,13 +170,17 @@ def _handle_agent(
         from app.engine.react_loop import run_react_loop
         return run_react_loop(node_data, context, tenant_id)
 
+    from app.config import settings
     from app.database import SessionLocal, set_tenant_context
     from app.engine.llm_providers import call_llm_streaming
     from app.engine.memory_service import assemble_agent_messages
     from app.engine.model_registry import default_llm_for
     from app.engine.prompt_template import render_prompt
 
-    provider = config.get("provider", "vertex")
+    provider = config.get("provider")
+    if not provider or (provider == "google" and settings.llm_default_provider == "vertex"):
+        provider = settings.llm_default_provider
+
     model = config.get("model") or default_llm_for(provider, role="fast")
     raw_prompt = config.get("systemPrompt", "")
     temperature = float(config.get("temperature", 0.7))
@@ -861,10 +865,14 @@ def _handle_llm_router(
     and returns `{"intent": "<label>"}` for downstream Condition nodes to
     branch on.  Temperature is forced to 0.1 for deterministic output.
     """
+    from app.config import settings
     from app.engine.model_registry import default_llm_for
 
     config = node_data.get("config", {})
-    provider = config.get("provider", "google")
+    provider = config.get("provider")
+    if not provider or (provider == "google" and settings.llm_default_provider == "vertex"):
+        provider = settings.llm_default_provider
+
     model = config.get("model") or default_llm_for(provider, role="fast")
     intents: list[str] = config.get("intents", [])
     user_msg_expr = config.get("userMessageExpression", "trigger.message")

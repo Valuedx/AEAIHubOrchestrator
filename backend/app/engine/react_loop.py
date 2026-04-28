@@ -33,7 +33,10 @@ def run_react_loop(
     from app.engine.model_registry import default_llm_for
 
     config = node_data.get("config", {})
-    provider = config.get("provider", "google")
+    provider = config.get("provider")
+    if not provider or (provider == "google" and settings.llm_default_provider == "vertex"):
+        provider = settings.llm_default_provider
+
     model = config.get("model") or default_llm_for(provider, role="fast")
     raw_prompt = config.get("systemPrompt", "")
     max_iterations = min(int(config.get("maxIterations", 10)), _MAX_ITERATIONS_HARD_CAP)
@@ -402,14 +405,25 @@ def _google_call_backend(
 
     client = _google_client(backend, tenant_id=tenant_id)
 
+    def strip_examples(schema: Any) -> Any:
+        if isinstance(schema, dict):
+            return {k: strip_examples(v) for k, v in schema.items() if k != "examples"}
+        if isinstance(schema, list):
+            return [strip_examples(i) for i in schema]
+        return schema
+
     google_tools = None
     if tools:
         func_decls = []
         for t in tools:
+            # ADMIN-04 — Gemini's FunctionDeclaration validation in the 
+            # google-genai SDK is strict and does not permit 'examples' 
+            # in the parameters schema.
+            params = strip_examples(t["function"]["parameters"])
             func_decls.append(types.FunctionDeclaration(
                 name=t["function"]["name"],
                 description=t["function"]["description"],
-                parameters=t["function"]["parameters"],
+                parameters=params,
             ))
         google_tools = [types.Tool(function_declarations=func_decls)]
 

@@ -46,9 +46,10 @@ DEFAULT_HISTORY_ORDER = "summary_first"
 # in lockstep.
 from app.engine.model_registry import default_llm_for as _default_llm_for
 
-DEFAULT_SUMMARY_PROVIDER = "google"
+from app.config import settings
+DEFAULT_SUMMARY_PROVIDER = settings.llm_default_provider
 DEFAULT_SUMMARY_MODEL = _default_llm_for(DEFAULT_SUMMARY_PROVIDER, role="fast")
-DEFAULT_EPISODE_ARCHIVE_PROVIDER = "google"
+DEFAULT_EPISODE_ARCHIVE_PROVIDER = settings.llm_default_provider
 DEFAULT_EPISODE_ARCHIVE_MODEL = _default_llm_for(
     DEFAULT_EPISODE_ARCHIVE_PROVIDER, role="fast"
 )
