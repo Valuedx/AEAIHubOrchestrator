@@ -354,8 +354,8 @@ EMBEDDING_MODELS: tuple[EmbeddingModel, ...] = (
 # role -> provider -> model_id
 LLM_TIER_DEFAULTS: dict[ModelRole, dict[str, str]] = {
     "fast": {
-        "google": "gemini-3-flash-preview",
-        "vertex": "gemini-3-flash-preview",
+        "google": "gemini-2.5-flash",
+        "vertex": "gemini-2.5-flash",
         "anthropic": "claude-3-5-haiku-20241022",
         "openai": "gpt-4o-mini",
     },
@@ -372,8 +372,8 @@ LLM_TIER_DEFAULTS: dict[ModelRole, dict[str, str]] = {
         "openai": "gpt-4o",
     },
     "copilot": {
-        "google": "gemini-3-flash-preview",
-        "vertex": "gemini-3-flash-preview",
+        "google": "gemini-3.1-pro-preview-customtools",
+        "vertex": "gemini-3.1-pro-preview-customtools",
         "anthropic": "claude-sonnet-4-6",
     },
 }
