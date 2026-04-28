@@ -4,7 +4,7 @@ from app.paths import BACKEND_ENV_FILE
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/ae_orchestrator"
+    database_url: str = "postgresql://postgres:root@localhost:5432/ae_orchestrator_ai"
     redis_url: str = "redis://localhost:6379/0"
     mcp_server_url: str = "http://localhost:8000/mcp"
     secret_key: str = "change-me-in-production"
@@ -18,8 +18,6 @@ class Settings(BaseSettings):
     google_project: str = ""
     google_location: str = "us-central1"
     google_application_credentials: str = ""
-
-
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
