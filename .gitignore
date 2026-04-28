@@ -10,6 +10,7 @@ backend/celerybeat-schedule.dat
 backend/celerybeat-schedule.dir
 backend/venv/
 backend/.venv/
+backend/aevenv/
 
 # Frontend
 frontend/node_modules/

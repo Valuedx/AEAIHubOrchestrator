@@ -44,6 +44,7 @@ from app.copilot.agent import (
     supported_providers,
     validate_session_model,
 )
+from app.config import settings
 from app.database import get_tenant_db
 from app.models.copilot import CopilotSession, CopilotTurn, WorkflowDraft
 from app.security.tenant import get_tenant_id
@@ -60,7 +61,7 @@ router = APIRouter(prefix="/api/v1/copilot/sessions", tags=["copilot-sessions"])
 
 class SessionCreate(BaseModel):
     draft_id: str
-    provider: str = Field(default="anthropic")
+    provider: str = Field(default_factory=lambda: settings.copilot_default_provider)
     # Optional override; falls through to DEFAULT_MODEL_BY_PROVIDER.
     model: str | None = None
 

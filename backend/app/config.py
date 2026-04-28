@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     # fix suggestions through a different engine. Set to ``vertex``
     # for Gemini-native deployments. Valid providers: ``anthropic``
     # / ``google`` / ``vertex``.
-    copilot_default_provider: str = "anthropic"
+    copilot_default_provider: str = "vertex"
 
     # A2A-01.b — provider info surfaced on the public agent card so
     # remote agents know which org is answering. None of these are

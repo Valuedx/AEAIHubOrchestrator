@@ -734,10 +734,25 @@ class AgentRunner:
         message-history reconstruction. All three providers that ship in
         01b.iv (anthropic / google / vertex) use this same loop.
         """
-        adapter = _PROVIDER_ADAPTERS.get(self.session.provider)
+        # COPILOT-01b.iv — allow a process-wide override. If set, every
+        # session (even existing ones) uses this provider and its
+        # default model.
+        import os
+        from app.config import settings
+        provider = os.environ.get("ORCHESTRATOR_GLOBAL_LLM_PROVIDER", settings.copilot_default_provider)
+        provider = provider if provider in _PROVIDER_ADAPTERS else self.session.provider
+        model = self.session.model
+
+        if provider != self.session.provider:
+            # If overridden, we MUST also use a model the new provider
+            # actually knows. The session's model (e.g. claude-...)
+            # is invalid for the new provider.
+            model = default_model_for(provider)
+
+        adapter = _PROVIDER_ADAPTERS.get(provider)
         if adapter is None:
             raise UnsupportedProviderError(
-                f"Provider '{self.session.provider}' is not supported. "
+                f"Provider '{provider}' is not supported. "
                 f"Known providers: {sorted(_PROVIDER_ADAPTERS.keys())}."
             )
 
@@ -783,7 +798,7 @@ class AgentRunner:
             # 3. Call the LLM.
             try:
                 response = adapter["call"](
-                    model=self.session.model,
+                    model=model,
                     state=state,
                     tenant_id=self.tenant_id,
                     new_user_text=pending_new_user,
