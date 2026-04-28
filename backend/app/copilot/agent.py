@@ -62,7 +62,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Iterator
+import base64
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any
 
@@ -471,16 +472,33 @@ def _build_google_state(
             _flush_pending_responses()
             content = turn.content_json or {}
             parts: list[Any] = []
-            if content.get("text"):
-                parts.append(types.Part.from_text(text=content["text"]))
-            # Normalised tool calls live on tool_calls_json; fall back
-            # to content.tool_calls if the caller stored there.
-            tcs = turn.tool_calls_json or content.get("tool_calls") or []
-            for tc in tcs:
-                parts.append(types.Part.from_function_call(
-                    name=tc["name"],
-                    args=tc.get("input") or tc.get("args") or {},
-                ))
+
+            # GEMINI-3: Prioritise raw blocks (raw_content) for perfect fidelity
+            if content.get("blocks"):
+                for b in content["blocks"]:
+                    parts.append(types.Part.model_validate(b))
+            else:
+                # Fallback for older turns or those saved without raw blocks
+                # Replay thought parts if present (from the first fix attempt)
+                for tp in content.get("thought_parts", []):
+                    sig = tp.get("thought_signature")
+                    if isinstance(sig, str):
+                        sig = base64.b64decode(sig)
+                    parts.append(types.Part(
+                        thought=tp.get("thought"),
+                        thought_signature=sig
+                    ))
+
+                if content.get("text"):
+                    parts.append(types.Part.from_text(text=content["text"]))
+                
+                tcs = turn.tool_calls_json or content.get("tool_calls") or []
+                for tc in tcs:
+                    parts.append(types.Part.from_function_call(
+                        name=tc["name"],
+                        args=tc.get("input") or tc.get("args") or {},
+                    ))
+
             if parts:
                 history.append(types.Content(role="model", parts=parts))
         elif turn.role == "tool":
@@ -541,16 +559,22 @@ def _call_google(
     text_blocks: list[str] = []
     tool_uses: list[dict[str, Any]] = []
     thought_parts: list[dict[str, Any]] = []
+    raw_content: list[dict[str, Any]] = []
 
     if resp.candidates and resp.candidates[0].content:
         for part in resp.candidates[0].content.parts:
-            if getattr(part, "thought", None):
+            # Capture for persistence (JSON-safe via model_dump)
+            raw_content.append(part.model_dump(mode="json"))
+
+            if getattr(part, "thought", None) or getattr(part, "thought_signature", None):
                 # Capture thought for replay (required by Gemini 3)
+                sig = getattr(part, "thought_signature", None)
                 thought_parts.append({
-                    "thought": part.thought,
-                    "thought_signature": getattr(part, "thought_signature", None)
+                    "thought": getattr(part, "thought", None),
+                    "thought_signature": base64.b64encode(sig).decode("utf-8") if sig else None
                 })
-            elif getattr(part, "function_call", None):
+            
+            if getattr(part, "function_call", None):
                 fc = part.function_call
                 tool_uses.append({
                     "id": f"gfn_{fc.name}_{len(tool_uses)}",
@@ -565,9 +589,8 @@ def _call_google(
         "text": "".join(text_blocks).strip(),
         "tool_uses": tool_uses,
         "thought_parts": thought_parts,
-        # raw_content is unused by the Google adapter — tool rounds
-        # are replayed from normalised turns, not from raw blocks.
-        "raw_content": [],
+        # raw_content is used to preserve perfect fidelity for Gemini 3
+        "raw_content": raw_content,
         "usage": {
             "input_tokens": getattr(usage, "prompt_token_count", 0) if usage else 0,
             "output_tokens": getattr(usage, "candidates_token_count", 0) if usage else 0,
@@ -589,20 +612,28 @@ def _append_google_tool_round(
 
     assistant_parts: list[Any] = []
     
-    # GEMINI-3: Replay thought parts FIRST if present
-    for tp in response.get("thought_parts", []):
-        assistant_parts.append(types.Part(
-            thought=tp["thought"],
-            thought_signature=tp.get("thought_signature")
-        ))
+    if response.get("raw_content"):
+        # GEMINI-3: Prefer raw blocks if present
+        for b in response["raw_content"]:
+            assistant_parts.append(types.Part.model_validate(b))
+    else:
+        # GEMINI-3 Fallback: Replay thought parts FIRST if present
+        for tp in response.get("thought_parts", []):
+            sig = tp.get("thought_signature")
+            if isinstance(sig, str):
+                sig = base64.b64decode(sig)
+            assistant_parts.append(types.Part(
+                thought=tp.get("thought"),
+                thought_signature=sig
+            ))
 
-    if response["text"]:
-        assistant_parts.append(types.Part.from_text(text=response["text"]))
-    for tc in response["tool_uses"]:
-        assistant_parts.append(types.Part.from_function_call(
-            name=tc["name"],
-            args=tc["input"],
-        ))
+        if response["text"]:
+            assistant_parts.append(types.Part.from_text(text=response["text"]))
+        for tc in response["tool_uses"]:
+            assistant_parts.append(types.Part.from_function_call(
+                name=tc["name"],
+                args=tc["input"],
+            ))
     if assistant_parts:
         state.history.append(types.Content(role="model", parts=assistant_parts))
 
@@ -825,6 +856,8 @@ class AgentRunner:
                     # Google it stays [] and history reconstruction
                     # falls back to normalised tool_calls.
                     "blocks": response.get("raw_content") or [],
+                    # GEMINI-3: Persist thought parts for history reconstruction
+                    "thought_parts": response.get("thought_parts") or [],
                 },
                 tool_calls=response["tool_uses"] or None,
                 token_usage=response["usage"],
