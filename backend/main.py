@@ -29,7 +29,6 @@ from app.api.copilot_drafts import router as copilot_drafts_router
 from app.api.copilot_sessions import router as copilot_sessions_router
 from app.security.rate_limiter import limiter
 from app.security.tenant_rate_limit import TenantRateLimitMiddleware
-from app.security.tenant_context import TenantContextMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,9 +87,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Global tenant context propagation (must be early to ensure RLS context for other middlewares)
-app.add_middleware(TenantContextMiddleware)
 
 # ADMIN-02: per-tenant API rate limit.
 app.add_middleware(TenantRateLimitMiddleware)
