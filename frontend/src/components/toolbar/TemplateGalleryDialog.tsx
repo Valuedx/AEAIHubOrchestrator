@@ -151,7 +151,7 @@ export function TemplateGalleryDialog({ open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <LayoutTemplate className="h-5 w-5" />
@@ -193,46 +193,48 @@ export function TemplateGalleryDialog({ open, onOpenChange }: Props) {
           />
         </div>
         <Separator />
-        <ScrollArea className="flex-1 min-h-0 pr-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            {filtered.map((t) => (
-              <div
-                key={t.id}
-                className="rounded-lg border bg-card p-3 flex flex-col gap-2 shadow-sm"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-semibold leading-tight">{t.name}</h3>
-                    <p className="text-[11px] text-muted-foreground mt-1 line-clamp-3">
-                      {t.description}
-                    </p>
-                  </div>
-                  <Badge variant="outline" className="text-[10px] shrink-0">
-                    {t.nodeCount} nodes
-                  </Badge>
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {t.tags.map((tag) => (
-                    <Badge key={tag} variant="secondary" className="text-[9px] px-1.5 py-0">
-                      {tag}
-                    </Badge>
-                  ))}
-                </div>
-                <Button
-                  size="sm"
-                  className="mt-auto w-full"
-                  disabled={loading}
-                  onClick={() => handleUseTemplate(t.id)}
+        <div className="flex-1 min-h-0 flex flex-col">
+          <ScrollArea className="flex-1 min-h-0 max-h-[55vh] pr-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {filtered.map((t) => (
+                <div
+                  key={t.id}
+                  className="rounded-lg border bg-card p-3 flex flex-col gap-2 shadow-sm"
                 >
-                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Use template"}
-                </Button>
-              </div>
-            ))}
-          </div>
-          {filtered.length === 0 && (
-            <p className="text-sm text-muted-foreground text-center py-8">No templates match.</p>
-          )}
-        </ScrollArea>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold leading-tight">{t.name}</h3>
+                      <p className="text-[11px] text-muted-foreground mt-1 line-clamp-3">
+                        {t.description}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] shrink-0">
+                      {t.nodeCount} nodes
+                    </Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {t.tags.map((tag) => (
+                      <Badge key={tag} variant="secondary" className="text-[9px] px-1.5 py-0">
+                        {tag}
+                      </Badge>
+                    ))}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="mt-auto w-full"
+                    disabled={loading}
+                    onClick={() => handleUseTemplate(t.id)}
+                  >
+                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Use template"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+            {filtered.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-8">No templates match.</p>
+            )}
+          </ScrollArea>
+        </div>
         <Separator />
         <div className="flex flex-wrap gap-2 justify-between items-center">
           <span className="text-xs text-muted-foreground">Import / export portable graph JSON</span>

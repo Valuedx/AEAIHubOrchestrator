@@ -179,6 +179,9 @@ def _get_a2a_tenant(
     )
     if not row:
         raise HTTPException(401, "Invalid or revoked A2A API key")
+    
+    # Enable RLS context for this A2A session
+    set_tenant_context(db, tenant_id)
     return tenant_id
 
 

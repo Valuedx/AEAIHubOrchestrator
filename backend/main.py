@@ -38,18 +38,7 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """STARTUP-01 — run preflight checks once on boot.
-
-    Each check catches its own exceptions so a misbehaving check can't
-    abort startup. Results are logged at INFO/WARNING/ERROR levels so
-    operators see failures in the regular uvicorn stream. The
-    ``/health/ready`` endpoint re-runs the same checks live for
-    readiness probes.
-
-    Disabled when ``ORCHESTRATOR_SKIP_STARTUP_CHECKS=true`` — tests
-    that spin up TestClient(app) without real IO set that to keep
-    per-test logs quiet.
-    """
+    """STARTUP-01 — run preflight checks once on boot."""
     if not settings.skip_startup_checks:
         from app.startup_checks import run_all_checks, log_results, overall_status
 
@@ -98,10 +87,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# ADMIN-02: per-tenant API rate limit. Added AFTER CORS so preflight
-# OPTIONS requests don't count against the tenant's budget (Starlette
-# processes middlewares outside-in; CORS short-circuits OPTIONS before
-# our middleware runs).
+
+# ADMIN-02: per-tenant API rate limit.
 app.add_middleware(TenantRateLimitMiddleware)
 
 app.include_router(workflows_router)
@@ -163,23 +150,11 @@ atexit.register(_shutdown_langfuse)
 
 @app.get("/health")
 def health():
-    """Liveness probe — unconditional 200 as long as the process is up.
-
-    Does NOT verify any external dependency. Use ``/health/ready`` for
-    readiness (DB, Redis, Celery workers, RLS posture, etc.).
-    """
     return {"status": "ok", "service": "ae-ai-hub-orchestrator"}
 
 
 @app.get("/health/ready")
 def health_ready():
-    """Readiness probe (STARTUP-01).
-
-    Runs every preflight check live and returns a structured report.
-    HTTP 503 when any check is ``fail``; HTTP 200 otherwise (warns
-    included). k8s readiness probes should pair with this; liveness
-    probes should keep using ``/health``.
-    """
     from app.startup_checks import overall_status, results_as_dict, run_all_checks
 
     results = run_all_checks()
@@ -190,10 +165,6 @@ def health_ready():
 
 @app.get("/auth/token")
 def dev_token(tenant_id: str = "default"):
-    """Development-only endpoint to generate a JWT for testing.
-
-    In production, tokens are issued by the organization's identity provider.
-    """
     if settings.auth_mode != "dev":
         return JSONResponse(
             status_code=403,

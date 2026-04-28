@@ -13,7 +13,7 @@ and returns a standardized dict:
 from __future__ import annotations
 
 import logging
-import time
+import os
 from typing import Any
 
 from google.genai import types
@@ -246,6 +246,10 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
     )
 
     if backend == "vertex":
+        # Ensure SDK can find the JSON key if provided in .env
+        if settings.google_application_credentials and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+
         project, location = _resolve_vertex_target(tenant_id)
         logger.info("Initializing Vertex AI client: project=%s, location=%s, tenant_id=%s", project, location, tenant_id)
         if not project:
@@ -260,15 +264,26 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
         )
     if backend == "genai":
         # ADMIN-03 — per-tenant Google AI Studio key via the LLM
-        # credentials resolver (tenant_secrets → env fallback). Raises
-        # a remediation-bearing ValueError if neither is set.
+        # credentials resolver (tenant_secrets → env fallback). 
         from app.engine.llm_credentials_resolver import get_google_api_key
 
-        return genai.Client(
-            api_key=get_google_api_key(tenant_id),
-            http_options=http_options,
-
-        )
+        try:
+            return genai.Client(
+                api_key=get_google_api_key(tenant_id),
+                http_options=http_options,
+            )
+        except ValueError:
+            # Smart fallback: if no AI Studio key is configured but Vertex
+            # is, route through Vertex instead of failing. Lets a Vertex-only
+            # deployment survive a `provider="google"` call without first
+            # provisioning an AI Studio key.
+            project, _ = _resolve_vertex_target(tenant_id)
+            if project:
+                logger.info(
+                    "No Google AI Studio key found; falling back to Vertex AI backend."
+                )
+                return _google_client("vertex", tenant_id=tenant_id)
+            raise
     raise ValueError(f"Unknown google backend: {backend!r}")
 
 

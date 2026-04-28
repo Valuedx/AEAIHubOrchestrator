@@ -51,15 +51,13 @@ def get_db():
         db.close()
 
 
-# Imported at bottom to keep the module import order simple; security.tenant
-# re-exports get_tenant_id from security.jwt_auth which in turn imports config.
+# Imported at bottom to avoid circular dependency
 from app.security.tenant import get_tenant_id  # noqa: E402
 
 
 def get_tenant_db(tenant_id: str = Depends(get_tenant_id)):
     """FastAPI dependency that yields a Session with ``app.tenant_id`` set
-    to the caller's tenant. Use this for every endpoint that reads or
-    writes tenant-scoped tables.
+    to the caller's tenant.
     """
     db = SessionLocal()
     try:
