@@ -13,6 +13,7 @@ class _FakeDB:
     def __init__(self):
         self.committed = False
         self.closed = False
+        self.info: dict[str, object] = {}
 
     def commit(self):
         self.committed = True

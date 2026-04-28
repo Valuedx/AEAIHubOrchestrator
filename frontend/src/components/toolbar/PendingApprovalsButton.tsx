@@ -280,6 +280,7 @@ function ApprovalRow({
  * absolute timestamp is surfaced in the row's tooltip so an
  * operator hunting for precision doesn't have to do mental math.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function formatAge(seconds: number): string {
   if (seconds < 60) return "just now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;

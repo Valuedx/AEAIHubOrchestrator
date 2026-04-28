@@ -549,6 +549,7 @@ function eventId(event: CopilotAgentEvent, fallbackIndex: number): string {
  * ``tool_result`` event uses ``validation: null`` and ``draft_version: 0``
  * — live streams continue to carry the real values.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function turnsToChatItems(turns: CopilotTurnOut[]): ChatItem[] {
   const items: ChatItem[] = [];
   for (const turn of turns) {
