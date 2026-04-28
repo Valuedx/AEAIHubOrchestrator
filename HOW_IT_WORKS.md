@@ -1,3 +1,25 @@
+> - **SMART-02 — accepted-patterns library (2026-04-22)**: The copilot now learns from what the tenant already shipped. Every `/promote` saves the accepted graph + NL intent; future drafts retrieve the nearest patterns as few-shot instead of synthesising from scratch. The agent starts to sound like the tenant's own conventions (naming, preferred MCP servers, memory profile choices). System prompt rewired so `recall_patterns` runs before `add_node` on any non-trivial intent. Opt-out via `smart_02_pattern_library_enabled`.
+>
+> - **SMART-06 — MCP tool discovery (2026-04-22)**: The copilot can now see the tools on the tenant's connected MCP servers. When the user's intent involves an external lookup or API call, the agent checks `discover_mcp_tools`, finds anything relevant, and suggests wiring an MCP Tool node that references it — rather than re-inventing the call as HTTP or code. Uses the existing 5-minute `list_tools` cache from MCP-02. Opt-out per tenant via `smart_06_mcp_discovery_enabled`.
+>
+> - **SMART-04 — proactive authoring lints (2026-04-22)**: The copilot now runs four cheap structure-level checks after every mutation — `no_trigger`, `disconnected_node`, `orphan_edge`, `missing_credential` — and surfaces them inline in the chat's tool_result card. Catches the common "looks valid schema-wise but won't actually work" bugs (add_node but forgot to connect it; LLM node with no credential configured) before the first test run. Zero LLM cost. Opt-out via `tenant_policies.smart_04_lints_enabled`. First of six SMART-XX intelligence upgrades; the same per-tenant-flag pattern applies to SMART-01/02/03/05/06 as they ship.
+>
+> - **COPILOT-02.i — chat pane (2026-04-22)**: The backend copilot plumbing (01a, 01b.i/ii/iii/iv) finally has a user-facing surface. Toolbar Sparkles icon opens a 460-px right-side drawer with a scrollable chat, auto-growing textarea composer, and live event stream (assistant text, tool-call pills, tool-result cards with per-tool summaries and collapsible detail drawers). Mutually exclusive with the PropertyInspector. Draft + session bootstrap happen automatically on open — no setup required beyond the standard LLM credentials (ADMIN-03).
+>
+> - **COPILOT-01b.iii — docs grounding (2026-04-22)**: Agent can now read the orchestrator's own documentation — `codewiki/*.md` + a flattened view of the node registry — via two new runner tools `search_docs(query, top_k?)` and `get_node_examples(node_type)`. Implementation is a file-backed word-overlap index (`app/copilot/docs_index.py`) rather than a full RAG pipeline — the docs are small, change via git commits, and the simpler path avoids per-tenant ingestion / embedding config / RLS carveouts. Vector-backed retrieval is a clean follow-up with the same tool surface. System prompt guides the agent to consult docs for concept questions before drafting.
+>
+> - **COPILOT-01b.ii.b — `execute_draft` + `get_execution_logs` (2026-04-22)**: Closes the copilot's construct → test → debug → fix loop. Two new runner tools: `execute_draft` materialises an ephemeral `WorkflowDefinition` (migration `0023` adds the `is_ephemeral` flag) + a real `WorkflowInstance` for the draft and runs it through the existing engine with a threadpool + timeout (default 30s, capped at 300s); `get_execution_logs` reads per-node logs back, scoped to copilot-initiated runs so the LLM can't read production execution history. Ephemeral rows are filtered out of `list_workflows`, the scheduler, and the A2A agent card. A `cleanup_ephemeral_workflows` utility reaps old rows (operator-scheduled for now; Beat wire-up is a follow-up).
+>
+> - **COPILOT — AutomationEdge handoff fork (2026-04-22)**: The workflow authoring copilot now recognises deterministic RPA intent (SAP/ERP posting, form fill, file transfer, data entry) and offers the user a fork rather than trying to chain LLM nodes for it. Two paths: **inline** (add an `automationedge` node pointing at an existing AE workflow) or **handoff** (open the AutomationEdge Copilot — separate product — to design the RPA first, then come back). New `get_automationedge_handoff_info` runner tool surfaces the tenant's AE connections + deep-link URL. System prompt enforces the fork so the agent never tries to synthesise RPA steps inside this orchestrator.
+>
+> - **COPILOT-01b.ii.a — `test_node` runner tool (2026-04-22)**: Adds the copilot's first stateful tool — "run one node in isolation with pinned upstream data". Separate module `app/copilot/runner_tools.py` from the pure `tool_layer.py` because runner tools need DB + tenant scope (they call real node handlers). The agent's `_dispatch_tool` tries pure first, then runner. Tool description nudges the agent to use `test_node` for debug-a-node-config turns; it does NOT mutate the draft graph, so `validation` stays `null` in the tool_result event. Deferred: `execute_draft` + `get_execution_logs` to 01b.ii.b (needs an `is_ephemeral` flag migration first).
+>
+> - **COPILOT-01b.iv — Google AI Studio + Vertex AI providers (2026-04-22)**: The copilot agent supports three providers today, all dispatched through the same `send_turn` loop via a `_PROVIDER_ADAPTERS` registry — Anthropic (`claude-sonnet-4-6`), Google AI Studio (`gemini-3.1-pro-preview-customtools`), Vertex AI (same Gemini 3.x model, `genai.Client(vertexai=True, project, location)` with per-tenant project from VERTEX-02). Each adapter bundles `build_state` / `call` / `append_tool_round` callables that encapsulate the provider's message-history shape; the runner itself stays provider-agnostic. Google doesn't emit per-call tool_use ids — the runner synthesises stable `gfn_<name>_<idx>` ids so tool-turn rows have a UI-renderable link. Adding OpenAI is a third registry entry plus three adapter functions — no change to `send_turn`.
+>
+> - **COPILOT-01b.i Agent runner + session streaming (2026-04-22)**: The LLM-driven half of the copilot. `app/copilot/agent.py` drives Anthropic tool-calling through the pure tool layer from 01a — load prior turns from `copilot_turns`, build messages with a system prompt that enforces the NL-first turn pipeline (intent-extract → clarify → pattern-match → draft → narrate), call `client.messages.create`, dispatch each `tool_use` block, feed results back, loop until the assistant produces final text with no more tool calls. Capped at 12 iterations per turn. Per-tenant API key via ADMIN-03. New endpoint `/api/v1/copilot/sessions/{id}/turns` returns `text/event-stream` with `assistant_text` / `tool_call` / `tool_result` / `error` / `done` events. Still deferred: `test_node` / `execute_draft` (01b.ii), RAG docs grounding (01b.iii), multi-provider + token budget (01b.iv), UI (COPILOT-02).
+>
+> - **COPILOT-01a Draft-workspace foundation (2026-04-22)**: Backend-only foundation for the natural-language workflow authoring copilot ([codewiki/copilot.md](codewiki/copilot.md)). Ships a draft-workspace safety boundary — every copilot mutation lands in `workflow_drafts` and nothing reaches `workflow_definitions` until the human hits `/promote`. Pure tool layer (`list_node_types`, `get_node_schema`, `add_node`, `update_node_config`, `delete_node`, `connect_nodes`, `disconnect_edge`, `validate_graph`) takes a graph dict and returns a new one; persistence and version-bump happen in the HTTP dispatch path. Two race guards: optimistic-concurrency `version` token (stale tool call → 409), and `base_version_at_fork` (promote refuses if the base workflow advanced since the draft was forked). Agent runner, `test_node`, `execute_draft`, RAG grounding are all COPILOT-01b; chat UI is COPILOT-02.
+>
 > - **RLS-01 Systemic `get_tenant_db` cutover (2026-04-21)**: Every tenant-scoped API handler now uses `Depends(get_tenant_db)` so the `app.tenant_id` Postgres GUC is set on the session before any query. Previously, most handlers used `get_db` (which doesn't set the GUC) — this was silently fine under a superuser role (superusers bypass RLS) but broke immediately when a tenant followed STARTUP-01's `rls_posture` warn to switch to a non-superuser role. Path-based A2A endpoints (`/tenants/{tenant_id}/...`) keep using `get_db` because `get_tenant_db` reads the `X-Tenant-Id` header, not the URL path — they now call `set_tenant_context(db, tenant_id)` inline instead. Regression test `tests/test_rls_dependency_wired.py` spies on each tenant-scoped endpoint and asserts the GUC call happened.
 >
 > - **ADMIN-03 Per-tenant LLM provider credentials (2026-04-21)**: Tenants now carry their own Google AI Studio / OpenAI / Anthropic API keys (and OpenAI base URL) instead of sharing the orchestrator's process-global env keys. Storage reuses the existing Fernet-encrypted `tenant_secrets` vault under four well-known names. New resolver in `engine/llm_credentials_resolver.py`; seven chat/stream/ReAct call sites wired. Dialog behind the toolbar Key icon with password-masked inputs and per-field source badges. Read-only `/api/v1/llm-credentials` endpoint surfaces status (never values) for the UI.
@@ -90,7 +112,7 @@
 11. [Step 10 — Completion and Callback](#11-step-10--completion-and-callback)
 12. [Step 11 — MCP Tool Bridge (Streamable HTTP)](#12-step-11--mcp-tool-bridge-streamable-http)
 13. [Step 12 — Version History and Rollback](#13-step-12--version-history-and-rollback)
-14. [Step 13 — OIDC Authentication Flow](#14-step-13--oidc-authentication-flow)
+14. [Step 13 — Authentication Flows (OIDC + Local Password)](#14-step-13--authentication-flows)
 15. [Step 14 — ForEach Loop Iteration](#15-step-14--foreach-loop-iteration)
 16. [Step 15 — Retry from Failed Node](#16-step-15--retry-from-failed-node)
 17. [Step 17 — External Gateway Bridge](#18-step-17--external-gateway-bridge)
@@ -143,7 +165,7 @@ When the user opens the orchestrator at `http://localhost:8080`, they see a thre
 
 The entire app is wrapped in `ReactFlowProvider` (required by React Flow for coordinate transforms) and `TooltipProvider` (required by shadcn tooltips).
 
-If `VITE_AUTH_MODE=oidc` and no token is stored in `localStorage`, the OIDC `LoginPage` is shown instead.
+If `VITE_AUTH_MODE` is `oidc` (SSO) or `local` (username/password) and no token is stored in `sessionStorage` as `ae_access_token`, the `LoginPage` is shown instead. Under `oidc` the page is a single "Sign in with SSO" button; under `local` it renders a tenant/username/password form that POSTs to `/auth/local/login`.
 
 ### Node card visual indicators
 
@@ -796,17 +818,28 @@ The **History** (clock) button in the Toolbar opens `VersionHistoryDialog`. It s
 
 ---
 
-## 14. Step 13 — OIDC Authentication Flow
+## 14. Step 13 — Authentication Flows
 
-**Code:** `backend/app/api/auth.py`, `frontend/src/components/auth/LoginPage.tsx`, `frontend/src/lib/api.ts`
+**Code:** `backend/app/api/auth.py` (OIDC), `backend/app/api/auth_local.py` (local password), `backend/app/api/users.py` (admin user CRUD), `backend/app/security/jwt_auth.py`, `backend/app/security/local_auth.py`, `frontend/src/components/auth/LoginPage.tsx`, `frontend/src/lib/api.ts`.
 
-The OIDC flow is opt-in. It activates when `ORCHESTRATOR_OIDC_ENABLED=true` (backend) and `VITE_AUTH_MODE=oidc` (frontend).
+The backend exposes four authentication surfaces; a single deployment typically uses one or two. All of them converge on an internal HS256 JWT validated by `security/jwt_auth.py::get_tenant_id`.
+
+| Surface | Activated by | Token source |
+|---------|--------------|--------------|
+| **`dev`** — header-based | `ORCHESTRATOR_AUTH_MODE=dev` (default) | None — client sends `X-Tenant-Id` directly |
+| **`jwt`** — external IdP | `ORCHESTRATOR_AUTH_MODE=jwt` | Pre-issued Bearer, signed with `ORCHESTRATOR_SECRET_KEY` |
+| **`local`** — username/password (LOCAL-AUTH-01) | `ORCHESTRATOR_AUTH_MODE=local` | `POST /auth/local/login` returns a Bearer |
+| **OIDC SSO** (additive) | `ORCHESTRATOR_OIDC_ENABLED=true` | `/auth/oidc/callback` returns a Bearer after ID-token validation |
+
+### 14.1 OIDC flow
+
+Opt-in. Activates when `ORCHESTRATOR_OIDC_ENABLED=true` (backend) and `VITE_AUTH_MODE=oidc` (frontend).
 
 ```
 Browser                        FastAPI (/auth/oidc)        Identity Provider
 ───────                        ───────────────────        ─────────────────
 App.tsx: no token in                  │                          │
-  localStorage → show LoginPage       │                          │
+  sessionStorage → show LoginPage     │                          │
                                       │                          │
 "Sign in with SSO" clicked            │                          │
   └── GET /auth/oidc/login            │                          │
@@ -833,11 +866,54 @@ App.tsx: no token in                  │                          │
                               Return { access_token, tenant_id }  │
                                                                   │
   Frontend stores token in           │                            │
-    localStorage ("ae_access_token") │                            │
+    sessionStorage                   │                            │
+    ("ae_access_token")              │                            │
   App renders normally               │                            │
 ```
 
-Once stored, all API calls use `Authorization: Bearer <token>` instead of `X-Tenant-Id`. The backend validates the JWT via `app/security/jwt_auth.py`.
+Once stored, all API calls use `Authorization: Bearer <token>` instead of `X-Tenant-Id`. The backend validates the JWT via `app/security/jwt_auth.py`. The token is kept in `sessionStorage` (not `localStorage`) so it doesn't survive a browser restart — tab-scoped lifetime meaningfully reduces XSS blast radius.
+
+### 14.2 Local password flow (LOCAL-AUTH-01)
+
+Activates when `ORCHESTRATOR_AUTH_MODE=local` (backend) and `VITE_AUTH_MODE=local` (frontend). The `users` table (migration 0033) owns credentials; passwords are hashed with argon2id. Tenant isolation is enforced by RLS on the table itself.
+
+```
+Browser                       FastAPI                        Postgres
+───────                       ───────                        ────────
+App.tsx: no token in          │                             │
+  sessionStorage → LoginPage  │                             │
+                              │                             │
+LocalLoginForm submits:       │                             │
+  POST /auth/local/login      │                             │
+  { tenant_id, username,      │                             │
+    password }                │                             │
+                              │                             │
+                      set_tenant_context(tenant_id)        │
+                      SELECT * FROM users WHERE           │
+                         tenant_id = :t AND               │
+                         lower(username) = :u             │
+                              ────────────────────────────▶│
+                              ◀────────────────────────────│
+                      argon2.verify(password, hash)        │
+                      If disabled/bad-pass/missing: 401    │
+                      On success:                          │
+                        UPDATE users SET last_login_at     │
+                        create_access_token(               │
+                          tenant_id=user.tenant_id,        │
+                          subject=str(user.id),            │
+                          extra_claims={ username,         │
+                                         is_admin })       │
+  Frontend stores token in    │                            │
+    sessionStorage            │                            │
+    ("ae_access_token")       │                            │
+  window.location.reload()    │                            │
+```
+
+**Admin user CRUD** (`/api/v1/users`) — create / list / reset-password / disable / delete — is mounted only when `auth_mode=local`, and every endpoint requires a Bearer with `is_admin=true`. Self-disable and self-delete are refused so a lone admin can't accidentally lock the tenant out.
+
+**Bootstrap admin.** On first boot into `auth_mode=local`, `security/local_auth.py::ensure_admin_seeded` creates the seed user if `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` + `ORCHESTRATOR_LOCAL_ADMIN_PASSWORD` are set and no user with that username exists in the seed tenant. Subsequent boots are no-ops.
+
+**Deferred — Active Directory / LDAP.** The current `authenticate(db, tenant_id, username, password)` only checks the `users` table. The `/auth/local/login` endpoint will gain an `authenticate_external(...)` path in a follow-up revision, letting a single tenant mix local users with AD-backed users without a breaking schema change or frontend change.
 
 ---
 

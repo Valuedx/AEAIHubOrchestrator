@@ -35,11 +35,21 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   api,
   type TenantPolicyOut,
   type TenantPolicyUpdate,
   type TenantPolicySource,
+  type LlmModelOut,
+  type EmbeddingModelOut,
 } from "@/lib/api";
+import { useModels, invalidateModelsCache } from "@/lib/useModels";
 
 interface Props {
   open: boolean;
@@ -246,6 +256,15 @@ export function TenantPolicyDialog({ open, onOpenChange }: Props) {
                 />
               ))}
 
+              <Separator />
+              <ModelOverridesSection
+                initial={policy.models}
+                onSaved={(updated) => {
+                  setPolicy(updated);
+                  invalidateModelsCache();
+                }}
+              />
+
               {err && <p className="text-xs text-destructive">{err}</p>}
 
               <div className="flex justify-end gap-2 pt-1">
@@ -395,5 +414,254 @@ function SourcePill({
     <Badge variant="outline" className="text-[10px] text-muted-foreground">
       env default
     </Badge>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Model overrides section (MODEL-01.e)
+// ---------------------------------------------------------------------------
+
+const KNOWN_FAMILIES: { id: string; label: string; hint: string }[] = [
+  { id: "3.x", label: "Gemini 3.x", hint: "preview — flagship reasoning" },
+  { id: "2.5", label: "Gemini 2.5", hint: "GA — prod-safe default" },
+  { id: "2.0", label: "Gemini 2.0", hint: "legacy" },
+  { id: "claude-4", label: "Claude 4", hint: "Anthropic Sonnet" },
+  { id: "claude-3.5", label: "Claude 3.5", hint: "Anthropic Haiku" },
+  { id: "gpt-4o", label: "GPT-4o", hint: "OpenAI" },
+];
+
+interface ModelOverridesSectionProps {
+  initial: TenantPolicyOut["models"];
+  onSaved: (updated: TenantPolicyOut) => void;
+}
+
+function ModelOverridesSection({ initial, onSaved }: ModelOverridesSectionProps) {
+  const { data: models, loading } = useModels();
+  const [llmProvider, setLlmProvider] = useState<string | null>(initial.default_llm_provider);
+  const [llmModel, setLlmModel] = useState<string | null>(initial.default_llm_model);
+  const [embProvider, setEmbProvider] = useState<string | null>(
+    initial.default_embedding_provider,
+  );
+  const [embModel, setEmbModel] = useState<string | null>(initial.default_embedding_model);
+  const [families, setFamilies] = useState<string[]>(initial.allowed_model_families ?? []);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const llmProviders = useMemo(
+    () => [...new Set((models?.llm ?? []).map((m) => m.provider))],
+    [models],
+  );
+  const embProviders = useMemo(
+    () => [...new Set((models?.embedding ?? []).map((m) => m.provider))],
+    [models],
+  );
+
+  const llmChoices = useMemo<LlmModelOut[]>(
+    () => (models?.llm ?? []).filter((m) => !llmProvider || m.provider === llmProvider),
+    [models, llmProvider],
+  );
+  const embChoices = useMemo<EmbeddingModelOut[]>(
+    () =>
+      (models?.embedding ?? []).filter(
+        (m) => !embProvider || m.provider === embProvider,
+      ),
+    [models, embProvider],
+  );
+
+  const toggleFamily = (id: string) => {
+    setFamilies((prev) =>
+      prev.includes(id) ? prev.filter((f) => f !== id) : [...prev, id],
+    );
+  };
+
+  const hasChanges =
+    llmProvider !== initial.default_llm_provider ||
+    llmModel !== initial.default_llm_model ||
+    embProvider !== initial.default_embedding_provider ||
+    embModel !== initial.default_embedding_model ||
+    JSON.stringify([...families].sort()) !==
+      JSON.stringify([...(initial.allowed_model_families ?? [])].sort());
+
+  const save = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      const body: TenantPolicyUpdate = {
+        default_llm_provider: llmProvider || null,
+        default_llm_model: llmModel || null,
+        default_embedding_provider: embProvider || null,
+        default_embedding_model: embModel || null,
+        allowed_model_families: families.length === 0 ? null : families,
+      };
+      const updated = await api.updateTenantPolicy(body);
+      onSaved(updated);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearAll = () => {
+    setLlmProvider(null);
+    setLlmModel(null);
+    setEmbProvider(null);
+    setEmbModel(null);
+    setFamilies([]);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="font-medium">Model overrides</Label>
+        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+          MODEL-01.e
+        </Badge>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Pin this tenant to a specific LLM or embedding, or restrict which model
+        generations are usable. Null / no selection = inherit the registry's
+        tier-based default.
+      </p>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Default LLM provider</Label>
+          <Select
+            value={llmProvider ?? "__inherit"}
+            onValueChange={(v) => {
+              setLlmProvider(v === "__inherit" ? null : v);
+              setLlmModel(null);
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__inherit">Inherit (registry default)</SelectItem>
+              {llmProviders.map((p) => (
+                <SelectItem key={p} value={p}>{p}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Default LLM model</Label>
+          <Select
+            value={llmModel ?? "__inherit"}
+            onValueChange={(v) => setLlmModel(v === "__inherit" ? null : v)}
+            disabled={!llmProvider || loading}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder={llmProvider ? "Pick a model" : "Provider first"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__inherit">Inherit (tier-based)</SelectItem>
+              {llmChoices.map((m) => (
+                <SelectItem key={`${m.provider}:${m.model_id}`} value={m.model_id}>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="font-medium">{m.display_name || m.model_id}</span>
+                    {m.preview && (
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 border-amber-500/40 text-amber-700 dark:text-amber-400">preview</Badge>
+                    )}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Default embedding provider</Label>
+          <Select
+            value={embProvider ?? "__inherit"}
+            onValueChange={(v) => {
+              setEmbProvider(v === "__inherit" ? null : v);
+              setEmbModel(null);
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__inherit">Inherit (openai default)</SelectItem>
+              {embProviders.map((p) => (
+                <SelectItem key={p} value={p}>{p}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Default embedding model</Label>
+          <Select
+            value={embModel ?? "__inherit"}
+            onValueChange={(v) => setEmbModel(v === "__inherit" ? null : v)}
+            disabled={!embProvider || loading}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder={embProvider ? "Pick a model" : "Provider first"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__inherit">Inherit (provider default)</SelectItem>
+              {embChoices.map((m) => (
+                <SelectItem key={`${m.provider}:${m.model_id}`} value={m.model_id}>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="font-medium">{m.display_name || m.model_id}</span>
+                    <span className="text-[10px] text-muted-foreground">{m.dim}d</span>
+                    {m.modalities.length > 1 && (
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 border-violet-500/40 text-violet-700 dark:text-violet-400">multi</Badge>
+                    )}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label className="text-xs">Allowed model families</Label>
+        <div className="flex flex-wrap gap-1.5">
+          {KNOWN_FAMILIES.map((f) => {
+            const active = families.includes(f.id);
+            return (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => toggleFamily(f.id)}
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] transition-colors ${
+                  active
+                    ? "bg-violet-500/10 border-violet-500/40 text-violet-700 dark:text-violet-400"
+                    : "bg-muted/30 border-muted/50 text-muted-foreground hover:bg-muted/60"
+                }`}
+                title={f.hint}
+              >
+                {active && <span className="text-[10px]">✓</span>}
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          {families.length === 0
+            ? "No restriction — every registry model is allowed."
+            : `Only these families are usable — others are rejected at session-create + node execution.`}
+        </p>
+      </div>
+
+      {err && <p className="text-xs text-destructive">{err}</p>}
+
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={clearAll} disabled={saving || !hasChanges}>
+          Clear all
+        </Button>
+        <Button variant="default" size="sm" onClick={save} disabled={!hasChanges || saving || loading}>
+          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save model overrides"}
+        </Button>
+      </div>
+    </div>
   );
 }

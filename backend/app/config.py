@@ -4,14 +4,32 @@ from app.paths import BACKEND_ENV_FILE
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/ae_orchestrator"
+    database_url: str = "postgresql://postgres:root@localhost:5432/ae_orchestrator_ai"
     redis_url: str = "redis://localhost:6379/0"
     mcp_server_url: str = "http://localhost:8000/mcp"
     secret_key: str = "change-me-in-production"
     cors_origins: list[str] = ["http://localhost:8080", "http://localhost:8082"]
 
-    # Auth: "dev" = X-Tenant-Id header, "jwt" = Bearer token required
+    # Auth: "dev" = X-Tenant-Id header, "jwt" = Bearer token required,
+    # "local" = username/password against the ``users`` table (issues JWT).
+    # OIDC is an additive layer enabled by ``oidc_enabled`` and coexists
+    # with any of the above.
     auth_mode: str = "dev"
+
+    # LOCAL-AUTH-01 — username/password policy. Length-only for v1; see
+    # ``security/local_auth.py::validate_password_strength`` for why.
+    password_min_length: int = 8
+
+    # LOCAL-AUTH-01 — optional bootstrap admin. When ``auth_mode=local``
+    # and both username + password are set, the lifespan seed hook
+    # creates the row on first boot into the tenant configured by
+    # ``local_admin_tenant_id`` (defaulting to ``"default"``). After
+    # the row exists, changing the env vars here has NO effect — use
+    # the admin password-reset endpoint instead. Active Directory /
+    # LDAP binding is out of scope for this revision.
+    local_admin_username: str = ""
+    local_admin_password: str = ""
+    local_admin_tenant_id: str = "default"
 
     # LLM provider keys
     google_api_key: str = ""
@@ -57,12 +75,107 @@ class Settings(BaseSettings):
     # MCP connection pool size
     mcp_pool_size: int = 4
 
+    # SMART-04 — global default for the copilot's proactive authoring
+    # lints. Per-tenant override lives on
+    # ``tenant_policies.smart_04_lints_enabled``; this env default is
+    # the fallback for tenants with no row. Default true — lints are
+    # zero-LLM-cost and strictly additive to UX.
+    smart_04_lints_enabled: bool = True
+
+    # SMART-06 — global default for the copilot's proactive MCP tool
+    # discovery (agent calls list_tools on tenant-registered MCP
+    # servers). Per-tenant override on
+    # ``tenant_policies.smart_06_mcp_discovery_enabled``. Default
+    # true — discovery is a cached list_tools call, zero-LLM-cost.
+    smart_06_mcp_discovery_enabled: bool = True
+
+    # SMART-02 — global default for the accepted-patterns library.
+    # Default true; zero LLM cost (pure DB I/O). Off means the
+    # agent gets no few-shot retrieval from prior promotes, and
+    # promote doesn't persist a pattern row.
+    smart_02_pattern_library_enabled: bool = True
+
+    # SMART-01 — two flags, BOTH default off. Unlike SMART-02/04/06
+    # these spend real engine tokens, so the cost-conscious default
+    # is opt-in. Per-tenant overrides on
+    # ``tenant_policies.smart_01_*``.
+    #
+    #   scenario_memory:  every successful execute_draft auto-saves
+    #                     a scenario (deduped by payload hash).
+    #   strict_promote_gate: promote refuses with 400 on any failing
+    #                     scenario — no "promote anyway" override.
+    smart_01_scenario_memory_enabled: bool = False
+    smart_01_strict_promote_gate_enabled: bool = False
+
+    # SMART-05 — vector-backed docs search for the copilot. Off by
+    # default because embedding calls cost tokens. When on, the
+    # first ``search_docs`` call per process embeds every codewiki
+    # chunk (~30–50 entries) and caches in-process; subsequent
+    # queries embed the query and rank by cosine similarity. A
+    # per-call fallback to the 01b.iii word-overlap path covers
+    # the "embedding provider unavailable" case so turning this
+    # on never returns *fewer* results than off.
+    smart_05_vector_docs_enabled: bool = False
+    # Which embedding provider / model to use for SMART-05. The
+    # model must exist in ``embedding_provider.EMBEDDING_REGISTRY``.
+    # Defaults to Vertex ``text-embedding-005`` (768-dim) to match the
+    # orchestrator-wide KB default and keep Gemini-native deployments
+    # on one stack. Operators running an OpenAI-first stack should
+    # set these back to ``openai`` + ``text-embedding-3-small``. Any
+    # provider registered in ``embedding_provider.EMBEDDING_REGISTRY``
+    # is valid.
+    smart_05_embedding_provider: str = "vertex"
+    smart_05_embedding_model: str = "text-embedding-005"
+
+    # COPILOT-03.c — provider + model that ``suggest_fix`` falls back
+    # to when no active CopilotSession exists on the draft (e.g.
+    # suggest_fix called programmatically before any chat turn). When
+    # a session IS active, suggest_fix reuses the session's provider
+    # + model directly so Vertex/Gemini tenants never silently route
+    # fix suggestions through a different engine. Set to ``vertex``
+    # for Gemini-native deployments. Valid providers: ``anthropic``
+    # / ``google`` / ``vertex``.
+    copilot_default_provider: str = "vertex"
+
+    # MODEL-01.e — default LLM provider / model when the tenant policy is null
+    llm_default_provider: str | None = None
+
+    # A2A-01.b — provider info surfaced on the public agent card so
+    # remote agents know which org is answering. None of these are
+    # secret; set via env so ops can brand the card per deployment.
+    # Empty strings suppress the respective field in the card body
+    # so a minimal configuration still produces a spec-valid card.
+    a2a_provider_organization: str = "AE AI Hub Orchestrator"
+    a2a_provider_url: str = ""
+    a2a_provider_email: str = ""
+    # Optional — points at a human-readable "how to use this agent"
+    # page. Our API reference at /api/v1/playground is a reasonable
+    # default for the orchestrator itself; operators can override for
+    # a customer-facing URL.
+    a2a_documentation_url: str = ""
+
+    # Optional: process-wide default URL for the AutomationEdge Copilot
+    # (a separate product the workflow authoring copilot can hand off to
+    # when the user wants to design deterministic RPA steps before wiring
+    # them into this orchestrator via an AutomationEdge node). A
+    # per-tenant override can live on
+    # ``tenant_integrations(system='automationedge').config_json.copilotUrl``;
+    # this env default is the fallback. Empty = handoff surfaces as
+    # "open AE Copilot in your AE environment" without a deep link.
+    ae_copilot_url: str = ""
+
     # When False, tasks run in-process via background threads (no Redis/Celery needed)
     use_celery: bool = False
 
     # Knowledge Base / RAG
-    embedding_default_provider: str = "openai"
-    embedding_default_model: str = "text-embedding-3-small"
+    #
+    # Defaults to Vertex AI ``text-embedding-005`` (768-dim) so tenants
+    # without an OpenAI API key don't trip the legacy OpenAI fallback
+    # path at the first embedding call. Operators running an OpenAI-first
+    # stack should set both env vars back to ``openai`` /
+    # ``text-embedding-3-small``.
+    embedding_default_provider: str = "vertex"
+    embedding_default_model: str = "text-embedding-005"
     embedding_batch_size: int = 100
     kb_max_file_size_mb: int = 50
     kb_default_vector_store: str = "pgvector"
@@ -72,6 +185,16 @@ class Settings(BaseSettings):
     # Google Vertex AI (for embeddings — separate from google_api_key / GenAI)
     vertex_project: str = ""
     vertex_location: str = "us-central1"
+
+    # Read-timeout (seconds) for every google-genai client call (both
+    # AI Studio + Vertex). google-genai's underlying httpx client
+    # defaults to a 5-second read timeout, which is far too short for
+    # Gemini 3.1 Pro "thinking" + tool-calling round-trips that can
+    # easily take 30-90 s and occasionally multi-minute. 300 s gives
+    # the copilot + engine nodes enough headroom without hanging
+    # forever on a truly stuck call. Applied uniformly via the client
+    # factory in engine/llm_providers.py::_google_client.
+    google_llm_timeout_seconds: int = 300
 
     # Code Execution Sandbox
     code_sandbox_enabled: bool = True
@@ -92,3 +215,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+import os
+if settings.google_application_credentials:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials

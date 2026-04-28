@@ -20,19 +20,19 @@ _BATCH_INSERT = text(
         (id, document_id, kb_id, tenant_id, content, chunk_index, embedding, metadata_json, created_at)
     VALUES
         (:id, :document_id, :kb_id, :tenant_id, :content, :chunk_index,
-         :embedding::vector, :metadata_json::jsonb, NOW())
+         CAST(:embedding AS vector), CAST(:metadata_json AS jsonb), NOW())
     """
 )
 
 _SEARCH = text(
     """
     SELECT id, document_id, content, chunk_index, metadata_json,
-           1 - (embedding <=> :query::vector) AS score
+           1 - (embedding <=> CAST(:query AS vector)) AS score
     FROM kb_chunks
     WHERE kb_id = :kb_id
       AND tenant_id = :tenant_id
-      AND 1 - (embedding <=> :query::vector) >= :threshold
-    ORDER BY embedding <=> :query::vector
+      AND 1 - (embedding <=> CAST(:query AS vector)) >= :threshold
+    ORDER BY embedding <=> CAST(:query AS vector)
     LIMIT :top_k
     """
 )

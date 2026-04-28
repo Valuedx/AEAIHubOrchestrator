@@ -39,16 +39,25 @@ DEFAULT_SUMMARY_TRIGGER_MESSAGES = 12
 DEFAULT_SUMMARY_RECENT_TURNS = 6
 DEFAULT_SUMMARY_MAX_TOKENS = 400
 DEFAULT_HISTORY_ORDER = "summary_first"
-DEFAULT_SUMMARY_PROVIDER = "google"
-DEFAULT_SUMMARY_MODEL = "gemini-2.5-flash"
-DEFAULT_EPISODE_ARCHIVE_PROVIDER = "google"
-DEFAULT_EPISODE_ARCHIVE_MODEL = "gemini-2.5-flash"
+# Sourced from the central model registry. MODEL-01.c wires the
+# engine-wide defaults to ``default_llm_for(provider, role="fast")`` so
+# memory checkpoint summaries track the same Gemini baseline every
+# other AI node uses. Bump the registry's tier default to rotate both
+# in lockstep.
+from app.engine.model_registry import default_llm_for as _default_llm_for
+
+DEFAULT_SUMMARY_PROVIDER = "vertex"
+DEFAULT_SUMMARY_MODEL = _default_llm_for(DEFAULT_SUMMARY_PROVIDER, role="fast")
+DEFAULT_EPISODE_ARCHIVE_PROVIDER = "vertex"
+DEFAULT_EPISODE_ARCHIVE_MODEL = _default_llm_for(
+    DEFAULT_EPISODE_ARCHIVE_PROVIDER, role="fast"
+)
 DEFAULT_EPISODE_INACTIVITY_MINUTES = 10080
 DEFAULT_EPISODE_MIN_TURNS = 2
 DEFAULT_AUTO_ARCHIVE_ON_RESOLVED = True
 DEFAULT_PROMOTE_INTERACTIONS = True
-DEFAULT_EMBEDDING_PROVIDER = "openai"
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_PROVIDER = "vertex"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-005"
 DEFAULT_VECTOR_STORE = "pgvector"
 
 

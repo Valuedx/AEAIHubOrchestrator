@@ -14,7 +14,15 @@ from starlette.concurrency import run_in_threadpool
 
 from app.database import SessionLocal, get_db, get_tenant_db, set_tenant_context
 from app.security.tenant import get_tenant_id
-from app.models.workflow import AsyncJob, WorkflowDefinition, WorkflowInstance, WorkflowSnapshot, ExecutionLog, InstanceCheckpoint
+from app.models.workflow import (
+    ApprovalAuditLog,
+    AsyncJob,
+    ExecutionLog,
+    InstanceCheckpoint,
+    WorkflowDefinition,
+    WorkflowInstance,
+    WorkflowSnapshot,
+)
 from app.api.schemas import (
     WorkflowCreate,
     WorkflowUpdate,
@@ -34,6 +42,8 @@ from app.api.schemas import (
     CheckpointDetailOut,
     ChildInstanceSummary,
     AsyncJobOut,
+    ApprovalAuditOut,
+    PendingApprovalOut,
 )
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
@@ -122,12 +132,91 @@ def list_workflows(
     tenant_id: str = Depends(get_tenant_id),
     db: Session = Depends(get_tenant_db),
 ):
+    # Ephemeral rows are created by the copilot's execute_draft runner
+    # tool to back trial-run WorkflowInstance rows. They never represent
+    # a user-authored workflow, so the saved-workflows dialog must not
+    # surface them. See codewiki/copilot.md §3 and migration 0023.
     return (
         db.query(WorkflowDefinition)
-        .filter_by(tenant_id=tenant_id)
+        .filter_by(tenant_id=tenant_id, is_ephemeral=False)
         .order_by(WorkflowDefinition.updated_at.desc())
         .all()
     )
+
+
+# IMPORTANT: /pending-approvals must be declared BEFORE any
+# /{workflow_id} route. FastAPI matches routes in declaration
+# order — a late static path gets captured by the earlier
+# parameterised path and 422s with "invalid UUID".
+@router.get("/pending-approvals", response_model=list[PendingApprovalOut])
+def list_pending_approvals(
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_tenant_db),
+):
+    """HITL-01.b — the tenant's suspended-awaiting-human backlog.
+
+    Filters down to *human* suspensions (``suspended_reason`` NULL)
+    — async-external suspensions wait on webhooks, not operators,
+    so they don't belong on this dashboard. Ordered oldest-first
+    so the row at the top of the toolbar dropdown is the one that's
+    been waiting longest, which is also the one most likely to be
+    close to its timeout.
+    """
+    rows = (
+        db.query(WorkflowInstance, WorkflowDefinition)
+        .join(WorkflowDefinition, WorkflowInstance.workflow_def_id == WorkflowDefinition.id)
+        .filter(
+            WorkflowInstance.tenant_id == tenant_id,
+            WorkflowInstance.status == "suspended",
+            WorkflowInstance.suspended_reason.is_(None),
+        )
+        .order_by(WorkflowInstance.suspended_at.asc().nulls_last())
+        .all()
+    )
+
+    now = _utcnow()
+    out: list[PendingApprovalOut] = []
+    for instance, wf in rows:
+        # Pull approvalMessage from the suspended node's config —
+        # same extraction path as the single-instance context
+        # endpoint, so cosmetic tweaks to one read the same on both.
+        approval_message: str | None = None
+        if instance.current_node_id:
+            graph = _resolve_graph_json_for_version(
+                db, wf, tenant_id,
+                instance.definition_version_at_start, strict=False,
+            )
+            node = next(
+                (n for n in graph.get("nodes", []) if n.get("id") == instance.current_node_id),
+                None,
+            )
+            if node:
+                approval_message = node.get("data", {}).get("config", {}).get("approvalMessage")
+
+        # Fallback to started_at for v0 rows that suspended before
+        # migration 0031. Age is "seconds this instance has been
+        # waiting on a human"; close enough with started_at given
+        # most workflows run < 30s before the HITL pause.
+        suspended_at = instance.suspended_at or instance.started_at
+        if suspended_at is None:
+            # Truly malformed row — skip rather than report a
+            # negative age. Shouldn't happen on a healthy deployment.
+            continue
+        age_seconds = max(0, int((now - suspended_at).total_seconds()))
+
+        out.append(
+            PendingApprovalOut(
+                instance_id=instance.id,
+                workflow_id=wf.id,
+                workflow_name=wf.name,
+                node_id=instance.current_node_id or "",
+                approval_message=approval_message,
+                suspended_at=suspended_at,
+                age_seconds=age_seconds,
+            )
+        )
+
+    return out
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)
@@ -625,6 +714,15 @@ def callback_workflow(
     tenant_id: str = Depends(get_tenant_id),
     db: Session = Depends(get_tenant_db),
 ):
+    """HITL resume endpoint. Writes a row to ``approval_audit_log``
+    on every call — approve, reject, or v0-legacy shape — so the
+    compliance story stays complete.
+
+    Back-compat: callers that omit ``decision`` are treated as
+    ``"approved"`` (the v0 path). The audit row still captures the
+    approver (defaults to ``"anonymous"`` when the caller didn't
+    claim an identity) and the context snapshots.
+    """
     instance = (
         db.query(WorkflowInstance)
         .filter_by(id=instance_id, workflow_def_id=workflow_id, tenant_id=tenant_id, status="suspended")
@@ -633,6 +731,66 @@ def callback_workflow(
     if not instance:
         raise HTTPException(404, f"Suspended instance {instance_id} not found for this workflow")
 
+    # Normalise + validate the decision. Explicit reject is a
+    # terminal state; approve (or omitted, treated as approve)
+    # queues the resume.
+    decision_raw = (body.decision or "approved").strip().lower()
+    if decision_raw not in {"approved", "rejected"}:
+        raise HTTPException(
+            422,
+            f"decision must be 'approved' or 'rejected', got {body.decision!r}",
+        )
+
+    # Claimed identity — stored as-is. The audit row lets an
+    # operator grep "who approved X 3 weeks ago" without having
+    # to reconstruct it from context_json.
+    approver = (body.approver or "anonymous").strip() or "anonymous"
+    if len(approver) > 256:
+        raise HTTPException(422, "approver must be 256 characters or fewer")
+
+    # Snapshot the context BEFORE merging the patch so a reviewer
+    # can see exactly what the approver was looking at. `dict(...)`
+    # because the JSONB column returns a SQLAlchemy-managed dict
+    # that we don't want to mutate.
+    context_before = dict(instance.context_json or {})
+
+    # Build the post-merge snapshot in-memory so the audit row is
+    # correct even though the actual merge happens in the Celery
+    # task. Mirrors dag_runner.resume_graph's ordering.
+    context_after = dict(context_before)
+    context_after["approval"] = body.approval_payload or {}
+    if body.context_patch:
+        context_after.update(body.context_patch)
+
+    audit = ApprovalAuditLog(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        instance_id=instance.id,
+        node_id=instance.current_node_id or "",
+        approver=approver,
+        decision=decision_raw,
+        reason=(body.reason or None),
+        context_before_json=context_before,
+        context_after_json=context_after,
+        # approvers_allowlist_matched stays NULL until HITL-01.d
+        # wires enforcement; absence of the column marker is
+        # unambiguous for back-compat.
+        approvers_allowlist_matched=None,
+    )
+    db.add(audit)
+
+    if decision_raw == "rejected":
+        # Terminal reject — close the instance as failed with the
+        # reserved suspend-reason string that maps to A2A's
+        # `rejected` state (A2A-01.b). No Celery resume; no
+        # downstream execution.
+        instance.status = "failed"
+        instance.suspended_reason = "rejected"
+        instance.completed_at = _utcnow()
+        db.commit()
+        db.refresh(instance)
+        return instance
+
     from app.workers.tasks import resume_workflow_task
     resume_workflow_task.delay(tenant_id, str(instance.id), body.approval_payload, body.context_patch)
 
@@ -640,6 +798,38 @@ def callback_workflow(
     db.commit()
     db.refresh(instance)
     return instance
+
+
+@router.get(
+    "/{workflow_id}/instances/{instance_id}/approvals",
+    response_model=list[ApprovalAuditOut],
+)
+def list_instance_approvals(
+    workflow_id: uuid.UUID,
+    instance_id: uuid.UUID,
+    tenant_id: str = Depends(get_tenant_id),
+    db: Session = Depends(get_tenant_db),
+):
+    """HITL-01.a compliance export. Returns every approval event
+    on this instance ordered oldest-first — useful for answering
+    "walk me through what happened" audits and for the future
+    HITL-01.b dashboard's drill-in.
+    """
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_id, workflow_def_id=workflow_id, tenant_id=tenant_id)
+        .first()
+    )
+    if not instance:
+        raise HTTPException(404, f"Instance {instance_id} not found for this workflow")
+
+    rows = (
+        db.query(ApprovalAuditLog)
+        .filter_by(tenant_id=tenant_id, instance_id=instance.id)
+        .order_by(ApprovalAuditLog.created_at)
+        .all()
+    )
+    return [ApprovalAuditOut.model_validate(r) for r in rows]
 
 
 @router.post("/{workflow_id}/instances/{instance_id}/retry", response_model=InstanceOut)

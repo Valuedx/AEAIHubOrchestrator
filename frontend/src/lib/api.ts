@@ -74,6 +74,47 @@ async function request<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Local password auth
+// ---------------------------------------------------------------------------
+
+export interface LocalUser {
+  id: string;
+  tenant_id: string;
+  username: string;
+  email: string | null;
+  is_admin: boolean;
+  disabled: boolean;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: LocalUser;
+}
+
+/** POST /auth/local/login. Sends tenant+username+password and stores the
+ *  issued JWT via setAuthToken() on success. The caller is responsible
+ *  for the follow-up UI transition (usually a reload or navigation). */
+export async function loginLocal(
+  tenantId: string,
+  username: string,
+  password: string,
+): Promise<LoginResponse> {
+  const res = await fetch(`${API_BASE}/auth/local/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tenant_id: tenantId, username, password }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(`Login failed: ${res.status}`, res.status, body);
+  }
+  const data = (await res.json()) as LoginResponse;
+  setAuthToken(data.access_token);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
 // Types matching backend Pydantic schemas
 // ---------------------------------------------------------------------------
 
@@ -321,6 +362,57 @@ export interface InstanceContextOut {
   context_json: Record<string, unknown>;
 }
 
+// HITL-01.b — one row on the pending-approvals dashboard. Exposed
+// via GET /api/v1/workflows/pending-approvals. The toolbar badge
+// counts these rows; the dropdown renders them grouped by workflow.
+export interface PendingApproval {
+  instance_id: string;
+  workflow_id: string;
+  workflow_name: string;
+  node_id: string;
+  approval_message: string | null;
+  /** ISO timestamp of when the instance transitioned to suspended.
+   *  v0 rows (suspended before migration 0031) fall back to
+   *  `started_at`. */
+  suspended_at: string;
+  /** Non-negative integer seconds since the instance suspended.
+   *  The frontend renders this as "3m ago" / "2h ago" / etc. */
+  age_seconds: number;
+}
+
+// HITL-01.a — one row from the approval_audit_log table, exposed
+// via GET /workflows/{id}/instances/{id}/approvals. Each row
+// captures one approve / reject / timeout_rejected / timeout_escalated
+// event for compliance export + future dashboard drill-in.
+export type ApprovalDecision =
+  | "approved"
+  | "rejected"
+  | "timeout_rejected"
+  | "timeout_escalated";
+
+export interface ApprovalAuditEntry {
+  id: string;
+  instance_id: string;
+  node_id: string;
+  /** Reserved for HITL-01.f bubble-up — null on all v0.a rows. */
+  parent_instance_id: string | null;
+  /** Claimed identity. Protected today only by tenant-scoped
+   *  bearer auth. Treat as attested, not cryptographically
+   *  verified, until OIDC integration lands. */
+  approver: string;
+  decision: ApprovalDecision;
+  reason: string | null;
+  /** Context snapshot immediately before the patch merge — what
+   *  the approver was looking at when they decided. */
+  context_before_json: Record<string, unknown> | null;
+  /** Post-merge snapshot — includes approval_payload under
+   *  "approval" + any keys from context_patch. */
+  context_after_json: Record<string, unknown> | null;
+  /** Reserved for HITL-01.d allowlist enforcement — null on v0.a rows. */
+  approvers_allowlist_matched: boolean | null;
+  created_at: string;
+}
+
 // Knowledge Base types
 export interface KBOut {
   id: string;
@@ -357,6 +449,10 @@ export interface EmbeddingOption {
   provider: string;
   model: string;
   dimension: number;
+  modalities: string[];
+  preview: boolean;
+  display_name: string;
+  notes: string;
 }
 
 export interface ChunkingStrategy {
@@ -482,13 +578,30 @@ export interface TenantPolicyOut {
     rate_limit_requests_per_window: number;
     rate_limit_window_seconds: number;
   };
-  source: {
-    execution_quota_per_hour: TenantPolicySource;
-    max_snapshots: TenantPolicySource;
-    mcp_pool_size: TenantPolicySource;
-    rate_limit_requests_per_window: TenantPolicySource;
-    rate_limit_window_seconds: TenantPolicySource;
+  // SMART-XX feature flags. Each is an opt-out toggle so cost-
+  // conscious tenants can disable subsets. SMART-04 + SMART-06 ship
+  // today; the rest of the SMART-XX series adds keys here as they
+  // land.
+  flags: {
+    smart_04_lints_enabled: boolean;
+    smart_06_mcp_discovery_enabled: boolean;
+    smart_02_pattern_library_enabled: boolean;
+    // SMART-01 — scenario memory + strict promote-gate. Both
+    // default off (opt-in) because they spend engine tokens.
+    smart_01_scenario_memory_enabled: boolean;
+    smart_01_strict_promote_gate_enabled: boolean;
+    smart_05_vector_docs_enabled: boolean;
   };
+  // MODEL-01.e — per-tenant model defaults + family allowlist. Null
+  // entries mean "inherit registry default".
+  models: {
+    default_llm_provider: string | null;
+    default_llm_model: string | null;
+    default_embedding_provider: string | null;
+    default_embedding_model: string | null;
+    allowed_model_families: string[] | null;
+  };
+  source: Record<string, TenantPolicySource>;
   updated_at: string | null;
 }
 
@@ -541,6 +654,75 @@ export interface TenantPolicyUpdate {
   mcp_pool_size?: number | null;
   rate_limit_requests_per_window?: number | null;
   rate_limit_window_seconds?: number | null;
+  // SMART-04 — opt-out toggle for the copilot's proactive authoring
+  // lints. null clears the override so env default takes over.
+  smart_04_lints_enabled?: boolean | null;
+  // SMART-06 — opt-out toggle for MCP tool discovery.
+  smart_06_mcp_discovery_enabled?: boolean | null;
+  // SMART-02 — opt-out toggle for the accepted-patterns library.
+  smart_02_pattern_library_enabled?: boolean | null;
+  // SMART-01 — auto-save successful execute_draft as regression
+  // scenarios (deduped by payload hash). Off by default.
+  smart_01_scenario_memory_enabled?: boolean | null;
+  // SMART-01 — strict promote-gate: promote refuses with 400 on
+  // any failing scenario (no "promote anyway" override). Off by
+  // default. When on, the PromoteDialog hides its soft-gate
+  // checkbox and hard-blocks Apply until all scenarios pass.
+  smart_01_strict_promote_gate_enabled?: boolean | null;
+  // SMART-05 — vector-backed docs search (opt-in, spends embedding tokens).
+  smart_05_vector_docs_enabled?: boolean | null;
+  // MODEL-01.e — per-tenant model overrides. Null clears the pin.
+  default_llm_provider?: string | null;
+  default_llm_model?: string | null;
+  default_embedding_provider?: string | null;
+  default_embedding_model?: string | null;
+  allowed_model_families?: string[] | null;
+}
+
+// MODEL-01.e — /api/v1/models payload shape.
+export interface LlmModelOut {
+  provider: string;
+  model_id: string;
+  generation: string;
+  tier: string;
+  preview: boolean;
+  context_window: number | null;
+  supports_tools: boolean;
+  supports_thinking: boolean;
+  copilot_ok: boolean;
+  modalities: string[];
+  deprecated: boolean;
+  display_name: string;
+  notes: string;
+}
+
+export interface EmbeddingModelOut {
+  provider: string;
+  model_id: string;
+  dim: number;
+  preview: boolean;
+  modalities: string[];
+  deprecated: boolean;
+  display_name: string;
+  notes: string;
+}
+
+export interface ModelsOut {
+  llm: LlmModelOut[];
+  embedding: EmbeddingModelOut[];
+}
+
+export interface ModelDefaultEntry {
+  provider: string;
+  model_id: string;
+}
+
+export interface ModelDefaultsOut {
+  fast: ModelDefaultEntry;
+  balanced: ModelDefaultEntry;
+  powerful: ModelDefaultEntry;
+  copilot: ModelDefaultEntry;
+  embedding: ModelDefaultEntry;
 }
 
 export interface KBChunkOut {
@@ -551,6 +733,218 @@ export interface KBChunkOut {
   document_filename: string;
   metadata: Record<string, unknown>;
 }
+
+// ---------------------------------------------------------------------------
+// COPILOT-01 — draft workspace + tool-layer types
+// ---------------------------------------------------------------------------
+
+export type CopilotToolName =
+  | "list_node_types"
+  | "get_node_schema"
+  | "add_node"
+  | "update_node_config"
+  | "delete_node"
+  | "connect_nodes"
+  | "disconnect_edge"
+  | "validate_graph"
+  // COPILOT-01b.ii runner tools (stateful, touch the engine).
+  | "test_node"
+  // Deterministic-automation fork — the agent reads existing AE
+  // connections + the AE Copilot deep-link URL so it can propose
+  // "add an automationedge node here" vs. "jump to AE Copilot to
+  // design the RPA first". UI can render the copilot_url in the
+  // tool_result event as a clickable deep-link.
+  | "get_automationedge_handoff_info"
+  // Trial-run the draft end-to-end; returns {instance_id, status,
+  // output, elapsed_ms} or {instance_id, status: "timeout", hint}.
+  // Creates an ephemeral workflow_definitions row under the hood.
+  | "execute_draft"
+  // Fetch per-node logs for a prior execute_draft instance.
+  // Scoped to copilot-initiated (is_ephemeral=true) runs so the
+  // agent can't read production logs.
+  | "get_execution_logs"
+  // Docs grounding (01b.iii) — file-backed word-overlap search
+  // over codewiki/*.md + flattened node_registry. No vector DB;
+  // the agent uses these for concept questions and before
+  // proposing a complex config.
+  | "search_docs"
+  | "get_node_examples"
+  // SMART-04 — supersedes validate_graph; returns schema + lints.
+  | "check_draft"
+  // SMART-06 — list MCP tools the tenant has connected so the
+  // agent can propose relevant ones during drafting.
+  | "discover_mcp_tools"
+  // SMART-02 — recall nearest accepted workflow patterns this
+  // tenant promoted in the past; agent uses them as few-shot
+  // instead of synthesising from scratch.
+  | "recall_patterns"
+  // COPILOT-03.a — persisted test scenarios for the debug loop.
+  // Scenarios are draft-scoped; promote migrates them onto the
+  // resulting workflow (03.e). `save` creates, `run` re-executes
+  // the draft with the stored payload and diffs actual vs
+  // expected_output_contains, `list` lets the agent pick one
+  // without guessing an id.
+  | "save_test_scenario"
+  | "run_scenario"
+  | "list_scenarios"
+  // COPILOT-03.b — ad-hoc debug runs with pins / node config
+  // overrides (nothing persisted), plus a per-node error probe
+  // that surfaces resolved_config + error text for the failed
+  // node. Same ephemeral-only safety gate as get_execution_logs.
+  | "run_debug_scenario"
+  | "get_node_error"
+  // COPILOT-03.c — node-scoped LLM subcall proposing a config
+  // patch. NEVER auto-applies; user confirms before the agent
+  // calls update_node_config. Per-draft cap of 5 to prevent
+  // runaway auto-heal.
+  | "suggest_fix";
+
+// SMART-04 — one structured lint finding surfaced by check_draft.
+export type CopilotLintSeverity = "error" | "warn";
+
+export interface CopilotLint {
+  code: string;
+  severity: CopilotLintSeverity;
+  message: string;
+  fix_hint: string | null;
+  node_id: string | null;
+}
+
+export interface CopilotDraftValidation {
+  errors: string[];
+  warnings: string[];
+  // SMART-04 additions — present when the tool_result came from
+  // `check_draft` (the agent's preferred validator). Absent /
+  // empty for `validate_graph` calls.
+  lints?: CopilotLint[];
+  lints_enabled?: boolean;
+}
+
+export interface CopilotDraftOut {
+  id: string;
+  tenant_id: string;
+  base_workflow_id: string | null;
+  base_version_at_fork: number | null;
+  title: string;
+  graph_json: { nodes: unknown[]; edges: unknown[] };
+  /** Optimistic-concurrency token — include as expected_version on mutations. */
+  version: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  validation: CopilotDraftValidation;
+}
+
+export interface CopilotToolCallOut {
+  tool: CopilotToolName;
+  draft_version: number;
+  result: Record<string, unknown>;
+  /** Populated on mutation tools; null for read-only tools. */
+  validation: CopilotDraftValidation | null;
+}
+
+export interface CopilotPromoteOut {
+  workflow_id: string;
+  version: number;
+  /** True = net-new workflow; false = new version of existing. */
+  created: boolean;
+}
+
+// COPILOT-03.e — scenario list + run-all shapes surfaced by PromoteDialog.
+export interface CopilotScenarioOut {
+  scenario_id: string;
+  name: string;
+  payload: Record<string, unknown>;
+  has_expected: boolean;
+  created_at: string;
+}
+
+export type CopilotScenarioStatus = "pass" | "fail" | "stale" | "error";
+
+export interface CopilotScenarioRunOut {
+  scenario_id: string;
+  name: string;
+  status: CopilotScenarioStatus;
+  mismatches: Array<Record<string, unknown>>;
+  actual_output: Record<string, unknown> | null;
+  message: string | null;
+}
+
+export interface CopilotScenariosRunAllOut {
+  count: number;
+  pass_count: number;
+  fail_count: number;
+  stale_count: number;
+  error_count: number;
+  results: CopilotScenarioRunOut[];
+}
+
+// ---------------------------------------------------------------------------
+// COPILOT-01b — session + turn streaming types
+// ---------------------------------------------------------------------------
+
+export interface CopilotSessionOut {
+  id: string;
+  tenant_id: string;
+  draft_id: string;
+  provider: string;
+  model: string;
+  /** active | abandoned | completed */
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CopilotTurnOut {
+  id: string;
+  session_id: string;
+  turn_index: number;
+  /** user | assistant | tool */
+  role: string;
+  content_json: Record<string, unknown>;
+  tool_calls_json: Record<string, unknown> | Array<Record<string, unknown>> | null;
+  token_usage_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface CopilotProvidersOut {
+  providers: string[];
+  default_model: Record<string, string>;
+  tools: Array<{
+    name: CopilotToolName | string;
+    description: string;
+    input_schema: Record<string, unknown>;
+  }>;
+}
+
+/**
+ * Every event the agent runner streams over SSE shares this discriminated
+ * union shape. See `backend/app/copilot/agent.py` for the authoritative
+ * contract.
+ */
+export type CopilotAgentEvent =
+  | { type: "assistant_text"; text: string }
+  | {
+      type: "tool_call";
+      id: string;
+      name: CopilotToolName | string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "tool_result";
+      id: string;
+      name: CopilotToolName | string;
+      result: Record<string, unknown>;
+      validation: CopilotDraftValidation | null;
+      draft_version: number;
+      error: string | null;
+    }
+  | { type: "error"; message: string; recoverable: boolean }
+  | {
+      type: "done";
+      turns_added: string[];
+      final_text: string;
+    };
 
 // ---------------------------------------------------------------------------
 // Workflow CRUD
@@ -627,14 +1021,38 @@ export const api = {
     instanceId: string,
     approvalPayload: Record<string, unknown> = {},
     contextPatch?: Record<string, unknown>,
+    options?: {
+      approver?: string;
+      decision?: "approved" | "rejected";
+      reason?: string;
+    },
   ): Promise<InstanceOut> {
     return request(`/api/v1/workflows/${workflowId}/instances/${instanceId}/callback`, {
       method: "POST",
       body: JSON.stringify({
         approval_payload: approvalPayload,
         context_patch: contextPatch ?? null,
+        // HITL-01.a — claimed identity + decision + reason. All
+        // optional on the backend for v0 back-compat, but the
+        // dialog always sends them so the audit log has real data.
+        approver: options?.approver ?? null,
+        decision: options?.decision ?? null,
+        reason: options?.reason ?? null,
       }),
     });
+  },
+
+  listInstanceApprovals(
+    workflowId: string,
+    instanceId: string,
+  ): Promise<ApprovalAuditEntry[]> {
+    return request(
+      `/api/v1/workflows/${workflowId}/instances/${instanceId}/approvals`,
+    );
+  },
+
+  listPendingApprovals(): Promise<PendingApproval[]> {
+    return request("/api/v1/workflows/pending-approvals");
   },
 
   getInstanceContext(
@@ -1137,6 +1555,26 @@ export const api = {
     });
   },
 
+  // MODEL-01.e — central model catalogue + tenant-resolved defaults.
+  getModels(opts?: {
+    kind?: "llm" | "embedding" | "all";
+    provider?: string;
+    includePreview?: boolean;
+    copilotOnly?: boolean;
+  }): Promise<ModelsOut> {
+    const q = new URLSearchParams();
+    if (opts?.kind) q.set("kind", opts.kind);
+    if (opts?.provider) q.set("provider", opts.provider);
+    if (opts?.includePreview === false) q.set("include_preview", "false");
+    if (opts?.copilotOnly) q.set("copilot_only", "true");
+    const suffix = q.toString() ? `?${q}` : "";
+    return request(`/api/v1/models${suffix}`);
+  },
+
+  getModelDefaults(): Promise<ModelDefaultsOut> {
+    return request("/api/v1/models/defaults");
+  },
+
   // ---------------------------------------------------------------------------
   // STARTUP-01 — readiness probe
   // ---------------------------------------------------------------------------
@@ -1155,5 +1593,197 @@ export const api = {
       headers: { ...getAuthHeaders() },
     });
     return (await res.json()) as HealthReadyOut;
+  },
+
+  // ---------------------------------------------------------------------------
+  // COPILOT-01 — workflow authoring copilot (draft workspace + tool layer)
+  //
+  // The UI surface lands in COPILOT-02; these typed bindings exist now so
+  // the chat pane can be a pure frontend change against a stable contract.
+  // ---------------------------------------------------------------------------
+
+  listDrafts(): Promise<CopilotDraftOut[]> {
+    return request("/api/v1/copilot/drafts");
+  },
+
+  createDraft(body: {
+    title: string;
+    base_workflow_id?: string;
+  }): Promise<CopilotDraftOut> {
+    return request("/api/v1/copilot/drafts", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getDraft(draftId: string): Promise<CopilotDraftOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}`);
+  },
+
+  updateDraft(
+    draftId: string,
+    body: {
+      title?: string;
+      graph_json?: { nodes: unknown[]; edges: unknown[] };
+      expected_version?: number;
+    },
+  ): Promise<CopilotDraftOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteDraft(draftId: string): Promise<void> {
+    return request(`/api/v1/copilot/drafts/${draftId}`, { method: "DELETE" });
+  },
+
+  callCopilotTool(
+    draftId: string,
+    toolName: CopilotToolName,
+    args: Record<string, unknown>,
+    expectedVersion?: number,
+  ): Promise<CopilotToolCallOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}/tools/${toolName}`, {
+      method: "POST",
+      body: JSON.stringify({
+        args,
+        expected_version: expectedVersion,
+      }),
+    });
+  },
+
+  promoteDraft(
+    draftId: string,
+    body: {
+      name?: string;
+      description?: string;
+      expected_version?: number;
+    },
+  ): Promise<CopilotPromoteOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}/promote`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // --- COPILOT-03.e — scenario list + run-all for PromoteDialog ---
+
+  listDraftScenarios(draftId: string): Promise<CopilotScenarioOut[]> {
+    return request(`/api/v1/copilot/drafts/${draftId}/scenarios`);
+  },
+
+  runAllDraftScenarios(draftId: string): Promise<CopilotScenariosRunAllOut> {
+    return request(`/api/v1/copilot/drafts/${draftId}/scenarios/run_all`, {
+      method: "POST",
+    });
+  },
+
+  // --- COPILOT-01b — sessions + turn streaming ---
+
+  getCopilotProviders(): Promise<CopilotProvidersOut> {
+    return request("/api/v1/copilot/sessions/providers");
+  },
+
+  listCopilotSessions(draftId?: string): Promise<CopilotSessionOut[]> {
+    const qs = draftId ? `?draft_id=${encodeURIComponent(draftId)}` : "";
+    return request(`/api/v1/copilot/sessions${qs}`);
+  },
+
+  createCopilotSession(body: {
+    draft_id: string;
+    provider?: string;
+    model?: string;
+  }): Promise<CopilotSessionOut> {
+    return request("/api/v1/copilot/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getCopilotSession(sessionId: string): Promise<CopilotSessionOut> {
+    return request(`/api/v1/copilot/sessions/${sessionId}`);
+  },
+
+  abandonCopilotSession(sessionId: string): Promise<void> {
+    return request(`/api/v1/copilot/sessions/${sessionId}`, { method: "DELETE" });
+  },
+
+  listCopilotTurns(sessionId: string): Promise<CopilotTurnOut[]> {
+    return request(`/api/v1/copilot/sessions/${sessionId}/turns`);
+  },
+
+  /**
+   * Send a user message and stream the agent's response as
+   * {@link CopilotAgentEvent} items. Yields each event as it arrives.
+   *
+   * EventSource isn't used because EventSource can't POST a body.
+   * We open a streaming fetch, parse `data: ...\n\n` frames by hand.
+   */
+  async *sendCopilotTurn(
+    sessionId: string,
+    text: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<CopilotAgentEvent> {
+    const res = await fetch(
+      `${API_BASE}/api/v1/copilot/sessions/${sessionId}/turns`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({ text }),
+        signal,
+      },
+    );
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "");
+      throw new Error(
+        `Copilot turn failed: HTTP ${res.status} ${res.statusText} ${bodyText}`,
+      );
+    }
+    if (!res.body) {
+      throw new Error("Copilot turn response has no body (streaming required)");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE frame boundary is a blank line.
+        let boundary: number;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const payload = frame
+            .split("\n")
+            .filter((l) => l.startsWith("data: "))
+            .map((l) => l.slice(6))
+            .join("\n");
+          if (!payload) continue;
+          try {
+            yield JSON.parse(payload) as CopilotAgentEvent;
+          } catch (err) {
+            // A malformed frame shouldn't kill the stream — emit an
+            // error event the chat pane can surface and keep reading.
+            yield {
+              type: "error",
+              message: `Could not parse agent event: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+              recoverable: true,
+            };
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   },
 };

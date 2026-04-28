@@ -124,7 +124,7 @@ function JsonBlock({ label, data }: { label: string; data: unknown }) {
           <Maximize2 className="h-3 w-3" />
         </button>
       </div>
-      <pre className="text-xs bg-muted rounded p-2 overflow-x-auto max-h-32 font-mono">
+      <pre className="text-xs bg-muted rounded p-2 overflow-x-hidden overflow-y-auto max-h-32 font-mono whitespace-pre-wrap break-all">
         {json}
       </pre>
       <FullJsonDialog
@@ -371,7 +371,7 @@ function LogEntry({
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
                 Generating…
               </p>
-              <pre className="text-xs bg-muted rounded p-2 max-h-32 overflow-y-auto font-mono whitespace-pre-wrap break-words">
+              <pre className="text-xs bg-muted rounded p-2 max-h-32 overflow-y-auto overflow-x-hidden font-mono whitespace-pre-wrap break-all">
                 {streamingText}
               </pre>
             </div>
@@ -458,7 +458,7 @@ export function ExecutionPanel() {
   };
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 bg-card border-t shadow-lg z-10 max-h-[45%] flex flex-col">
+    <div className="absolute bottom-0 left-0 right-0 bg-card border-t shadow-lg z-10 max-h-[45%] flex flex-col min-h-0 overflow-hidden">
       <div className="flex items-center gap-2 px-4 py-2 shrink-0">
         <Icon
           className={`h-4 w-4 ${color} ${activeInstance.status === "running" ? "animate-spin" : ""}`}

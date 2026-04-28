@@ -1,4 +1,3 @@
-from contextvars import ContextVar
 from fastapi import Depends
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import Session, sessionmaker, DeclarativeBase
@@ -7,11 +6,6 @@ from app.config import settings
 
 engine = create_engine(settings.database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Context variable to hold the tenant_id for the current request/thread.
-# This allows the SQLAlchemy listener to re-apply the RLS GUC on every
-# transaction start, ensuring context isn't lost after a commit().
-tenant_id_context: ContextVar[str | None] = ContextVar("tenant_id", default=None)
 
 
 class Base(DeclarativeBase):
@@ -22,35 +16,34 @@ def set_tenant_context(db: Session, tenant_id: str) -> None:
     """Set the ``app.tenant_id`` GUC on ``db`` so RLS policies defined in
     migrations 0001 / 0009 / 0010 / 0014 can filter rows to this tenant.
 
-    This function also updates the ``tenant_id_context`` so the global
-    listener can restore the setting if it's lost (e.g. after a commit).
+    IMPORTANT: PostgreSQL superusers bypass RLS entirely. For these
+    policies to actually enforce isolation, the application must connect
+    as a non-superuser role. See SETUP_GUIDE.md.
     """
     if not tenant_id:
         raise ValueError("set_tenant_context: tenant_id must be non-empty")
-    
-    # Update context variable for the global listener
-    tenant_id_context.set(tenant_id)
-    
-    # Set the GUC immediately for the current session/transaction
+    db.info["tenant_id"] = tenant_id
     db.execute(text("SELECT set_tenant_id(:tid)"), {"tid": tenant_id})
 
 
-@event.listens_for(SessionLocal, "after_begin")
-def restore_tenant_context(session, transaction, connection):
-    """SQLAlchemy listener that automatically re-applies the ``app.tenant_id``
-    GUC at the start of every transaction if a tenant_id is active in the
-    current context.
-    
-    Targeting SessionLocal ensures this applies to all sessions created
-    by the application.
+@event.listens_for(Session, "after_begin")
+def _set_tenant_id_after_begin(session, transaction, connection):
+    """Restore the tenant_id GUC at the start of every transaction if the
+    session was bound to a tenant. This prevents RLS policies from failing
+    on operations (like db.refresh) that occur after a commit() clears the
+    transaction-local configuration.
     """
-    tid = tenant_id_context.get()
-    if tid:
-        connection.execute(text("SELECT set_tenant_id(:tid)"), {"tid": tid})
+    tenant_id = session.info.get("tenant_id")
+    if tenant_id:
+        connection.execute(text("SELECT set_tenant_id(:tid)"), {"tid": tenant_id})
 
 
 def get_db():
-    """FastAPI dependency for tenant-unaware DB access (health, migrations)."""
+    """FastAPI dependency for tenant-unaware DB access (health, migrations).
+
+    Most endpoints should use ``get_tenant_db`` instead so the RLS GUC is
+    set automatically.
+    """
     db = SessionLocal()
     try:
         yield db

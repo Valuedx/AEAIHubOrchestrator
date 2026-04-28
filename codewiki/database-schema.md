@@ -31,8 +31,20 @@ PostgreSQL 16 with the `pgvector` extension. All tables use `UUID` primary keys,
 | `tenant_integrations` | Per-tenant connection defaults for external systems (0017) | Yes |
 | `tenant_mcp_servers` | Per-tenant MCP server registry (0019) | Yes |
 | `tenant_mcp_server_tool_fingerprints` | Forward-declared side table for MCP-06 drift detection (0019) | No (FK-scoped) |
+| `tenant_policies` | Per-tenant operational knobs + SMART-XX feature flags (0020 / 0021 / 0024 / 0025) | Yes |
+| `workflow_drafts` | Copilot draft workspace — ephemeral graph being edited, promoted into `workflow_definitions` on accept (COPILOT-01a, migration 0022) | Yes |
+| `copilot_sessions` | One chat session per draft; holds provider + model for the agent loop (0022) | Yes |
+| `copilot_turns` | Ordered user / assistant / tool messages replayed on reopen (0022) | Yes |
+| `copilot_accepted_patterns` | SMART-02 — snapshot of every promoted draft (graph + NL intent + tags) so the agent can retrieve nearest prior patterns as few-shot (0026) | Yes |
+| `copilot_test_scenarios` | COPILOT-03.a — persisted regression scenarios the agent saves and re-runs; bound to either `draft_id` or `workflow_id` via an XOR check constraint (0027) | Yes |
+| `approval_audit_log` | HITL-01.a — one row per approve / reject / timeout_rejected / timeout_escalated event; captures approver, reason, and before/after context snapshots (0030) | Yes |
+| `users` | LOCAL-AUTH-01 — local password-auth users (tenant-scoped argon2id hashes, is_admin flag, disabled flag) (0033) | Yes |
 
 **DV-07 (migration 0018):** `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE` — when false, Schedule Triggers skip the workflow. Manual Run, PATCH, and duplicate all stay active.
+
+**COPILOT-01b.ii.b (migration 0023):** `workflow_definitions.is_ephemeral BOOLEAN NOT NULL DEFAULT FALSE` — the copilot's `execute_draft` runner tool creates transient WorkflowDefinition rows marked `is_ephemeral=true` so the engine can run them. Filtered out of `list_workflows`, scheduler scan, and A2A agent card. Reaped by `cleanup_ephemeral_workflows`.
+
+**SMART-04 + SMART-06 + SMART-02 (migrations 0024 + 0025 + 0026):** `tenant_policies.smart_04_lints_enabled`, `smart_06_mcp_discovery_enabled`, and `smart_02_pattern_library_enabled` — all BOOLEAN NOT NULL DEFAULT TRUE — per-tenant opt-out flags for the three copilot intelligence features shipped so far. Same column template applies to SMART-01/03/05 as they ship.
 
 ---
 
@@ -317,6 +329,36 @@ Fernet-encrypted key-value secrets per tenant, exposed as `{{ env.KEY }}` in nod
 | `created_at` | `TIMESTAMPTZ` | | |
 | `updated_at` | `TIMESTAMPTZ` | | Auto-updated |
 
+### `users` (LOCAL-AUTH-01, migration 0033)
+
+Local password auth users. Only consulted when `ORCHESTRATOR_AUTH_MODE=local` — in other modes the table stays empty and inert.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | RLS scope |
+| `username` | `VARCHAR(128)` | NOT NULL | Case-insensitive unique within tenant (functional index below) |
+| `email` | `VARCHAR(256)` | nullable | Pydantic `EmailStr` on the API layer |
+| `password_hash` | `TEXT` | NOT NULL | argon2id hash string (`$argon2id$...`) |
+| `is_admin` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Gates `/api/v1/users/*` |
+| `disabled` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Disabled users cannot log in; existing tokens continue to work until expiry |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL | |
+| `updated_at` | `TIMESTAMPTZ` | NOT NULL | Auto-updated |
+| `last_login_at` | `TIMESTAMPTZ` | nullable | Stamped on successful login |
+
+**Indexes:**
+
+- `ix_users_tenant_username` — `UNIQUE (tenant_id, lower(username))` (functional). Lets two tenants share the username `admin` but forbids `Admin` / `ADMIN` / `admin` co-existing in the same tenant.
+- `ix_users_tenant_id` — plain B-tree on `tenant_id` for RLS-filter planning.
+
+**RLS:** Enabled + forced with the standard policy:
+
+```sql
+CREATE POLICY tenant_isolation_users ON users
+  USING      (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+```
+
 ---
 
 ## Knowledge Base tables
@@ -382,6 +424,80 @@ Used by the **pgvector** backend. FAISS stores vectors in local files instead.
 
 ---
 
+## Copilot tables
+
+### `workflow_drafts`
+
+Ephemeral graph being edited by a copilot session (or a human editor). Every mutation through the agent tool layer bumps `version` so concurrent tool calls race-safely via optimistic concurrency. Promoted into `workflow_definitions` on accept; the draft is deleted in the same transaction.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `base_workflow_id` | `UUID` | FK → `workflow_definitions.id` (SET NULL) | null = net-new draft; set = editing an existing workflow |
+| `base_version_at_fork` | `INTEGER` | nullable | `WorkflowDefinition.version` at fork time; promote refuses if the base has advanced since (colleague-saved-in-another-tab guard) |
+| `title` | `VARCHAR(256)` | NOT NULL | Seeded from the first NL intent in COPILOT-01b.i |
+| `graph_json` | `JSONB` | NOT NULL, server_default `{"nodes": [], "edges": []}` | Same shape as `workflow_definitions.graph_json` |
+| `version` | `INTEGER` | NOT NULL, default 1 | Optimistic-concurrency token; bumped on every successful mutation; 409 on stale write |
+| `created_by` | `VARCHAR(128)` | nullable | User identifier when available |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:** `ix_draft_tenant_updated` on `(tenant_id, updated_at)`.
+
+### `copilot_sessions`
+
+One chat session per draft (optionally many sequential sessions if a user abandons and reopens). Carries the LLM provider + model so the UI can show "drafted via Claude" etc.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | |
+| `draft_id` | `UUID` | FK → `workflow_drafts.id` (CASCADE) | |
+| `provider` | `VARCHAR(32)` | NOT NULL | `anthropic` / `google` / `vertex` / `openai` (pending). Validated against the [model registry](model-registry.md). |
+| `model` | `VARCHAR(128)` | NOT NULL | Any entry from the [model registry](model-registry.md) — e.g. `claude-sonnet-4-6`, `gemini-3.1-pro-preview-customtools`, `gemini-2.5-pro`, `gemini-3-flash-preview`. Validated + tenant-allowlist-checked on session create (MODEL-01.b). |
+| `status` | `VARCHAR(16)` | NOT NULL, default `active` | `active` / `completed` / `abandoned` |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:** `ix_session_tenant_draft` on `(tenant_id, draft_id)`.
+
+### `copilot_turns`
+
+Ordered user / assistant / tool messages. Replayed on session reopen and as the history the agent runner reconstructs for each LLM call.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `UUID` | PK | |
+| `tenant_id` | `VARCHAR(64)` | NOT NULL, indexed | Denormalised from the parent session so the RLS policy is a simple equality check |
+| `session_id` | `UUID` | FK → `copilot_sessions.id` (CASCADE) | |
+| `turn_index` | `INTEGER` | NOT NULL, UNIQUE(session_id, turn_index) | Chronological order |
+| `role` | `VARCHAR(16)` | NOT NULL | `user` / `assistant` / `tool` |
+| `content_json` | `JSONB` | NOT NULL | Role-specific — text for user/assistant, `{name, args, result}` for tool |
+| `tool_calls_json` | `JSONB` | nullable | Populated on assistant turns that emit function-calling requests |
+| `token_usage_json` | `JSONB` | nullable | `{input_tokens, output_tokens}` |
+| `created_at` | `TIMESTAMPTZ` | | |
+
+**Indexes:** `ix_turn_tenant_session` on `(tenant_id, session_id)`, unique `(session_id, turn_index)`.
+
+**RLS:** each copilot table has a `tenant_isolation_*` policy on `current_setting('app.tenant_id')`.
+
+---
+
+### `tenant_policies` (model override columns — MODEL-01.e, planned)
+
+MODEL-01.e extends the existing `tenant_policies` table (see [tenant-policies.md](tenant-policies.md) for the full row) with per-tenant model defaults + an allowlist:
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `default_llm_provider` | `VARCHAR(32)` NULL | Override for process-wide default provider on this tenant. Null = use global default. |
+| `default_llm_model` | `VARCHAR(128)` NULL | Explicit pin. Null = tier-based resolution via `default_llm_for(provider, role)`. |
+| `default_embedding_provider` | `VARCHAR(32)` NULL | Same for embeddings. |
+| `default_embedding_model` | `VARCHAR(128)` NULL | Same. |
+| `allowed_model_families` | `JSONB` NULL | e.g. `["2.5", "3.x"]`. Empty/null = no family restriction. Enforced by `is_allowed_llm(...)` at session + node-config validation time. |
+
+Resolver semantics live in [model-registry.md §8](model-registry.md#8-planned-mode-01e-tenant-overrides).
+
+---
+
 ## Embedding Cache
 
 ### `embedding_cache`
@@ -433,6 +549,20 @@ Generic tenant-scoped vector cache for precomputed embeddings (used by Intent Cl
 | 0017 | `0017_async_jobs_and_tenant_integrations.py` | `async_jobs` (AutomationEdge poll queue, Diverted pause-the-clock), `tenant_integrations` (per-tenant connection defaults), `workflow_instances.suspended_reason` column |
 | 0018 | `0018_workflow_is_active.py` | **DV-07** — `workflow_definitions.is_active BOOLEAN` (default TRUE; existing rows backfill active). Schedule Triggers skip `is_active=false` workflows. |
 | 0019 | `0019_tenant_mcp_servers.py` | **MCP-02** — `tenant_mcp_servers` (per-tenant MCP registry with `auth_mode` discriminator + partial unique index enforcing one default per tenant) + empty `tenant_mcp_server_tool_fingerprints` side table forward-declared for MCP-06 drift detection |
+| 0020 | `0020_tenant_policies.py` | **ADMIN-01** — `tenant_policies` table (execution_quota_per_hour, max_snapshots, mcp_pool_size) with RLS |
+| 0021 | `0021_tenant_policies_rate_limit.py` | **ADMIN-02** — add `rate_limit_requests_per_window` + `rate_limit_window_seconds` to `tenant_policies` |
+| 0022 | `0022_copilot_drafts.py` | **COPILOT-01a** — `workflow_drafts` (with `version` optimistic-concurrency + `base_version_at_fork` race guard), `copilot_sessions`, `copilot_turns`; all tenant-scoped RLS |
+| 0023 | `0023_workflow_definitions_is_ephemeral.py` | **COPILOT-01b.ii.b** — add `is_ephemeral BOOLEAN NOT NULL DEFAULT FALSE` to `workflow_definitions` (marks the copilot's throwaway trial-run rows) |
+| 0024 | `0024_tenant_policies_smart_flags.py` | **SMART-04** — add `smart_04_lints_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
+| 0025 | `0025_tenant_policies_smart_06.py` | **SMART-06** — add `smart_06_mcp_discovery_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies` |
+| 0026 | `0026_copilot_accepted_patterns.py` | **SMART-02** — `copilot_accepted_patterns` table (snapshot of promoted drafts + NL intent + tags, tenant-scoped RLS, `ix_accepted_pattern_tenant_created`) + `smart_02_pattern_library_enabled BOOLEAN NOT NULL DEFAULT TRUE` on `tenant_policies` |
+| 0027 | `0027_copilot_test_scenarios.py` | **COPILOT-03.a** — `copilot_test_scenarios` table (draft-or-workflow-scoped regression scenarios with `payload_json`, optional `pins_json`, optional `expected_output_contains_json`; XOR check constraint `ck_scenario_draft_xor_workflow`; two partial unique indexes for per-draft and per-workflow name uniqueness; tenant-scoped RLS) |
+| 0028 | `0028_tenant_policies_smart_01.py` | **SMART-01** — add `smart_01_scenario_memory_enabled BOOLEAN NOT NULL DEFAULT FALSE` and `smart_01_strict_promote_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE` to `tenant_policies`. Both default false (opt-in) because both behaviours spend engine tokens at run-time / promote-time. |
+| 0029 | `0029_tenant_policies_smart_05.py` | **SMART-05** — add `smart_05_vector_docs_enabled BOOLEAN NOT NULL DEFAULT FALSE` to `tenant_policies`. Opt-in because embedding calls cost tokens; word-overlap search (01b.iii) stays the fallback + auto-degrade path when the embedding provider is unreachable. |
+| 0030 | `0030_approval_audit_log.py` | **HITL-01.a** — create `approval_audit_log` (tenant-scoped RLS): one row per approve / reject / timeout_rejected / timeout_escalated event with `approver, decision, reason, context_before_json, context_after_json`. Indexes on `(tenant_id, created_at)` and `(instance_id, created_at)`. `parent_instance_id` and `approvers_allowlist_matched` are reserved for HITL-01.f and HITL-01.d respectively — NULL on all v0 rows. |
+| 0031 | `0031_workflow_instance_suspended_at.py` | **HITL-01.b** — add `suspended_at TIMESTAMPTZ NULL` to `workflow_instances`. Stamped by all three suspend paths in the dag_runner; cleared on resume. Drives the `GET /pending-approvals` age column and reserved for HITL-01.c's timeout sweep. NULL on rows that suspended before this migration ran (the endpoint falls back to `started_at`). |
+| 0032 | `0032_tenant_policies_model_overrides.py` | **MODEL-01.e** — add `default_llm_provider`, `default_llm_model`, `default_embedding_provider`, `default_embedding_model` (VARCHAR), and `allowed_model_families` (JSONB array) to `tenant_policies`. All nullable — null = fall through to tier-based resolution. |
+| 0033 | `0033_users_local_auth.py` | **LOCAL-AUTH-01** — `users` table for local password authentication. Columns: `id UUID PK`, `tenant_id VARCHAR(64)`, `username VARCHAR(128)`, `email VARCHAR(256)`, `password_hash TEXT` (argon2id), `is_admin`/`disabled BOOLEAN`, `created_at`/`updated_at`/`last_login_at TIMESTAMPTZ`. Case-insensitive unique index on `(tenant_id, lower(username))` — two tenants can share a username; within a tenant the match is case-insensitive. RLS enabled + forced with the standard `app.tenant_id` GUC policy. |
 
 ### Running migrations
 

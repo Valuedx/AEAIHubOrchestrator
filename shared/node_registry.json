@@ -81,14 +81,14 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider to use for this agent"
         },
         "model": {
           "type": "string",
           "default": "gemini-2.5-flash",
-          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "enum": ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
           "description": "Model variant — balance speed vs. capability"
         },
         "systemPrompt": {
@@ -155,14 +155,14 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider powering the ReAct reasoning loop"
         },
         "model": {
           "type": "string",
           "default": "gemini-2.5-flash",
-          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "enum": ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
           "description": "Model variant used for each reasoning step in the ReAct loop"
         },
         "systemPrompt": {
@@ -406,6 +406,68 @@
       }
     },
     {
+      "type": "while_loop",
+      "category": "logic",
+      "label": "While",
+      "description": "Repeat downstream body nodes while a condition expression is true. Like Loop but with a clearer while-loop UX: the condition is required, so execution stops the moment it evaluates false. Hard cap: 25 iterations.",
+      "icon": "rotate-cw",
+      "config_schema": {
+        "condition": {
+          "type": "string",
+          "default": "",
+          "description": "safe_eval expression evaluated before each iteration (required). Loop continues while this is truthy (e.g. node_3.is_ready == false, _loop_index < 5)."
+        },
+        "maxIterations": {
+          "type": "integer",
+          "default": 10,
+          "description": "Safety cap on iteration count (backend hard cap: 25). Prevents runaway loops when the condition never flips."
+        }
+      }
+    },
+    {
+      "type": "switch",
+      "category": "logic",
+      "label": "Switch",
+      "description": "Multi-branch routing on an expression's value. Evaluates the expression once and routes to the first case whose value matches (string equality). Unmatched values flow through the 'default' output handle. Clearer than chaining Condition nodes per intent.",
+      "icon": "git-fork",
+      "config_schema": {
+        "expression": {
+          "type": "string",
+          "default": "",
+          "description": "safe_eval expression whose value determines the branch (e.g. node_2.intent, trigger.priority, node_3.classification)."
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "string",
+                "description": "Matched value. Connect an outgoing edge with sourceHandle equal to this value."
+              },
+              "label": {
+                "type": "string",
+                "description": "Human-readable label for the case (shown in EdgeInspector and on the handle tooltip)."
+              }
+            }
+          },
+          "default": [],
+          "description": "List of case objects. Order matters only for display; matching is first-match by value. Leave empty to route everything through the default handle."
+        },
+        "defaultLabel": {
+          "type": "string",
+          "default": "Default",
+          "description": "Label for the 'default' output handle (taken when no case matches)."
+        },
+        "matchMode": {
+          "type": "string",
+          "default": "equals",
+          "enum": ["equals", "equals_ci"],
+          "description": "equals: exact string match. equals_ci: case-insensitive match (useful for LLM outputs)."
+        }
+      }
+    },
+    {
       "type": "sub_workflow",
       "category": "logic",
       "label": "Sub-Workflow",
@@ -531,14 +593,14 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider used to classify the user intent"
         },
         "model": {
           "type": "string",
           "default": "gemini-2.5-flash",
-          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "enum": ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
           "description": "Model variant for the classification call"
         },
         "intents": {
@@ -568,14 +630,14 @@
       "config_schema": {
         "provider": {
           "type": "string",
-          "default": "google",
+          "default": "vertex",
           "enum": ["google", "vertex", "openai", "anthropic"],
           "description": "LLM provider used for the reflection call"
         },
         "model": {
           "type": "string",
           "default": "gemini-2.5-flash",
-          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "enum": ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
           "description": "Model variant to use"
         },
         "reflectionPrompt": {
@@ -1013,7 +1075,7 @@
         "model": {
           "type": "string",
           "default": "gemini-2.5-flash",
-          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "enum": ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
           "description": "LLM model for classification",
           "visibleWhen": { "field": "mode", "values": ["hybrid", "llm_only"] }
         },
@@ -1105,7 +1167,7 @@
         "model": {
           "type": "string",
           "default": "gemini-2.5-flash",
-          "enum": ["gemini-2.5-flash", "gemini-2.5-pro", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
+          "enum": ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gpt-4o", "gpt-4o-mini", "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
           "description": "LLM model for fallback extraction",
           "visibleWhen": { "field": "llmFallback", "values": [true] }
         }

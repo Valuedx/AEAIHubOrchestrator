@@ -4,7 +4,7 @@
 
 This page is the canonical reference. Read §4 before assuming every env knob is moveable — it isn't, and intentionally so.
 
-> **One-line summary.** Three knobs (`execution_quota_per_hour`, `max_snapshots`, `mcp_pool_size`) are now per-tenant with env fallback. Rate limits (slowapi) and LLM provider keys are deliberately carved out as separate tickets — see §4.
+> **One-line summary.** Three ADMIN-01 knobs + two ADMIN-02 rate-limit knobs + two SMART-XX feature flags are per-tenant with env fallback. LLM provider keys (ADMIN-03) live on the separate `tenant_secrets` vault — see §4 for the full carve-out rationale.
 
 ---
 
@@ -17,6 +17,12 @@ This page is the canonical reference. Read §4 before assuming every env knob is
 | `mcp_pool_size` | Env only (`ORCHESTRATOR_MCP_POOL_SIZE`) | Per-tenant, env fallback. **Applies at pool construction** — existing pools keep their original size until `shutdown_pool()` or app restart. | `engine/mcp_client.py::_pool_for` |
 | `rate_limit_requests_per_window` | Previously `ORCHESTRATOR_RATE_LIMIT_REQUESTS` *(but inert — see note below)* | **Now actually enforced**, per-tenant, env fallback | `security/tenant_rate_limit.py::TenantRateLimitMiddleware` (ADMIN-02) |
 | `rate_limit_window_seconds` | New — replaces the old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string ("1 minute") | Per-tenant, env fallback | Same middleware |
+| `smart_04_lints_enabled` | — | **Default TRUE.** SMART-04 proactive authoring lints for the copilot. Cost-conscious tenants flip off to skip the lint pass (schema validation still runs). | `copilot/runner_tools.check_draft` |
+| `smart_06_mcp_discovery_enabled` | — | **Default TRUE.** SMART-06 MCP tool discovery path. Off = the `discover_mcp_tools` runner tool returns `{discovery_enabled: false, tools: []}` and the system prompt skips MCP suggestions in narration. | `copilot/runner_tools.discover_mcp_tools` |
+| `smart_02_pattern_library_enabled` | — | **Default TRUE.** SMART-02 accepted-patterns library. Off = `/promote` skips the pattern save and `recall_patterns` returns `{enabled: false, patterns: []}`. Agent falls back to synthesising without tenant-specific few-shot. | `copilot/pattern_library.save_accepted_pattern` + `recall_patterns` |
+| `smart_01_scenario_memory_enabled` | — | **Default FALSE (opt-in).** SMART-01 scenario memory. When on, every successful `execute_draft` auto-saves a scenario named `auto-<hash>` deduped by payload hash (no `expected_output_contains` — just "this payload still runs"). Cost: one INSERT per successful run. | `copilot/runner_tools.execute_draft_sync` → `_auto_save_scenario_from_run` |
+| `smart_01_strict_promote_gate_enabled` | — | **Default FALSE (opt-in).** SMART-01 strict promote-gate. When on, `/api/v1/copilot/drafts/{id}/promote` runs every saved scenario and refuses with HTTP 400 on any non-pass result (no "promote anyway" override). Cost: one full draft execution per scenario at promote time. Off = the PromoteDialog's existing soft gate still shows pass/fail badges and allows override. | `api/copilot_drafts.promote_draft` → `_enforce_strict_scenario_gate` |
+| `smart_05_vector_docs_enabled` | — | **Default FALSE (opt-in).** SMART-05 vector-backed docs search. When on, `search_docs` embeds the copilot docs corpus (~30–50 chunks) via the process-wide `smart_05_embedding_provider` / `smart_05_embedding_model` pair and ranks queries by cosine similarity; on any embedding failure the call auto-falls back to word-overlap with a `vector_fallback` hint, so enabling this never returns *fewer* results than off. Cost: one corpus embed per process restart + one query embed per copilot search. | `copilot/docs_index.search_docs` + `get_node_examples` |
 
 > **Historical note:** before ADMIN-02 the `slowapi.Limiter` was instantiated with `default_limits` but no middleware was ever installed to apply it. The rate-limit env vars were effectively dead config. ADMIN-02's `TenantRateLimitMiddleware` is the first real enforcement. The old `ORCHESTRATOR_RATE_LIMIT_WINDOW` string setting is deprecated — the new `ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS` int supersedes it.
 
@@ -28,12 +34,30 @@ This page is the canonical reference. Read §4 before assuming every env knob is
 
 ```
 tenant_policies:
-  tenant_id                 VARCHAR(64) PRIMARY KEY
-  execution_quota_per_hour  INTEGER NULL        — null = use env default
-  max_snapshots             INTEGER NULL
-  mcp_pool_size             INTEGER NULL
+  tenant_id                         VARCHAR(64) PRIMARY KEY
+  execution_quota_per_hour          INTEGER NULL   — null = use env default   (0020)
+  max_snapshots                     INTEGER NULL                             (0020)
+  mcp_pool_size                     INTEGER NULL                             (0020)
+  rate_limit_requests_per_window    INTEGER NULL                             (0021)
+  rate_limit_window_seconds         INTEGER NULL                             (0021)
+  smart_04_lints_enabled            BOOLEAN NOT NULL DEFAULT TRUE            (0024)
+  smart_06_mcp_discovery_enabled    BOOLEAN NOT NULL DEFAULT TRUE            (0025)
+  smart_02_pattern_library_enabled  BOOLEAN NOT NULL DEFAULT TRUE            (0026)
+  smart_01_scenario_memory_enabled  BOOLEAN NOT NULL DEFAULT FALSE           (0028)
+  smart_01_strict_promote_gate_enabled BOOLEAN NOT NULL DEFAULT FALSE        (0028)
+  smart_05_vector_docs_enabled      BOOLEAN NOT NULL DEFAULT FALSE           (0029)
+  -- MODEL-01.e (planned) — per-tenant model defaults + allowlist:
+  -- default_llm_provider            VARCHAR(32) NULL
+  -- default_llm_model               VARCHAR(128) NULL
+  -- default_embedding_provider      VARCHAR(32) NULL
+  -- default_embedding_model         VARCHAR(128) NULL
+  -- allowed_model_families          JSONB NULL   -- e.g. ["2.5", "3.x"]; null = no family restriction
   created_at, updated_at
 ```
+
+**MODEL-01.e (planned) — model defaults + allowlist.** A tenant that's conservative about previews can pin `allowed_model_families = ["2.5"]`; the resolver refuses any 3.x model for engine nodes + copilot sessions, and tier defaults fall back to the nearest allowed generation. A tenant on Vertex can set `default_llm_provider = "vertex"` / `default_embedding_provider = "vertex"` so templates and new nodes automatically route there. See [model-registry.md §8](model-registry.md#8-planned-mode-01e-tenant-overrides) for the resolver semantics.
+
+Integer knobs are nullable-for-env-fallback (per-field, see §3). Boolean SMART-XX flags are NOT NULL with a design-default matching the feature's expected cost (on for zero-LLM-cost features, off for features that incur net-new spend).
 
 Single row per tenant (not multiple labeled rows like MCP servers or integrations). RLS enabled with the standard `current_setting('app.tenant_id')` policy.
 
@@ -52,18 +76,36 @@ Response shape:
   "values": {
     "execution_quota_per_hour": 500,
     "max_snapshots": 20,
-    "mcp_pool_size": 4
+    "mcp_pool_size": 4,
+    "rate_limit_requests_per_window": 100,
+    "rate_limit_window_seconds": 60
+  },
+  "flags": {
+    "smart_04_lints_enabled": true,
+    "smart_06_mcp_discovery_enabled": true,
+    "smart_02_pattern_library_enabled": true,
+    "smart_01_scenario_memory_enabled": false,
+    "smart_01_strict_promote_gate_enabled": false,
+    "smart_05_vector_docs_enabled": false
   },
   "source": {
     "execution_quota_per_hour": "tenant_policy",
     "max_snapshots": "env_default",
-    "mcp_pool_size": "env_default"
+    "mcp_pool_size": "env_default",
+    "rate_limit_requests_per_window": "env_default",
+    "rate_limit_window_seconds": "env_default",
+    "smart_04_lints_enabled": "env_default",
+    "smart_06_mcp_discovery_enabled": "env_default",
+    "smart_02_pattern_library_enabled": "env_default",
+    "smart_01_scenario_memory_enabled": "env_default",
+    "smart_01_strict_promote_gate_enabled": "env_default",
+    "smart_05_vector_docs_enabled": "env_default"
   },
-  "updated_at": "2026-04-21T12:34:56+00:00"
+  "updated_at": "2026-04-22T12:34:56+00:00"
 }
 ```
 
-`values` are always the **effective** values. `source` names where each one actually came from so the UI can show "overridden" vs. "inherited" badges.
+`values` carries integer knobs (quotas, limits, pool sizes). `flags` carries SMART-XX booleans — separated so the frontend can render typed toggles without switching on schema per key. `source` names where each field came from for both `values` and `flags` so the UI can show "overridden" vs. "inherited" badges.
 
 ### PATCH tri-state semantics
 

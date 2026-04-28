@@ -174,4 +174,28 @@ body {
   html {
     @apply font-sans;
   }
+
+  /* --- Proper Visible Scrollbars --- */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-muted);
+    border-radius: 5px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-muted-foreground);
+    border: 2px solid var(--color-muted);
+    border-radius: 5px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-foreground);
+  }
+  
+  /* Firefox support */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-muted-foreground) var(--color-muted);
+  }
 }

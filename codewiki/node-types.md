@@ -51,8 +51,8 @@ Single-turn LLM call with optional turn-aware advanced memory assembly.
 
 | Config field | Type | Default | Description |
 |-------------|------|---------|-------------|
-| `provider` | enum | `google` | `google`, `openai`, `anthropic` |
-| `model` | enum | `gemini-2.5-flash` | See model list below |
+| `provider` | enum | `google` | `google`, `vertex`, `openai`, `anthropic` |
+| `model` | enum | `gemini-2.5-flash` | See [model registry](model-registry.md) — all 2.0 / 2.5 / 3.x Gemini + Claude + GPT-4o variants are selectable |
 | `systemPrompt` | string | `""` | Jinja2 template. Use `{{ trigger.field }}` or `{{ node_2.response }}` |
 | `temperature` | number | `0.7` | 0 = deterministic, 2 = very creative |
 | `maxTokens` | integer | `4096` | Maximum output tokens |
@@ -137,15 +137,23 @@ Every LLM-calling node (LLM Agent, ReAct Agent, LLM Router, Reflection, Intent C
 | `openai` | OpenAI (or compatible via `ORCHESTRATOR_OPENAI_BASE_URL`) | `ORCHESTRATOR_OPENAI_API_KEY` | GPT-4o / 4o-mini models. |
 | `anthropic` | Anthropic direct | `ORCHESTRATOR_ANTHROPIC_API_KEY` | Claude Sonnet / Haiku. |
 
-The same Gemini model names (`gemini-2.5-flash`, `gemini-2.5-pro`) work under both `google` and `vertex` — only the endpoint and auth differ. Switching a workflow from AI Studio to Vertex is a one-field PATCH.
+The same Gemini model names work under both `google` and `vertex` — only the endpoint and auth differ. Switching a workflow from AI Studio to Vertex is a one-field PATCH.
 
 ## Available LLM models
 
-| Provider | Model |
-|----------|-------|
-| Google | `gemini-2.5-flash`, `gemini-2.5-pro` |
-| OpenAI | `gpt-4o`, `gpt-4o-mini` |
-| Anthropic | `claude-sonnet-4-20250514`, `claude-3-5-haiku-20241022` |
+Full catalogue lives in the [Model Registry](model-registry.md). Every entry carries provider, tier, multimodal capability, preview/deprecated flags, and context window. The per-node `model` enum is generated from the registry (MODEL-01.c) — no drift between docs, frontend, and backend.
+
+| Provider | Generation | Models (all selectable) |
+|----------|-----------|-------|
+| Google / Vertex | 3.x (preview) | `gemini-3.1-pro-preview-customtools` (copilot agentic), `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview` |
+| Google / Vertex | 2.5 (GA) | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` |
+| Google / Vertex | 2.0 (legacy) | `gemini-2.0-flash`, `gemini-2.0-flash-lite` |
+| OpenAI | GPT-4o | `gpt-4o`, `gpt-4o-mini` |
+| Anthropic | Claude 4 | `claude-sonnet-4-6`, `claude-sonnet-4-20250514`, `claude-3-5-haiku-20241022` |
+
+**Multimodal:** Gemini 2.5 / 3.x accept text + image + video + audio + PDF. Claude accepts text + image + PDF. GPT-4o accepts text + image + audio. Node handlers route attachments as native parts for multimodal-capable models instead of flattening to text.
+
+**Tier-based defaults.** Templates and new nodes pick a tier (`fast` / `balanced` / `powerful`) that resolves through `default_llm_for(provider, role)` — see [model-registry.md §3](model-registry.md#3-tier-based-defaults).
 
 ---
 
@@ -301,6 +309,8 @@ Branches the graph based on a boolean expression.
 
 **Routing:** Exactly one outgoing edge is followed based on the condition result.
 
+**Cyclic graphs:** a Condition's outgoing edge can be marked `type: "loopback"` to re-enqueue an upstream node — the classic agent↔tool / reflection / retry patterns. The loopback's `sourceHandle` must match the Condition's branch (`"true"` / `"false"` / custom) for it to fire, and `maxIterations` caps the iteration count. See [cyclic-graphs.md](cyclic-graphs.md) for the full authoring + runtime story.
+
 ### Merge (`merge`)
 
 Joins multiple branches back together.
@@ -322,7 +332,7 @@ Iterates over an array, executing downstream nodes once per element.
 
 ### Loop (`loop`)
 
-Repeats downstream nodes while a condition is true.
+Repeats downstream nodes while a condition is true. `continueExpression` is optional (empty = unconditional iteration up to the cap).
 
 | Config field | Type | Default | Description |
 |-------------|------|---------|-------------|
@@ -330,6 +340,38 @@ Repeats downstream nodes while a condition is true.
 | `maxIterations` | integer | `10` | Max iterations (hard cap: 25) |
 
 **Special variables:** `_loop_index` is available in expressions.
+
+### While (`while_loop`) — NODES-01.b
+
+Thin twin of Loop with a **required** condition — clearer UX for authors reaching for an explicit while-loop primitive. Execution stops the moment the condition evaluates false, or when `maxIterations` is hit (hard cap 25). Reuses the same dag_runner iteration machinery as Loop (handler returns `{continueExpression, maxIterations}`), so behaviour is identical once the loop starts.
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `condition` | string | `""` (required) | safe_eval expression evaluated before each iteration (e.g. `node_3.is_ready == false`, `_loop_index < 5`) |
+| `maxIterations` | integer | `10` | Safety cap on iteration count (hard cap: 25). Prevents runaway loops when the condition never flips. |
+
+**Ready-to-use example in the template gallery (TMPL-01.f):** the **Retry until success (While)** template shows a flaky-API retry pattern — `_loop_index == 0 OR node_3.status_code < 200 OR node_3.status_code >= 300` — with a Notification node reporting the final state after the loop exits.
+
+### Switch (`switch`) — NODES-01.a
+
+Multi-branch routing on an expression's value. Evaluates the expression once and routes to the first case whose value matches via string equality; unmatched values flow through the always-present `default` output handle. **Clearer than chaining Condition nodes** when you have more than two branches (e.g. LLM Router intent labels → per-intent paths).
+
+| Config field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `expression` | string | `""` | safe_eval expression whose value determines the branch (e.g. `node_2.intent`, `trigger.priority`) |
+| `cases` | array of `{value, label}` | `[]` | Match values + handle labels. Order is display-only; matching is first-match by value. |
+| `defaultLabel` | string | `"Default"` | Label for the always-present default handle (taken when no case matches) |
+| `matchMode` | enum | `equals` | `equals` = strict string match. `equals_ci` = case-insensitive (useful for LLM outputs like `"Refund"` vs `"refund"`). |
+
+**Output:** `{ branch: <matched-case-value> \| "default", evaluated: <stringified-value>, match: "case" \| "default" }`. The dag_runner's branch-pruning path (shared with Condition) prunes every outgoing edge whose `sourceHandle` doesn't match `branch`.
+
+**UX:** The Property Inspector renders a `CaseListEditor` with add / remove / up-down reorder buttons and flags duplicate values with a red border. `AgenticNode` paints one teal handle per case (labelled by `label || value`) plus one amber `default` handle; the card auto-grows so handles never overlap.
+
+**Ready-to-use examples in the template gallery (TMPL-01.f):**
+
+* **Priority router (Switch)** — `Webhook → Switch(trigger.priority, matchMode=equals_ci) → PagerDuty / Slack-hi / Slack-std / Email`. Demonstrates Switch driven directly from a structured trigger payload (no upstream classifier).
+* **IT Ticket Triage** / **Ops Routing** — `Intent Classifier → Switch(node_3.intents[0])` replacing legacy `LLM Router + N Condition` chains. Canonical Intent Classifier → Switch pattern.
+* **Agent ↔ tool loopback** — Switch-free but uses Condition at the same branch point; pair with Switch when the planner returns more than `use_tool | done` (e.g. explicit tool-category routing).
 
 ### Sub-Workflow (`sub_workflow`)
 

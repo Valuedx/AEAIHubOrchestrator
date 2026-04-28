@@ -9,7 +9,76 @@ All endpoints are served by the FastAPI backend (default `http://localhost:8000`
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/health` | None | Returns `{ "status": "ok" }` |
+| `GET` | `/health/ready` | None | STARTUP-01 readiness — runs all startup checks live, 503 on any fail |
 | `GET` | `/auth/token?tenant_id=<id>` | None | Dev-mode only — returns a signed JWT for the given tenant |
+| `GET` | `/auth/oidc/login` | None | OIDC SSO — redirects browser to the identity provider. Only mounted when `ORCHESTRATOR_OIDC_ENABLED=true`. |
+| `GET` | `/auth/oidc/callback?code=&state=` | None | OIDC callback — exchanges code + validates ID token, returns internal JWT. |
+| `POST` | `/auth/local/login` | None | **LOCAL-AUTH-01** — exchange tenant+username+password for a Bearer token. Mounted only when `ORCHESTRATOR_AUTH_MODE=local`. |
+| `GET` | `/auth/me` | Bearer | **LOCAL-AUTH-01** — return the caller's `users` row based on JWT `sub`. Mounted only when `ORCHESTRATOR_AUTH_MODE=local`. |
+
+### `POST /auth/local/login`
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `tenant_id` | string (1–64) | Yes | RLS scope for the user lookup |
+| `username` | string (1–128) | Yes | Case-insensitive within tenant |
+| `password` | string | Yes | Plaintext — compared against argon2id hash |
+
+**Response (200):**
+
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "bearer",
+  "user": {
+    "id": "uuid",
+    "tenant_id": "default",
+    "username": "alice",
+    "email": "alice@example.com",
+    "is_admin": false,
+    "disabled": false
+  }
+}
+```
+
+The issued JWT carries the usual `tenant_id` + `iat` + `exp` claims plus three local-auth extras: `sub=<user_id>`, `username`, `is_admin`. Pass it as `Authorization: Bearer <token>` on subsequent requests.
+
+**Failure modes:**
+
+- `401 Invalid credentials` — unknown user, wrong password, or disabled account. The body is deliberately generic to defeat account enumeration; which branch fired is logged at INFO level on the server.
+- `404 Local auth mode not enabled` — defence-in-depth when the endpoint is reachable but `auth_mode != "local"`.
+
+### `GET /auth/me`
+
+Requires a Bearer token. Returns the caller's `users` row (same shape as the `user` field from `/auth/local/login`). Returns `404` if the token's `sub` isn't a UUID present in `users` — e.g. a token minted by the dev `/auth/token` endpoint or an OIDC callback where no local user was created.
+
+---
+
+## Users (admin only) — `/api/v1/users`
+
+Mounted only when `ORCHESTRATOR_AUTH_MODE=local`. Every endpoint requires a Bearer token whose `is_admin` claim is `true`; otherwise `403 Admin privilege required`. `401 Missing / invalid token` comes back before the admin check when the Bearer header is missing or unparseable, so the two error modes stay distinguishable.
+
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `POST` | `/api/v1/users` | 201 | Create a user in the caller's tenant |
+| `GET` | `/api/v1/users` | 200 | List users in the caller's tenant |
+| `GET` | `/api/v1/users/{user_id}` | 200 | Fetch one user |
+| `PUT` | `/api/v1/users/{user_id}/password` | 200 | Reset password (enforces `ORCHESTRATOR_PASSWORD_MIN_LENGTH`) |
+| `PUT` | `/api/v1/users/{user_id}/disabled` | 200 | Toggle `disabled`. Self-disable refused with `400`. |
+| `DELETE` | `/api/v1/users/{user_id}` | 204 | Delete. Self-delete refused with `400`. |
+
+**UserCreate** (request body for `POST /api/v1/users`):
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `username` | string (1–128) | Yes | Matches `^[A-Za-z0-9_.\-]+$`; unique per tenant (case-insensitive) |
+| `password` | string | Yes | Must meet `ORCHESTRATOR_PASSWORD_MIN_LENGTH` (default 8) |
+| `email` | email (RFC 5321) | No | Pydantic `EmailStr`; null allowed |
+| `is_admin` | bool | No (default `false`) | Admin users can call `/api/v1/users/*` |
+
+Returns `409` on username collision (case-insensitive, within the caller's tenant) and `400` on policy violation (weak password, bad username characters).
 
 ---
 
@@ -39,6 +108,18 @@ All endpoints are served by the FastAPI backend (default `http://localhost:8000`
 All fields optional: `name`, `description`, `graph_json`, `is_active`. When `graph_json` is updated, the previous version is snapshotted and `version` is incremented. Toggling **`is_active`** alone does NOT bump version or snapshot — it's a runtime switch only, matching the pins / DV-07 design.
 
 **Save-time side effects:** Both POST and PATCH validate node configs against the registry schema (returning warnings in logs). If the graph contains Intent Classifier nodes with `cacheEmbeddings=true`, embeddings for their intent definitions are precomputed and stored in the `embedding_cache` table. This is transparent to the caller — the API response is unchanged.
+
+**Edge schema:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | string | Yes | Stable React Flow id |
+| `source` / `target` | string | Yes | Node ids |
+| `sourceHandle` | string | No | Branch label on Condition sources (`"true"`, `"false"`, custom) |
+| `type` | enum | No | Missing/`undefined` = forward edge; `"loopback"` re-enqueues `target` when `source` fires (see [cyclic-graphs.md](cyclic-graphs.md)) |
+| `maxIterations` | int 1–100 | No | Loopback iteration cap; default 10, hard cap 100. Required-in-spirit but defaults fill in if missing (copilot surfaces `loopback_no_cap` warn) |
+
+**Loopback edge validation errors (save-blocking):** invalid `maxIterations`; duplicate loopbacks per source; target not a forward ancestor of source; cycle body has no forward exit path. See `backend/app/engine/config_validator.py::_validate_loopback_edges`.
 
 **WorkflowOut** (response):
 
@@ -98,12 +179,16 @@ See [Developer Workflow](dev-workflow.md) for the full UX + edge cases.
 | Method | Path | Status | Description |
 |--------|------|--------|-------------|
 | `POST` | `.../{instance_id}/callback` | 200 | Resume a suspended (HITL) instance |
+| `GET`  | `.../{instance_id}/approvals` | 200 | **HITL-01.a** — list the approval_audit_log rows for this instance (compliance export) |
+| `GET`  | `/api/v1/workflows/pending-approvals` | 200 | **HITL-01.b** — tenant-wide list of suspended-awaiting-human instances, ordered oldest-first. Toolbar badge + dropdown consume this. Returns `[{instance_id, workflow_id, workflow_name, node_id, approval_message, suspended_at, age_seconds}]`. |
 | `POST` | `.../{instance_id}/retry` | 200 | Retry a failed instance, optionally from a specific node |
 | `POST` | `.../{instance_id}/pause` | 200 | Pause a running/queued instance |
 | `POST` | `.../{instance_id}/resume-paused` | 200 | Resume a paused instance |
 | `POST` | `.../{instance_id}/cancel` | 200 | Cancel an instance |
 
-**CallbackRequest:** `approval_payload` (object), `context_patch` (optional object).
+**CallbackRequest** (HITL-01.a): `approval_payload` (object), `context_patch` (optional object), `approver` (optional string, ≤256 chars — claimed identity), `decision` (optional `"approved"` or `"rejected"` — default approved for back-compat; `rejected` closes the instance as `failed`+`suspended_reason="rejected"` which maps to the A2A v1.0 `rejected` state), `reason` (optional string, ≤2000 chars — stored on the audit row). Every call writes exactly one row to `approval_audit_log` regardless of whether it resumes or rejects. See [hitl.md](hitl.md) for the full lifecycle.
+
+**Approvals list response:** array of `ApprovalAuditOut` rows — `{id, instance_id, node_id, parent_instance_id, approver, decision, reason, context_before_json, context_after_json, approvers_allowlist_matched, created_at}`, ordered oldest-first.
 
 **RetryRequest:** `from_node_id` (optional string).
 
@@ -434,11 +519,57 @@ The backend rehydrates these rows from `memory_debug` recorded during execution 
 
 ## A2A (Agent-to-Agent) — `/tenants/{tenant_id}/...`
 
+> **Ready-to-use templates (TMPL-04):** the Template Gallery ships two
+> A2A examples that illustrate the calling pattern from the
+> orchestrator side.
+>
+> * **A2A research swarm** — webhook → researcher A2A → fact-checker
+>   A2A (reads the researcher's output via a composed
+>   `messageExpression`) → BALANCED synthesiser LLM → Slack.
+>   Demonstrates chaining two different external agents with
+>   distinct `agentCardUrl` / `apiKeySecret` per call.
+> * **Specialist A2A routing** — Intent Classifier + Switch → per-
+>   domain A2A agents (finance / legal / technical) + local
+>   fallback → Merge(waitAny) → Bridge User Reply. Canonical
+>   pattern when specialist knowledge lives with partner / sister
+>   teams exposing their own agent cards.
+>
+> Load either from Toolbar → Template gallery → Research / Operations.
+
 ### Public agent card (no auth)
+
+We serve the agent card at **both** paths so A2A v0.2.x and v1.0 clients both discover us (A2A-01.a):
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/tenants/{tenant_id}/.well-known/agent.json` | Agent card with capabilities and published skills |
+| `GET` | `/tenants/{tenant_id}/.well-known/agent-card.json` | **A2A v1.0** agent card (spec-required path) |
+| `GET` | `/tenants/{tenant_id}/.well-known/agent.json` | **A2A v0.2.x** legacy alias — identical body |
+
+**Card body (A2A-01.b — v1.0 complete):**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | `AE Orchestrator — {tenant_id}` |
+| `description` | string | Short blurb |
+| `url` | string | JSON-RPC dispatch endpoint |
+| `version` | string | Currently `1.0` |
+| `defaultInputModes` | `["text"]` | v1.0 required |
+| `defaultOutputModes` | `["text", "data"]` | v1.0 required — workflows can emit structured context plus prose |
+| `capabilities` | object | `{streaming: true, pushNotifications: false, stateTransitionHistory: false, extendedAgentCard: false}` |
+| `securitySchemes` | object | `{bearer: {type: "http", scheme: "bearer"}}` — v1.0 clients auto-negotiate from here |
+| `security` | array | `[{bearer: []}]` — bearer required on the main endpoint |
+| `provider` | object | `{organization, url?, email?}` — sourced from `ORCHESTRATOR_A2A_PROVIDER_*` env vars; optional fields suppressed when unset |
+| `documentationUrl` | string? | `ORCHESTRATOR_A2A_DOCUMENTATION_URL` env, omitted when empty |
+| `skills` | array | One entry per published workflow: `{id, name, description, inputModes, outputModes}` |
+
+**Operator config (all optional):**
+
+```bash
+ORCHESTRATOR_A2A_PROVIDER_ORGANIZATION="Your Org"      # default: "AE AI Hub Orchestrator"
+ORCHESTRATOR_A2A_PROVIDER_URL="https://your.example"
+ORCHESTRATOR_A2A_PROVIDER_EMAIL="platform@your.example"
+ORCHESTRATOR_A2A_DOCUMENTATION_URL="https://your.example/docs"
+```
 
 ### JSON-RPC endpoint (A2A API key auth)
 
@@ -455,14 +586,50 @@ The backend rehydrates these rows from `memory_debug` recorded during execution 
 | `method` | string | See below |
 | `params` | object | Method-specific |
 
-**Methods:**
+**Methods:** we accept both v0.2.x and v1.0 method names as aliases so clients on either spec version work without a shim (A2A-01.a).
 
-| Method | Params | Behavior |
-|--------|--------|----------|
-| `tasks/send` | `skillId`, optional `sessionId`, `message` (with `parts[].text`) | Create and enqueue a task |
-| `tasks/get` | `id` (instance UUID), optional `sessionId` | Get task status |
-| `tasks/cancel` | `id` (instance UUID) | Request cancellation |
-| `tasks/sendSubscribe` | Same as `tasks/send` | Create task + SSE stream |
+| Method (v0.2.x) | Alias (v1.0) | Params | Behavior |
+|-----------------|--------------|--------|----------|
+| `tasks/send` | `message/send` | `skillId` (top-level OR `message.metadata.skillId`), optional `sessionId`, `message` (with `parts[].text`) | Create and enqueue a task |
+| `tasks/sendSubscribe` | `message/sendStreaming` | Same as send | Create task + SSE stream |
+| `tasks/get` | — | `id` (instance UUID), optional `sessionId` | Get task status |
+| `tasks/cancel` | — | `id` (instance UUID) | Request cancellation |
+
+**Skill routing note:** v1.0's `message/send` has no top-level `skillId`; the Google ADK / LangGraph convention puts the id inside `message.metadata.skillId`. Our dispatcher reads from both locations so either param shape works.
+
+**Message Part types (A2A-01.c):** messages and artifacts carry a list of parts; each part is one of four variants discriminated by field presence (Google ADK / LangGraph convention).
+
+| Variant | Shape | Example |
+|---|---|---|
+| TextPart | `{text: string}` | `{"text": "please summarise"}` |
+| DataPart | `{data: any JSON, mimeType?: string}` | `{"data": {"priority": "high"}, "mimeType": "application/vnd.slack.message+json"}` |
+| FilePart (bytes) | `{file: {name?, mimeType?, bytes: base64}}` | `{"file": {"name": "logs.txt", "mimeType": "text/plain", "bytes": "aGVsbG8="}}` |
+| FilePart (uri) | `{file: {name?, mimeType?, uri: string}}` | `{"file": {"uri": "https://ex.com/doc.pdf", "mimeType": "application/pdf"}}` |
+
+**Inbound (`message/send` / `tasks/send`):** parts are fanned out into the workflow's `trigger_payload`:
+
+- `trigger_payload.message` — concatenated text (back-compat string, unchanged).
+- `trigger_payload.message_parts.text` — same as above.
+- `trigger_payload.message_parts.data` — list of DataPart payloads, in order.
+- `trigger_payload.message_parts.files` — list of FilePart references (bytes stay base64 on the inbound side; workflows decode as needed).
+
+**Outbound (completed task artifacts):** every completed task emits a single artifact with up to two parts — a TextPart carrying the final LLM response (prose for the user) plus a DataPart carrying every non-internal key in the workflow context (`_`-prefixed keys are stripped so internal markers don't leak). Workflows calling the **A2A Agent Call** node handler get `{response, data, files}` in the node output; `response` stays a plain string for back compat while `data`/`files` expose the richer payload — file bytes are base64-decoded to raw `bytes` on the outbound client side.
+
+**Task state mapping (A2A-01.b):** A2A v1.0 defines 8 states. Our `WorkflowInstance.status + suspended_reason` pair maps onto them:
+
+| WorkflowInstance `status` | `suspended_reason` | A2A state |
+|---|---|---|
+| `queued` | — | `submitted` |
+| `running` | — | `working` |
+| `completed` | — | `completed` |
+| `failed` | `rejected` | `rejected` (pre-execution policy refusal) |
+| `failed` | anything else | `failed` |
+| `cancelled` | — | `canceled` |
+| `suspended` | None or `async_external` | `input-required` |
+| `suspended` | `auth_required` | `auth-required` |
+| anything else / null | — | `unknown` |
+
+`unknown` is the intentional fallback — a spec-required enum is better than silently claiming `working`.
 
 ### A2A API key management — `/api/v1/a2a/keys`
 
@@ -474,6 +641,24 @@ The backend rehydrates these rows from `memory_debug` recorded during execution 
 
 ---
 
+## Models — `/api/v1/models` (MODEL-01.e, planned)
+
+Driven by the central [model registry](model-registry.md). Single source of truth for every LLM and embedding model the orchestrator can route to — consumed by Node Inspector, copilot session-create picker, KB creation dialog, and starter templates.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/models?kind=llm` | Full LLM catalogue filtered to tenant allowlist. Returns `provider`, `model_id`, `generation`, `tier`, `preview`, `context_window`, `supports_tools`, `supports_thinking`, `copilot_ok`, `modalities`, `deprecated`, `display_name` per entry. |
+| `GET` | `/api/v1/models?kind=embedding` | Embedding catalogue — `provider`, `model_id`, `dim`, `preview`, `modalities`, `deprecated`, `display_name` per entry. |
+| `GET` | `/api/v1/models/defaults` | Tier-resolved defaults for the tenant. Response: `{fast, balanced, powerful, copilot, embedding}` with `{provider, model_id}` per role. Honours tenant-policy overrides from MODEL-01.e. |
+
+Query params:
+
+* `provider=google\|vertex\|anthropic\|openai` — restrict to one provider.
+* `include_preview=false` — hide preview variants (default `true`; forced `false` if tenant policy blocks preview).
+* `copilot_only=true` — only return models where `copilot_ok=true`.
+
+Error model: `404` on unknown `kind`; `403` if tenant allowlist would yield an empty set (signal to operator).
+
 ## Knowledge Bases — `/api/v1/knowledge-bases`
 
 Full reference in [RAG & Knowledge Base](rag-knowledge-base.md). Summary:
@@ -482,7 +667,7 @@ Full reference in [RAG & Knowledge Base](rag-knowledge-base.md). Summary:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/knowledge-bases/embedding-options` | Available embedding providers/models |
+| `GET` | `/api/v1/knowledge-bases/embedding-options` | Available embedding providers/models (superseded by `/api/v1/models?kind=embedding` in MODEL-01.e, but kept for back-compat). |
 | `GET` | `/api/v1/knowledge-bases/chunking-strategies` | Available chunking strategies |
 | `GET` | `/api/v1/knowledge-bases/vector-stores` | Available vector store backends |
 
@@ -551,6 +736,46 @@ Manage encrypted tenant secrets used for `{{ env.KEY_NAME }}` references in node
 | `updated_at` | ISO datetime | |
 
 **Errors:** `400` (invalid key_name format), `404` (secret not found), `409` (duplicate key_name), `422` (invalid UUID).
+
+---
+
+## Workflow Copilot — `/api/v1/copilot`
+
+The conversational authoring + debug surface (COPILOT-01 / 02 / SMART-04 / SMART-06). Every mutation flows through a **draft** — nothing touches `workflow_definitions` until the human promotes.
+
+### Drafts — `/api/v1/copilot/drafts`
+
+| Method | Endpoint | Status | Description |
+|--------|----------|--------|-------------|
+| `POST` | `/api/v1/copilot/drafts` | 201 | Create a draft (optionally forked from a `base_workflow_id`) |
+| `GET` | `/api/v1/copilot/drafts` | 200 | List drafts for the tenant |
+| `GET` | `/api/v1/copilot/drafts/{id}` | 200 | Read draft + live validation result |
+| `PATCH` | `/api/v1/copilot/drafts/{id}` | 200 | Manual graph / title update; accepts `expected_version` for optimistic concurrency |
+| `DELETE` | `/api/v1/copilot/drafts/{id}` | 204 | Abandon |
+| `POST` | `/api/v1/copilot/drafts/{id}/tools/{tool_name}` | 200 / 400 / 409 | Dispatch one of the agent tools (`add_node`, `connect_nodes`, `check_draft`, `test_node`, `execute_draft`, `search_docs`, `discover_mcp_tools`, …). Body `{args, expected_version?}` |
+| `POST` | `/api/v1/copilot/drafts/{id}/promote` | 201 / 400 / 404 / 409 | Atomically merge into `workflow_definitions` (net-new or new version of base). Refuses on validation errors or `base.version != base_version_at_fork` |
+
+### Sessions — `/api/v1/copilot/sessions`
+
+| Method | Endpoint | Status | Description |
+|--------|----------|--------|-------------|
+| `GET` | `/api/v1/copilot/sessions/providers` | 200 | Supported providers + default model + declared tool surface |
+| `POST` | `/api/v1/copilot/sessions` | 201 | Create session bound to a draft; pick provider (anthropic / google / vertex) |
+| `GET` | `/api/v1/copilot/sessions` | 200 | List sessions (optional `?draft_id=` filter) |
+| `GET` | `/api/v1/copilot/sessions/{id}` | 200 | Read session metadata |
+| `DELETE` | `/api/v1/copilot/sessions/{id}` | 204 | Mark `abandoned` — turns are preserved |
+| `GET` | `/api/v1/copilot/sessions/{id}/turns` | 200 | Chronological turn list (user / assistant / tool) |
+| `POST` | `/api/v1/copilot/sessions/{id}/turns` | 200 (SSE) | Send a user message and stream the agent's response as `text/event-stream` |
+
+**SSE event shapes** (see `codewiki/copilot.md` §4 for the full contract):
+
+- `{type: "assistant_text", text}`
+- `{type: "tool_call", id, name, args}`
+- `{type: "tool_result", id, name, result, validation, draft_version, error}`
+- `{type: "error", message, recoverable}`
+- `{type: "done", turns_added, final_text}`
+
+**Errors:** `404` (draft/session not found), `409` (session abandoned, or `expected_version` mismatch), `422` (invalid UUID or empty message).
 
 ---
 

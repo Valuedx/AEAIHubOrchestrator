@@ -21,4 +21,10 @@ frontend/dist/
 Thumbs.db
 .idea/
 .vscode/
+.claude/
+.playwright-mcp/
 *.log
+.venv
+
+# Root-level screenshots (Playwright MCP captures land here; not tracked)
+/*.png

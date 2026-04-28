@@ -38,6 +38,13 @@ class WorkflowDefinition(Base):
     # DV-07 — when False, Schedule Triggers stop firing. Manual Run, PATCH,
     # and duplicate all continue to work. Default True keeps legacy behaviour.
     is_active = Column(Boolean, nullable=False, default=True, server_default=sa.text("TRUE"))
+    # COPILOT-01b.ii.b — True for transient definitions created by the
+    # copilot's ``execute_draft`` runner tool. Hidden from user-facing
+    # lists (``list_workflows``), the scheduler, and the A2A agent card;
+    # the engine itself does NOT filter on this so it can still load
+    # these rows and run them. Reaped by ``runner_tools.
+    # cleanup_ephemeral_workflows``.
+    is_ephemeral = Column(Boolean, nullable=False, default=False, server_default=sa.text("FALSE"))
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
@@ -80,6 +87,11 @@ class WorkflowInstance(Base):
     # suspended ('async_external'). Cleared on resume. Used by the UI to pick
     # between the Review dialog and the "waiting-on-external" badge.
     suspended_reason = Column(String(32), nullable=True)
+    # HITL-01.b — timestamp of the most-recent suspension, used for
+    # age display on the pending-approvals dashboard and for the
+    # HITL-01.c timeout sweep. NULL on (a) never-suspended instances
+    # and (b) rows that suspended before migration 0031 ran.
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
     # Sub-workflow lineage: links a child instance back to the parent that spawned it.
     parent_instance_id = Column(
         UUID(as_uuid=True),
@@ -171,6 +183,60 @@ class InstanceCheckpoint(Base):
 
     __table_args__ = (
         Index("ix_checkpoint_instance_node", "instance_id", "node_id"),
+    )
+
+
+class ApprovalAuditLog(Base):
+    """HITL-01.a — one row per human-in-the-loop approval event.
+
+    Every resume of a suspended workflow instance writes one row.
+    That includes explicit rejects (``decision="rejected"``),
+    timeout rejections fired by the HITL-01.c scheduler
+    (``decision="timeout_rejected"``), and escalations
+    (``decision="timeout_escalated"``). The table answers three
+    questions the old ``context["approval"]`` blob couldn't:
+
+      1. **Who** approved/rejected? (``approver`` — claimed
+         identity, protected today only by tenant-scoped bearer
+         auth. A future ``verified_by`` column can track
+         cryptographic binding once IAM lands.)
+      2. **What did they see?** (``context_before_json`` —
+         snapshotted at resume time before the operator's patch
+         merges, so the diff against ``context_after_json`` shows
+         exactly the mutation the approver introduced.)
+      3. **Was the approver permitted?** (``approvers_allowlist_matched`` —
+         reserved for HITL-01.d; ``None`` on v0 rows.)
+
+    ``parent_instance_id`` is reserved for HITL-01.f (bubble
+    sub-workflow HITL up to the parent); ``None`` on every v0 row.
+
+    Tenant-scoped RLS keyed on ``tenant_id``. Rows cascade-delete
+    with the owning ``WorkflowInstance`` — retention policy is
+    naturally tied to the workflow history.
+    """
+
+    __tablename__ = "approval_audit_log"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    instance_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_instances.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id = Column(String(128), nullable=False)
+    parent_instance_id = Column(UUID(as_uuid=True), nullable=True)
+    approver = Column(String(256), nullable=False)
+    decision = Column(String(32), nullable=False)
+    reason = Column(Text, nullable=True)
+    context_before_json = Column(JSONB, nullable=True)
+    context_after_json = Column(JSONB, nullable=True)
+    approvers_allowlist_matched = Column(Boolean, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_approval_audit_tenant_created", "tenant_id", "created_at"),
+        Index("ix_approval_audit_instance", "instance_id", "created_at"),
     )
 
 
@@ -361,6 +427,59 @@ class TenantPolicy(Base):
     # ADMIN-02 — per-tenant API rate limit. Null = env default.
     rate_limit_requests_per_window = Column(Integer, nullable=True)
     rate_limit_window_seconds = Column(Integer, nullable=True)
+    # SMART-04 — proactive authoring lints run after every copilot
+    # mutation (no_trigger / disconnected_node / orphan_edge /
+    # missing_credential). Default TRUE because lints are zero-LLM-
+    # cost and strictly additive to UX. Cost-conscious tenants can
+    # opt out via PATCH /api/v1/tenant-policy.
+    smart_04_lints_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
+    # SMART-06 — proactive MCP tool discovery: the agent can call
+    # list_tools on the tenant's registered MCP servers to surface
+    # relevant tools during drafting. Cached per session, zero-LLM-
+    # cost. Default TRUE.
+    smart_06_mcp_discovery_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
+    # SMART-02 — accepted-patterns library: every successful promote
+    # saves the graph + NL intent so the agent can retrieve nearest
+    # prior patterns as few-shot for future drafts. Save + retrieve
+    # are pure DB I/O; default TRUE.
+    smart_02_pattern_library_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
+    # SMART-01 — scenario memory + strict promote-gate. BOTH default
+    # FALSE (opt-in per tenant) because both behaviours spend engine
+    # tokens. scenario_memory auto-saves a regression case after
+    # every successful execute_draft (deduped by payload hash);
+    # strict_promote_gate makes promote refuse on any failing
+    # scenario with no override.
+    smart_01_scenario_memory_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
+    )
+    smart_01_strict_promote_gate_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
+    )
+    # SMART-05 — vector-backed docs search. Default FALSE because
+    # embedding calls cost real tokens at search time; the 01b.iii
+    # file-backed word-overlap search is the fallback (and auto-
+    # fallback when embedding provider is unreachable, so enabling
+    # the flag is strictly additive).
+    smart_05_vector_docs_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
+    )
+    # MODEL-01.e — per-tenant model defaults + family allowlist.
+    # Nullable so tenants that never open the model row in the policy
+    # dialog keep the registry's global defaults untouched. See
+    # `engine/model_registry.py::default_llm_for` + `is_allowed_llm`.
+    default_llm_provider = Column(String(32), nullable=True)
+    default_llm_model = Column(String(128), nullable=True)
+    default_embedding_provider = Column(String(32), nullable=True)
+    default_embedding_model = Column(String(128), nullable=True)
+    # Allowlist of registry generations, e.g. ["2.5", "3.x"]. Null =
+    # no restriction. An empty list is treated the same as null.
+    allowed_model_families = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

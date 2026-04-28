@@ -67,7 +67,7 @@ class ExecuteRequest(BaseModel):
         ),
     )
     sync_timeout: int = Field(
-        120,
+        180,
         ge=5,
         le=3600,
         description="Seconds to wait for a synchronous run before returning 504 Gateway Timeout.",
@@ -88,6 +88,15 @@ class SyncExecuteOut(BaseModel):
 
 
 class CallbackRequest(BaseModel):
+    """HITL resume body.
+
+    Existing fields (``approval_payload`` + ``context_patch``) stay
+    semantically unchanged for back-compat — any caller on the v0
+    API shape gets an audit row automatically via the audit-log
+    defaults (decision defaults to "approved", approver defaults
+    to "anonymous"). New HITL-01.a fields make the decision
+    explicit and the approver traceable.
+    """
     approval_payload: dict[str, Any] = Field(default_factory=dict)
     context_patch: dict[str, Any] | None = Field(
         None,
@@ -98,6 +107,80 @@ class CallbackRequest(BaseModel):
             "output) without rerunning the entire workflow from scratch."
         ),
     )
+    # HITL-01.a — claimed identity + decision. Optional so the old
+    # v0 shape keeps working, but the frontend always sends them.
+    approver: str | None = Field(
+        default=None,
+        max_length=256,
+        description=(
+            "Claimed identity of the human approving/rejecting. Protected "
+            "today only by tenant-scoped bearer auth — treat as attested, "
+            "not verified, until OIDC integration lands. Stored in the "
+            "approval_audit_log row. Defaults to 'anonymous' on the audit "
+            "side if omitted."
+        ),
+    )
+    decision: str | None = Field(
+        default=None,
+        description=(
+            "Explicit approve / reject. Accepts 'approved' or 'rejected'. "
+            "When omitted we infer 'approved' for back-compat with v0 "
+            "callers that only resumed (never rejected). 'rejected' "
+            "closes the instance with status=failed, suspended_reason="
+            "'rejected' — this maps to the A2A v1.0 'rejected' terminal "
+            "state via the resolver from A2A-01.b."
+        ),
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=2000,
+        description=(
+            "Optional free-form note — why was this approved/rejected? "
+            "Lands in the audit log and is read-only thereafter."
+        ),
+    )
+
+
+class PendingApprovalOut(BaseModel):
+    """HITL-01.b — one row on the pending-approvals dashboard.
+
+    Returned by ``GET /api/v1/workflows/pending-approvals``. The
+    endpoint filters the tenant's suspended instances down to the
+    ones waiting on human decisions (i.e. HITL, not
+    ``async_external``), sorted oldest-first so the row at the top
+    is the one that's been waiting longest. The toolbar badge +
+    dropdown consume this shape directly.
+    """
+    instance_id: uuid.UUID
+    workflow_id: uuid.UUID
+    workflow_name: str
+    node_id: str
+    approval_message: str | None
+    # Timestamp the instance transitioned to suspended. v0 rows
+    # that suspended before migration 0031 return ``started_at``
+    # as a fallback (noted in hitl.md §2).
+    suspended_at: datetime
+    age_seconds: int
+
+
+class ApprovalAuditOut(BaseModel):
+    """One approval_audit_log row. Returned by
+    ``GET /workflows/{workflow_id}/instances/{instance_id}/approvals``
+    for compliance exports + the future HITL-01.b dashboard drill-in.
+    """
+    id: uuid.UUID
+    instance_id: uuid.UUID
+    node_id: str
+    parent_instance_id: uuid.UUID | None
+    approver: str
+    decision: str
+    reason: str | None
+    context_before_json: dict[str, Any] | None
+    context_after_json: dict[str, Any] | None
+    approvers_allowlist_matched: bool | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class InstanceContextOut(BaseModel):
@@ -356,14 +439,53 @@ class ArchiveConversationEpisodeOut(BaseModel):
 # A2A Protocol (Agent-to-Agent)
 # ---------------------------------------------------------------------------
 
+class A2AFileReference(BaseModel):
+    """A2A v1.0 FilePart body.
+
+    ``bytes`` (base64-encoded) and ``uri`` are mutually exclusive —
+    callers pass one or the other. We accept either shape without
+    enforcing the exclusivity on the Pydantic side so Pydantic errors
+    stay out of the JSON-RPC error envelope; the consumer side in
+    ``_parse_message_parts`` picks whichever is set.
+    """
+    name: str | None = None
+    mimeType: str | None = None
+    bytes: str | None = None   # base64
+    uri: str | None = None
+
+
 class A2AMessagePart(BaseModel):
-    """A single content unit inside an A2A message (text or future media types)."""
+    """A single content unit inside an A2A message.
+
+    A2A v1.0 defines the Part union as a tagged OneOf over four
+    variants. We encode it here via field-presence (the Google ADK
+    + LangGraph convention) — set exactly one of ``text`` / ``data``
+    / ``file`` per part. ``mimeType`` is optional at the part level
+    and is most useful on DataParts where it discriminates JSON
+    shape (e.g. ``application/vnd.slack.message+json``).
+
+    Back-compat: v0.2.x clients only set ``text``; nothing breaks
+    when the other fields are left null.
+    """
+    # TextPart
     text: str | None = None
+    # DataPart — JSON-any. We use Any to preserve the caller's
+    # shape without coercing; downstream workflows read this via
+    # trigger_payload.message_parts.
+    data: Any | None = None
+    # FilePart
+    file: A2AFileReference | None = None
+    # Optional MIME on the part itself; spec allows it on data +
+    # file parts.
+    mimeType: str | None = None
 
 
 class A2AMessage(BaseModel):
     role: str = "user"
     parts: list[A2AMessagePart]
+    # v1.0 messages carry an optional metadata bag — we use it for
+    # skillId routing (see a2a.py::_read_metadata_skill_id).
+    metadata: dict[str, Any] | None = None
 
 
 class A2ATaskStatus(BaseModel):
@@ -374,7 +496,15 @@ class A2ATaskStatus(BaseModel):
 
 
 class A2AArtifact(BaseModel):
-    """Final output of a completed task — one or more content parts."""
+    """Final output of a completed task — one or more content parts.
+
+    v1.0 artifacts can mix text, data, and file parts (e.g. a
+    workflow returns both a prose summary AND the structured
+    context the caller wanted to drop into their own pipeline).
+    Our ``_instance_to_task`` emits text + optional data today;
+    file emission is reserved for a follow-up once we have a
+    workflow node that produces file output.
+    """
     index: int = 0
     parts: list[A2AMessagePart]
     lastChunk: bool | None = None

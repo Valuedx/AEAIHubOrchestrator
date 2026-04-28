@@ -16,6 +16,9 @@ import logging
 import os
 from typing import Any
 
+from google.genai import types
+from google import genai
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,16 @@ def call_llm(
         "anthropic": _call_anthropic,
     }
     handler = providers.get(provider)
+    
+    # Safety fallback: if 'google' (AI Studio) is requested but no valid API key
+    # is available (or it's the placeholder UUID), and Vertex is configured,
+    # reroute to Vertex to avoid 400 errors.
+    from app.config import settings
+    is_valid_key = settings.google_api_key and not settings.google_api_key.startswith("5b-b4a8")
+    if provider == "google" and not is_valid_key and settings.vertex_project:
+        logger.warning("Rerouting 'google' provider call to 'vertex' (invalid or missing AI Studio key)")
+        handler = providers["vertex"]
+
     if not handler:
         raise ValueError(f"Unknown LLM provider: {provider}")
 
@@ -97,6 +110,15 @@ def call_llm_streaming(
             messages=messages,
             tenant_id=tenant_id,
         )
+
+    # Safety fallback: if 'google' (AI Studio) is requested but no valid API key
+    # is available (or it's the placeholder UUID), and Vertex is configured,
+    # reroute to Vertex to avoid 400 errors.
+    from app.config import settings
+    is_valid_key = settings.google_api_key and not settings.google_api_key.startswith("5b-b4a8")
+    if provider == "google" and not is_valid_key and settings.vertex_project:
+        logger.warning("Rerouting 'google' streaming provider call to 'vertex' (invalid or missing AI Studio key)")
+        provider = "vertex"
 
     from app.engine.streaming_llm import (
         stream_anthropic,
@@ -207,6 +229,21 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
     know exactly which setting to populate.
     """
     from google import genai
+    from google.genai.types import HttpOptions
+
+    from app.config import settings
+
+    # Read-timeout shared by every google-genai call through this
+    # factory. google-genai's underlying httpx client defaults to a
+    # 5-second read timeout, which is much shorter than a realistic
+    # Gemini 3.1 Pro thinking + tool-calling round-trip (30-90s common,
+    # multi-minute on heavy reasoning). Without this override, the
+    # copilot on Vertex raises ``httpx.ReadTimeout`` on its first turn.
+    # Tuned via ``ORCHESTRATOR_GOOGLE_LLM_TIMEOUT_SECONDS``. The SDK
+    # takes milliseconds.
+    http_options = HttpOptions(
+        timeout=int(settings.google_llm_timeout_seconds) * 1000,
+    )
 
     if backend == "vertex":
         # Ensure SDK can find the JSON key if provided in .env
@@ -214,12 +251,16 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
 
         project, location = _resolve_vertex_target(tenant_id)
+        logger.info("Initializing Vertex AI client: project=%s, location=%s, tenant_id=%s", project, location, tenant_id)
         if not project:
             raise ValueError("ORCHESTRATOR_VERTEX_PROJECT is not configured")
         return genai.Client(
             vertexai=True,
             project=project,
             location=location,
+            http_options=http_options,
+            api_key=None,
+
         )
     if backend == "genai":
         # ADMIN-03 — per-tenant Google AI Studio key via the LLM
@@ -227,17 +268,22 @@ def _google_client(backend: str, tenant_id: str | None = None):  # noqa: ANN202 
         from app.engine.llm_credentials_resolver import get_google_api_key
 
         try:
-            api_key = get_google_api_key(tenant_id)
-            return genai.Client(api_key=api_key)
-        except ValueError as exc:
-            # Smart Fallback: if no API key is found but Vertex is configured,
-            # use Vertex instead of failing. This satisfies "it should use 
-            # my .env vertex configuration".
+            return genai.Client(
+                api_key=get_google_api_key(tenant_id),
+                http_options=http_options,
+            )
+        except ValueError:
+            # Smart fallback: if no AI Studio key is configured but Vertex
+            # is, route through Vertex instead of failing. Lets a Vertex-only
+            # deployment survive a `provider="google"` call without first
+            # provisioning an AI Studio key.
             project, _ = _resolve_vertex_target(tenant_id)
             if project:
-                logger.info("No Google AI Studio key found; falling back to Vertex AI backend.")
+                logger.info(
+                    "No Google AI Studio key found; falling back to Vertex AI backend."
+                )
                 return _google_client("vertex", tenant_id=tenant_id)
-            raise exc
+            raise
     raise ValueError(f"Unknown google backend: {backend!r}")
 
 
@@ -285,6 +331,7 @@ def _call_google_backend(
             system_instruction="\n\n".join(part for part in system_parts if part) or None,
             temperature=temperature,
             max_output_tokens=max_tokens,
+
         ),
     )
 

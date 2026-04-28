@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from app.config import settings
@@ -22,6 +23,7 @@ from app.engine.memory_service import assemble_agent_messages
 logger = logging.getLogger(__name__)
 
 _MAX_ITERATIONS_HARD_CAP = 25
+_REACT_TOTAL_TIMEOUT = 200  # seconds — hard cap for entire ReAct loop
 
 
 def run_react_loop(
@@ -30,9 +32,11 @@ def run_react_loop(
     tenant_id: str,
 ) -> dict[str, Any]:
     """Execute a ReAct agent loop with tool calling."""
+    from app.engine.model_registry import default_llm_for
+
     config = node_data.get("config", {})
-    provider = config.get("provider", "google")
-    model = config.get("model", "gemini-2.5-flash")
+    provider = config.get("provider", "vertex")
+    model = config.get("model") or default_llm_for(provider, role="fast")
     raw_prompt = config.get("systemPrompt", "")
     max_iterations = min(int(config.get("maxIterations", 10)), _MAX_ITERATIONS_HARD_CAP)
     tool_names: list[str] = config.get("tools", [])
@@ -43,6 +47,11 @@ def run_react_loop(
     from app.engine.prompt_template import render_prompt
 
     system_prompt = render_prompt(raw_prompt, context)
+    # CONCISE-01 — Instruct the agent to be concise to stay within gateway limits
+    system_prompt += (
+        "\n\nBe extremely concise. Summarize tool outputs unless details are requested. "
+        "Avoid conversational filler. If a list is long, summarize the top 5 and ask to continue."
+    )
     from app.database import set_tenant_context
     db = SessionLocal()
     try:
@@ -72,16 +81,52 @@ def run_react_loop(
         raise ValueError(f"Unknown LLM provider for ReAct: {provider}")
 
     messages = handler["init"](initial_messages)
+    react_start = time.monotonic()
 
     for i in range(max_iterations):
-        logger.info("ReAct [%s/%s] iteration %d/%d", provider, model, i + 1, max_iterations)
+        # TIMEOUT-GUARD — abort if total ReAct loop time exceeds cap
+        elapsed = time.monotonic() - react_start
+        if elapsed > _REACT_TOTAL_TIMEOUT:
+            logger.warning(
+                "ReAct total timeout after %.1fs (%d iterations)", elapsed, i,
+            )
+            iterations.append({"iteration": i + 1, "action": "timeout"})
+            return {
+                "response": f"Agent timed out after {int(elapsed)}s. Partial results may be available in the iterations log.",
+                "provider": provider,
+                "model": model,
+                "usage": total_usage,
+                "iterations": iterations,
+                "total_iterations": i,
+                "memory_debug": memory_debug,
+            }
 
-        response = handler["call"](
-            model, messages, tool_defs, temperature, max_tokens,
-            tenant_id=tenant_id,
-        )
+        logger.info("ReAct [%s/%s] iteration %d/%d (%.1fs elapsed)", provider, model, i + 1, max_iterations, elapsed)
+
+        iteration_start = time.monotonic()
+        try:
+            response = handler["call"](
+                model, messages, tool_defs, temperature, max_tokens,
+                tenant_id=tenant_id,
+            )
+        except Exception as exc:
+            logger.error("ReAct LLM call failed on iteration %d: %s", i + 1, exc)
+            iterations.append({"iteration": i + 1, "action": "llm_error", "error": str(exc)[:500]})
+            return {
+                "response": f"LLM call failed: {exc}",
+                "provider": provider,
+                "model": model,
+                "usage": total_usage,
+                "iterations": iterations,
+                "total_iterations": i + 1,
+                "memory_debug": memory_debug,
+            }
+
         total_usage["input_tokens"] += response["usage"]["input_tokens"]
         total_usage["output_tokens"] += response["usage"]["output_tokens"]
+        
+        llm_duration = time.monotonic() - iteration_start
+        logger.info("ReAct iteration %d LLM call took %.1fs", i + 1, llm_duration)
 
         if not response.get("tool_calls"):
             iterations.append({
@@ -100,20 +145,32 @@ def run_react_loop(
             }
 
         tool_results = []
+        tools_start = time.monotonic()
         for tc in response["tool_calls"]:
             tool_name = tc["name"]
             tool_args = tc["arguments"]
             logger.info("ReAct calling tool: %s(%s)", tool_name, json.dumps(tool_args)[:200])
 
-            result = _execute_tool(
-                tool_name, tool_args, tenant_id,
-                server_label=mcp_server_label,
-            )
+            try:
+                result = _execute_tool(
+                    tool_name, tool_args, tenant_id,
+                    server_label=mcp_server_label,
+                )
+            except Exception as exc:
+                logger.error("ReAct tool %s failed: %s", tool_name, exc)
+                result = {"error": f"Tool call failed: {exc}"}
+
+            # TRUNCATION-01 — sanitize and truncate tool result to prevent context bloat
+            sanitized_result = _sanitize_tool_result(result)
+
             tool_results.append({
                 "tool_call_id": tc.get("id", tool_name),
                 "name": tool_name,
-                "result": result,
+                "result": sanitized_result,
             })
+        
+        tools_duration = time.monotonic() - tools_start
+        logger.info("ReAct iteration %d tool calls (%d) took %.1fs", i + 1, len(tool_results), tools_duration)
 
         iterations.append({
             "iteration": i + 1,
@@ -136,6 +193,27 @@ def run_react_loop(
         "total_iterations": max_iterations,
         "memory_debug": memory_debug,
     }
+
+
+def _sanitize_tool_result(result: Any, max_chars: int = 8000) -> Any:
+    """Sanitize and truncate tool output to prevent LLM context bloat."""
+    try:
+        if isinstance(result, (dict, list)):
+            import json
+            result_str = json.dumps(result, default=str)
+            if len(result_str) > max_chars:
+                return result_str[:max_chars] + f"\n... [truncated {len(result_str) - max_chars} chars]"
+            return result
+        
+        s = str(result)
+        if len(s) > max_chars:
+            return s[:max_chars] + f"\n... [truncated {len(s) - max_chars} chars]"
+        return result
+    except Exception:
+        s = str(result)
+        if len(s) > max_chars:
+            return s[:max_chars] + "... [truncated]"
+        return s
 
 
 # ---------------------------------------------------------------------------
@@ -402,12 +480,32 @@ def _google_call_backend(
 
     google_tools = None
     if tools:
+        def strip_non_standard(obj: Any) -> Any:
+            if not isinstance(obj, dict):
+                return obj
+            new_obj = {}
+            for k, v in obj.items():
+                if k in ("examples", "title", "default"):
+                    continue
+                if isinstance(v, dict):
+                    new_obj[k] = strip_non_standard(v)
+                elif isinstance(v, list):
+                    new_obj[k] = [strip_non_standard(i) for i in v]
+                else:
+                    new_obj[k] = v
+            return new_obj
+
         func_decls = []
         for t in tools:
+            # GCP-04 — strip 'examples', 'title', 'default' from the JSON schema. 
+            # The google-genai SDK's FunctionDeclaration/Schema Pydantic models 
+            # use extra='forbidden', so non-standard fields cause 422 errors.
+            params = strip_non_standard(t.get("function", {}).get("parameters", {}))
+
             func_decls.append(types.FunctionDeclaration(
                 name=t["function"]["name"],
                 description=t["function"]["description"],
-                parameters=t["function"]["parameters"],
+                parameters=params,
             ))
         google_tools = [types.Tool(function_declarations=func_decls)]
 
@@ -424,7 +522,9 @@ def _google_call_backend(
         tools=google_tools,
     )
 
+    logger.info("ReAct starting Google GenAI call (model=%s, tools=%d)", model, len(google_tools) if google_tools else 0)
     resp = client.models.generate_content(model=model, contents=contents, config=config)
+    logger.info("ReAct Google GenAI call finished")
     usage = resp.usage_metadata
 
     tool_calls = []

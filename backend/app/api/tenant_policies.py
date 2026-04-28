@@ -85,11 +85,123 @@ class TenantPolicyUpdate(BaseModel):
             "60 = 1 minute, 3600 = 1 hour. Null clears the override."
         ),
     )
+    smart_04_lints_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-04 — toggle the copilot's proactive authoring "
+            "lints. True = run lints after every mutation. False = "
+            "skip (cost-conscious tenants). Null clears the override "
+            "so this tenant inherits ORCHESTRATOR_SMART_04_LINTS_ENABLED."
+        ),
+    )
+    smart_06_mcp_discovery_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-06 — toggle the copilot's MCP tool discovery. "
+            "True = agent can call list_tools on tenant MCP servers "
+            "during drafting. False = skip. Null clears the override."
+        ),
+    )
+    smart_02_pattern_library_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-02 — toggle the accepted-patterns library. True = "
+            "promote saves patterns and recall_patterns returns them. "
+            "False = skip both. Null clears the override."
+        ),
+    )
+    smart_01_scenario_memory_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-01 — auto-save every successful execute_draft as a "
+            "regression scenario (deduped by payload hash). Off by "
+            "default; enable to grow a scenario library without the "
+            "agent having to remember save_test_scenario calls. Null "
+            "clears the override."
+        ),
+    )
+    smart_01_strict_promote_gate_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-01 — strict promote gate. When true, /promote runs "
+            "every saved scenario and refuses with HTTP 400 on any "
+            "non-pass result (no 'promote anyway' override). Off by "
+            "default — the PromoteDialog's soft gate still shows "
+            "pass/fail badges either way. Null clears the override."
+        ),
+    )
+    smart_05_vector_docs_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "SMART-05 — vector-backed docs search. When true, "
+            "search_docs embeds the docs corpus (one-time per process) "
+            "and ranks results by cosine similarity; falls back to "
+            "word-overlap if the embedding provider is unreachable. "
+            "Off by default because embedding calls cost tokens. "
+            "Null clears the override."
+        ),
+    )
+    # MODEL-01.e — per-tenant model overrides. All nullable; null
+    # clears the override so the tenant falls back to the registry's
+    # tier-based default. ``allowed_model_families`` is a list of
+    # registry ``generation`` strings — empty list or null = no
+    # family restriction.
+    default_llm_provider: str | None = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "MODEL-01.e — pin this tenant to a specific LLM provider "
+            "(google / vertex / anthropic / openai). Null = use global "
+            "default per call site."
+        ),
+    )
+    default_llm_model: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "MODEL-01.e — pin this tenant to a specific LLM model "
+            "(must be registry-valid for the chosen provider). Null = "
+            "tier-based resolution via default_llm_for()."
+        ),
+    )
+    default_embedding_provider: str | None = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "MODEL-01.e — pin this tenant's embedding provider. "
+            "Null = use global default (openai)."
+        ),
+    )
+    default_embedding_model: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "MODEL-01.e — pin this tenant's embedding model. Null = "
+            "provider default (e.g. gemini-embedding-2 for vertex)."
+        ),
+    )
+    allowed_model_families: list[str] | None = Field(
+        default=None,
+        description=(
+            "MODEL-01.e — restrict this tenant to registry model "
+            "generations (e.g. [\"2.5\"] forbids 3.x preview; "
+            "[\"2.5\", \"3.x\"] allows both Gemini GA + preview). "
+            "Null or empty list = no family restriction."
+        ),
+    )
 
 
 class TenantPolicyOut(BaseModel):
     tenant_id: str
+    # ``values`` carries integer knobs (quotas, limits, pool sizes).
+    # SMART-XX feature flags land in ``flags`` so the frontend can
+    # render typed toggles without switching on schema per-key.
     values: dict[str, int]
+    flags: dict[str, bool]
+    # MODEL-01.e — per-tenant model overrides. Kept as a separate
+    # object so the frontend row renders typed pickers without
+    # grepping flags/values for model fields.
+    models: dict[str, object]
     source: dict[str, str]
     updated_at: str | None
 
@@ -110,6 +222,21 @@ def get_policy(
             "mcp_pool_size": policy.mcp_pool_size,
             "rate_limit_requests_per_window": policy.rate_limit_requests_per_window,
             "rate_limit_window_seconds": policy.rate_limit_window_seconds,
+        },
+        flags={
+            "smart_04_lints_enabled": policy.smart_04_lints_enabled,
+            "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
+            "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
+            "smart_01_scenario_memory_enabled": policy.smart_01_scenario_memory_enabled,
+            "smart_01_strict_promote_gate_enabled": policy.smart_01_strict_promote_gate_enabled,
+            "smart_05_vector_docs_enabled": policy.smart_05_vector_docs_enabled,
+        },
+        models={
+            "default_llm_provider": policy.default_llm_provider,
+            "default_llm_model": policy.default_llm_model,
+            "default_embedding_provider": policy.default_embedding_provider,
+            "default_embedding_model": policy.default_embedding_model,
+            "allowed_model_families": policy.allowed_model_families,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row and row.updated_at else None,
@@ -145,6 +272,57 @@ def update_policy(
         row.rate_limit_requests_per_window = body.rate_limit_requests_per_window
     if "rate_limit_window_seconds" in sent:
         row.rate_limit_window_seconds = body.rate_limit_window_seconds
+    if "smart_04_lints_enabled" in sent:
+        row.smart_04_lints_enabled = body.smart_04_lints_enabled
+    if "smart_06_mcp_discovery_enabled" in sent:
+        row.smart_06_mcp_discovery_enabled = body.smart_06_mcp_discovery_enabled
+    if "smart_02_pattern_library_enabled" in sent:
+        row.smart_02_pattern_library_enabled = body.smart_02_pattern_library_enabled
+    if "smart_01_scenario_memory_enabled" in sent:
+        row.smart_01_scenario_memory_enabled = body.smart_01_scenario_memory_enabled
+    if "smart_01_strict_promote_gate_enabled" in sent:
+        row.smart_01_strict_promote_gate_enabled = body.smart_01_strict_promote_gate_enabled
+    if "smart_05_vector_docs_enabled" in sent:
+        row.smart_05_vector_docs_enabled = body.smart_05_vector_docs_enabled
+    # MODEL-01.e — validate model overrides against the registry before
+    # committing, so a typo can't stick as a tenant pin.
+    from app.engine.model_registry import find_llm_model, find_embedding_model
+
+    if "default_llm_provider" in sent:
+        row.default_llm_provider = body.default_llm_provider
+    if "default_llm_model" in sent:
+        row.default_llm_model = body.default_llm_model
+    if "default_embedding_provider" in sent:
+        row.default_embedding_provider = body.default_embedding_provider
+    if "default_embedding_model" in sent:
+        row.default_embedding_model = body.default_embedding_model
+    if "allowed_model_families" in sent:
+        # Empty list normalises to null (no restriction) for clarity.
+        row.allowed_model_families = body.allowed_model_families or None
+
+    # Validate the (provider, model) pair post-assign. Both must be
+    # set together OR both null — otherwise provider+null-model would
+    # produce a half-configured state.
+    if row.default_llm_provider and row.default_llm_model:
+        if find_llm_model(row.default_llm_provider, row.default_llm_model) is None:
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                400,
+                f"default_llm ({row.default_llm_provider}/{row.default_llm_model}) "
+                "is not in the model registry.",
+            )
+    if row.default_embedding_provider and row.default_embedding_model:
+        if find_embedding_model(
+            row.default_embedding_provider, row.default_embedding_model
+        ) is None:
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                400,
+                f"default_embedding ({row.default_embedding_provider}/"
+                f"{row.default_embedding_model}) is not in the model registry.",
+            )
 
     db.commit()
     db.refresh(row)
@@ -160,6 +338,21 @@ def update_policy(
             "mcp_pool_size": policy.mcp_pool_size,
             "rate_limit_requests_per_window": policy.rate_limit_requests_per_window,
             "rate_limit_window_seconds": policy.rate_limit_window_seconds,
+        },
+        flags={
+            "smart_04_lints_enabled": policy.smart_04_lints_enabled,
+            "smart_06_mcp_discovery_enabled": policy.smart_06_mcp_discovery_enabled,
+            "smart_02_pattern_library_enabled": policy.smart_02_pattern_library_enabled,
+            "smart_01_scenario_memory_enabled": policy.smart_01_scenario_memory_enabled,
+            "smart_01_strict_promote_gate_enabled": policy.smart_01_strict_promote_gate_enabled,
+            "smart_05_vector_docs_enabled": policy.smart_05_vector_docs_enabled,
+        },
+        models={
+            "default_llm_provider": policy.default_llm_provider,
+            "default_llm_model": policy.default_llm_model,
+            "default_embedding_provider": policy.default_embedding_provider,
+            "default_embedding_model": policy.default_embedding_model,
+            "allowed_model_families": policy.allowed_model_families,
         },
         source=dict(policy.source),
         updated_at=row.updated_at.isoformat() if row.updated_at else None,

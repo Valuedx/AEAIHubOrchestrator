@@ -18,10 +18,13 @@ Internal documentation for the AE AI Hub Orchestrator codebase. Start here and f
 | [Vertex AI Integration](vertex.md) | VERTEX-01 + VERTEX-02 end-to-end — ADC setup, per-tenant project routing, and the scope caveat around per-tenant *identity* (which is NOT what VERTEX-02 provides). **Read before making multi-tenant compliance decisions.** |
 | [Tenant Policies](tenant-policies.md) | ADMIN-01 + ADMIN-02 — per-tenant override of execution quota, snapshot retention, MCP pool size, API rate limit. Env vars become fallbacks. Section 4 enumerates every other env var and why it was / wasn't moved. |
 | [Startup Checks & Readiness](startup-checks.md) | STARTUP-01 — seven preflight checks (DB + migrations, Redis, Celery workers, RLS posture, auth-mode coherence, vault key, MCP default probe). Results surface in uvicorn logs, `/health/ready` JSON, and a UI banner. **Read before debugging a "my workflow sat at queued forever" problem.** |
+| [Workflow Authoring Copilot](copilot.md) | COPILOT-01 — draft-workspace safety boundary (migration `0022`), pure tool layer (`add_node`, `connect_nodes`, `validate_graph`, …), optimistic-concurrency `version` column, `base_version_at_fork` race guard on `/promote`. Agent runner, chat pane, and debug-loop are COPILOT-01b/02/03. |
+| [Cyclic Graphs](cyclic-graphs.md) | CYCLIC-01 — loopback edges (`type: "loopback"` + `maxIterations`) for agent↔tool, reflection, and retry patterns. Forward subgraph stays a DAG; validator + copilot lints keep cycles authorable; canvas auto-detects drag-to-ancestor. |
+| [Human-in-the-Loop](hitl.md) | HITL-01 — approval audit log, claimed-identity capture, pending-approvals toolbar badge, timeout enforcement (planned). |
 | [RAG & Knowledge Base](rag-knowledge-base.md) | Vector stores, embedding providers, chunking strategies, ingestion and retrieval pipelines |
 | [Frontend Guide](frontend-guide.md) | React component tree, Zustand stores, canvas, toolbar, and sidebar |
 | [Deployment](deployment.md) | Docker Compose, environment variables, Celery, migrations |
-| [Security](security.md) | Authentication modes, multi-tenancy, Row Level Security, vault, rate limits |
+| [Security](security.md) | Authentication modes (dev / jwt / **local password LOCAL-AUTH-01** / OIDC), multi-tenancy, Row Level Security, vault, rate limits |
 | [Feature Roadmap](feature-roadmap.md) | Gap analysis vs. competitors, 20 missing features with priority and status |
 
 ## Quick orientation
@@ -35,7 +38,7 @@ AEAIHubOrchestrator/
 │   │   ├── models/     SQLAlchemy ORM models, including advanced memory tables
 │   │   ├── security/   JWT, vault, rate limiter, tenant helpers
 │   │   └── workers/    Celery app, tasks, Beat scheduler
-│   ├── alembic/        Migration scripts (0000 – 0019)
+│   ├── alembic/        Migration scripts (0000 – 0033)
 │   └── main.py         App entrypoint, router wiring
 ├── frontend/           React + Vite + React Flow
 │   └── src/
@@ -52,5 +55,5 @@ AEAIHubOrchestrator/
 
 - **Env vars** use the prefix `ORCHESTRATOR_` (e.g. `ORCHESTRATOR_DATABASE_URL`).
 - **API paths** are relative to the backend root (default `http://localhost:8000`).
-- **Tenant ID** is passed via `X-Tenant-Id` header in dev mode, or extracted from a JWT in production.
+- **Tenant ID** is passed via `X-Tenant-Id` header in dev mode, or extracted from a JWT in production. Local-password mode (`ORCHESTRATOR_AUTH_MODE=local`) mints the JWT via `POST /auth/local/login`; see [Security](security.md) §Local password mode.
 - **Memory docs** live in [Memory Management](memory-management.md); use that page for the normalized conversation and semantic/entity memory model introduced in migration `0012`.

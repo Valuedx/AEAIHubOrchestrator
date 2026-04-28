@@ -1,5 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { AgenticNodeData } from "@/types/nodes";
+import { TEMPLATE_TIER_FAST } from "@/lib/modelTiers";
 
 /**
  * IT / customer helpdesk - single complete vertical (router, ForEach, HITL).
@@ -29,13 +30,38 @@ import type { AgenticNodeData } from "@/types/nodes";
  */
 export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[] } = {
   nodes: [
+    // TMPL-05 — business-framing sticky note. Sits above the trigger
+    // so it's the first thing the author sees on load. Numbers are
+    // parameterised by the 1,000 tickets/day assumption below.
+    {
+      id: "sticky_overview",
+      type: "stickyNote",
+      position: { x: 0, y: -220 },
+      width: 540,
+      height: 196,
+      data: {
+        text:
+          "HELPDESK AUTO-TRIAGE\n" +
+          "Route every inbound ticket to the right specialist in < 2 seconds, with a human gate on risky technical replies.\n" +
+          "\n" +
+          "For: support ops · customer experience · IT leadership\n" +
+          "\n" +
+          "At 1,000 tickets/day:\n" +
+          "• Triage time: ~20 min → < 2 s per ticket  (saves ~330 agent-hours/day)\n" +
+          "• First-response SLA on technical queue: 4 h → ~8 min\n" +
+          "• Escalation accuracy: ~65% → ~92% with the L2 HITL review gate\n" +
+          "\n" +
+          "Needs: Slack/Teams webhook · MCP runbook server · HITL approver allowlist",
+        color: "blue",
+      },
+    },
     {
       id: "node_1",
       type: "agenticNode",
       position: { x: 0, y: 220 },
       data: {
         label: "Webhook Trigger",
-        displayName: "Helpdesk intake",
+        displayName: "Receive ticket from customer",
         nodeCategory: "trigger",
         config: {
           icon: "webhook",
@@ -65,16 +91,55 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       type: "agenticNode",
       position: { x: 500, y: 220 },
       data: {
-        label: "LLM Router",
-        displayName: "Classify: orders / technical / general",
-        nodeCategory: "agent",
+        label: "Intent Classifier",
+        displayName: "Understand what the customer needs",
+        nodeCategory: "nlp",
         config: {
-          icon: "route",
-          provider: "google",
-          model: "gemini-2.5-flash",
-          intents: ["orders_and_shipping", "technical_issue", "general_inquiry"],
+          icon: "target",
+          utteranceExpression: "trigger.message",
+          intents: [
+            {
+              name: "orders_and_shipping",
+              description:
+                "Questions about orders, billing, returns, refunds, shipment status, or tracking.",
+              examples: [
+                "where is my order",
+                "I want a refund",
+                "can you change my shipping address",
+                "invoice is wrong",
+              ],
+              priority: 100,
+            },
+            {
+              name: "technical_issue",
+              description:
+                "Product errors, crashes, login issues, outages, diagnostics — anything requiring troubleshooting.",
+              examples: [
+                "my app keeps crashing",
+                "can't log in",
+                "seeing error 502 on the dashboard",
+                "VPN disconnects every hour",
+              ],
+              priority: 100,
+            },
+            {
+              name: "general_inquiry",
+              description:
+                "Greetings, vague questions, out-of-scope messages, or general clarification requests.",
+              examples: [
+                "hello",
+                "what can you do",
+                "is there a human I can talk to",
+              ],
+              priority: 50,
+            },
+          ],
+          mode: "hybrid",
+          ...TEMPLATE_TIER_FAST,
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          confidenceThreshold: 0.6,
           historyNodeId: "node_2",
-          userMessageExpression: "trigger.message",
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -84,14 +149,24 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       type: "agenticNode",
       position: { x: 760, y: 220 },
       data: {
-        label: "Condition",
-        displayName: "If orders & shipping",
+        label: "Switch",
+        displayName: "Hand off to the right team",
         nodeCategory: "logic",
         config: {
-          icon: "git-branch",
-          condition: 'node_3.intent == "orders_and_shipping"',
-          trueLabel: "Orders / shipping",
-          falseLabel: "Else",
+          icon: "git-fork",
+          // NODES-01.a Switch replaces the earlier LLM Router + two
+          // serial Condition nodes. ``intents[0]`` is Intent
+          // Classifier's top-scoring label; unmatched values flow
+          // through the amber default handle (hooked to the general
+          // path so unknown classes still get a polite reply).
+          expression: "node_3.intents[0]",
+          cases: [
+            { value: "orders_and_shipping", label: "Orders / shipping" },
+            { value: "technical_issue", label: "Technical" },
+            { value: "general_inquiry", label: "General" },
+          ],
+          defaultLabel: "Unknown",
+          matchMode: "equals",
         },
         status: "idle",
       } satisfies AgenticNodeData,
@@ -102,12 +177,11 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 1020, y: 20 },
       data: {
         label: "LLM Agent",
-        displayName: "Orders & billing assistant",
+        displayName: "Answer orders / billing / shipping",
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are a helpdesk agent for orders, billing, returns, and shipment status. " +
             "Use only the customer message and conversation history in context. " +
@@ -122,41 +196,33 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       } satisfies AgenticNodeData,
     },
     {
-      id: "node_6",
-      type: "agenticNode",
-      position: { x: 1020, y: 260 },
-      data: {
-        label: "Condition",
-        displayName: "Else if technical issue",
-        nodeCategory: "logic",
-        config: {
-          icon: "git-branch",
-          condition: 'node_3.intent == "technical_issue"',
-          trueLabel: "Technical",
-          falseLabel: "General",
-        },
-        status: "idle",
-      } satisfies AgenticNodeData,
-    },
-    {
       id: "node_7",
       type: "agenticNode",
       position: { x: 1240, y: 140 },
       data: {
         label: "ReAct Agent",
-        displayName: "L1 technical support (ReAct + tools)",
+        displayName: "Diagnose technical issue (L1 + tools)",
         nodeCategory: "agent",
         config: {
           icon: "repeat",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You are L1 IT support. Gather: product, OS/version, error text, and what changed recently. " +
             "Suggest concrete troubleshooting in order. If tools are available (MCP), use them for status or runbooks. " +
             "If severity is high (data loss, outage, security), say you are escalating and summarize for L2. " +
             "Stay within safe guidance; do not ask for passwords.",
           maxIterations: 10,
+          // MCP tool hints (SMART-06): populate ``tools`` with the
+          // specific names the tenant's default MCP server exposes
+          // (open the MCP Servers dialog → pick a server → copy tool
+          // names). Leave ``mcpServerLabel`` blank to resolve to the
+          // tenant default; set it to a label if you have multiple
+          // registered servers (e.g. "runbooks", "diagnostics").
+          // Empty list here = ReAct calls no tools (pure reasoning
+          // loop). See codewiki/mcp-audit.md for the per-tenant
+          // registry and MCP-06 fingerprint-drift protections.
           tools: [],
+          mcpServerLabel: "",
           historyNodeId: "node_2",
           memoryEnabled: true,
         },
@@ -169,12 +235,11 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 1240, y: 360 },
       data: {
         label: "LLM Agent",
-        displayName: "General & deflection assistant",
+        displayName: "Answer general / small-talk",
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You handle general and out-of-scope messages: greetings, vague questions, or small talk. " +
             "Acknowledge politely, clarify how the helpdesk can help, and point to self-service or opening a ticket. " +
@@ -193,7 +258,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 240, y: 440 },
       data: {
         label: "ForEach",
-        displayName: "Parallel SLA checklist",
+        displayName: "Check SLA items in parallel",
         nodeCategory: "logic",
         config: {
           icon: "repeat",
@@ -213,12 +278,11 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 520, y: 440 },
       data: {
         label: "LLM Agent",
-        displayName: "Internal note per checklist step",
+        displayName: "Draft internal note for this SLA step",
         nodeCategory: "agent",
         config: {
           icon: "brain",
-          provider: "google",
-          model: "gemini-2.5-flash",
+          ...TEMPLATE_TIER_FAST,
           systemPrompt:
             "You write **internal** ticket notes for the helpdesk, not customer-facing text. " +
             "The user message includes **Current loop item** JSON with fields `step` and `ask`. " +
@@ -286,7 +350,7 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
       position: { x: 1480, y: 140 },
       data: {
         label: "Human Approval",
-        displayName: "L2 review before customer send",
+        displayName: "L2 reviews before sending to customer",
         nodeCategory: "action",
         config: {
           icon: "user-check",
@@ -350,40 +414,43 @@ export const EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW: { nodes: Node[]; edges: Edge[
     { id: "e_1_2", source: "node_1", target: "node_2" },
     { id: "e_2_3", source: "node_2", target: "node_3" },
     { id: "e_3_4", source: "node_3", target: "node_4" },
+    // Switch fan-out: edge.sourceHandle equals the matched case value.
+    // Unmatched values flow through the 'default' handle into the
+    // general/deflection agent — never drops a customer message.
     {
       id: "e_4_5",
       source: "node_4",
       target: "node_5",
-      sourceHandle: "true",
-      label: "Yes",
-      style: { stroke: "#22c55e", strokeWidth: 2 },
+      sourceHandle: "orders_and_shipping",
+      label: "Orders / shipping",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
       animated: true,
     },
     {
-      id: "e_4_6",
+      id: "e_4_7",
       source: "node_4",
-      target: "node_6",
-      sourceHandle: "false",
-      label: "No",
-      style: { stroke: "#ef4444", strokeWidth: 2 },
-      animated: true,
-    },
-    {
-      id: "e_6_7",
-      source: "node_6",
       target: "node_7",
-      sourceHandle: "true",
-      label: "Yes",
-      style: { stroke: "#22c55e", strokeWidth: 2 },
+      sourceHandle: "technical_issue",
+      label: "Technical",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
       animated: true,
     },
     {
-      id: "e_6_8",
-      source: "node_6",
+      id: "e_4_8",
+      source: "node_4",
       target: "node_8",
-      sourceHandle: "false",
-      label: "No",
-      style: { stroke: "#ef4444", strokeWidth: 2 },
+      sourceHandle: "general_inquiry",
+      label: "General",
+      style: { stroke: "#14b8a6", strokeWidth: 2 },
+      animated: true,
+    },
+    {
+      id: "e_4_8_default",
+      source: "node_4",
+      target: "node_8",
+      sourceHandle: "default",
+      label: "Unknown → general",
+      style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "4 3" },
       animated: true,
     },
     { id: "e_5_15", source: "node_5", target: "node_15" },

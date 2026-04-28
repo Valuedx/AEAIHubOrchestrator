@@ -1,3 +1,25 @@
+> - **SMART-02 — per-tenant accepted-patterns library (2026-04-22)**: `alembic upgrade head` applies migration `0026` — adds `copilot_accepted_patterns` table (tenant-scoped RLS) + `smart_02_pattern_library_enabled BOOLEAN DEFAULT TRUE` on `tenant_policies`. No new env vars beyond `ORCHESTRATOR_SMART_02_PATTERN_LIBRARY_ENABLED`. Every `/promote` save adds one row; retrieval is a single indexed top-50 candidate fetch per query. Cost-conscious tenants can PATCH `/api/v1/tenant-policy` to opt out.
+>
+> - **SMART-06 — MCP tool discovery for copilot (2026-04-22)**: `alembic upgrade head` applies migration `0025` (`smart_06_mcp_discovery_enabled BOOLEAN NOT NULL DEFAULT TRUE` on `tenant_policies`). Env fallback: `ORCHESTRATOR_SMART_06_MCP_DISCOVERY_ENABLED`. Opt-out per tenant via PATCH `/api/v1/tenant-policy`. Works against the same MCP servers you've already registered via the toolbar Globe icon (MCP-02); no new config needed. Agent uses the existing 5-minute `list_tools` cache.
+>
+> - **SMART-04 — proactive authoring lints (2026-04-22)**: After pulling, run `alembic upgrade head` — migration `0024` adds `smart_04_lints_enabled BOOLEAN NOT NULL DEFAULT TRUE` to `tenant_policies`. Zero new env vars; an optional `ORCHESTRATOR_SMART_04_LINTS_ENABLED` lets operators flip the process-wide default. Cost-conscious tenants can PATCH `/api/v1/tenant-policy` with `{"smart_04_lints_enabled": false}` to opt out (the existing TenantPolicyDialog in the toolbar will surface the toggle as part of the SMART-XX rollout).
+>
+> - **COPILOT-02.i — chat pane (2026-04-22)**: The workflow authoring copilot now has a user-facing chat pane. Click the Sparkles icon in the toolbar to open it. No new env vars, no migration, no backend changes — all the backend plumbing (01a / 01b.i / 01b.ii / 01b.iii / 01b.iv Google-Vertex) was already shipped on the same branch.
+>
+> - **COPILOT-01b.iii — docs grounding (2026-04-22)**: No migration, no new env vars, no service deps. The copilot now reads `codewiki/*.md` + `shared/node_registry.json` to ground its answers (concept questions, node-config recommendations). The index rebuilds from disk on each backend restart; local doc edits show up immediately. If you run the orchestrator in a container, make sure the `codewiki/` directory is included in the image — without it `search_docs` returns zero results but the service still boots.
+>
+> - **COPILOT-01b.ii.b — `execute_draft` + `get_execution_logs` (2026-04-22)**: The copilot can now trial-run drafts end-to-end. **Run `alembic upgrade head` after pulling** — migration `0023` adds `is_ephemeral BOOLEAN` to `workflow_definitions` (default FALSE; non-breaking for existing rows). No new env vars, no service dependencies. Ephemeral rows produced by copilot trial runs are excluded from the user-facing saved-workflows list, the scheduler's active-workflow scan, and the A2A agent card. For long-term DB hygiene, operators should schedule `app.copilot.runner_tools.cleanup_ephemeral_workflows(db, older_than_seconds=7*86400)` periodically (no Beat task is auto-registered yet — follow-up).
+>
+> - **COPILOT — AutomationEdge handoff fork (2026-04-22)**: The copilot can now deflect deterministic RPA work to AutomationEdge. New optional env var `ORCHESTRATOR_AE_COPILOT_URL` — process-wide fallback deep-link to the AE Copilot (separate product). Per-tenant override lives on `tenant_integrations(system='automationedge').config_json.copilotUrl` (edit via the toolbar 🤖 Integrations dialog). Zero migration; the JSONB config field is already free-form. See [codewiki/automationedge.md §2c](codewiki/automationedge.md#2c-copilot-handoff-optional).
+>
+> - **COPILOT-01b.ii.a — `test_node` runner tool (2026-04-22)**: The copilot can now run a single node in isolation to debug its config without paying for a full workflow run. No new env vars, no migration, no frontend surface changes. The tool reuses the same `dispatch_node` path as the existing `POST /workflows/{id}/nodes/{node_id}/test` endpoint so credential / MCP / LLM resolution all behave identically to runtime. Next 01b slices: `execute_draft` + `get_execution_logs` (needs a small migration for `is_ephemeral` on `workflow_definitions`), RAG docs grounding, OpenAI provider.
+>
+> - **COPILOT-01b.iv — Google AI Studio + Vertex AI providers (2026-04-22)**: The copilot agent now supports Anthropic, Google AI Studio, and Vertex AI. Default model for Google and Vertex is `gemini-3.1-pro-preview-customtools` (the tool-calling-optimised Gemini 3.x endpoint). Set `LLM_GOOGLE_API_KEY` tenant secret or `ORCHESTRATOR_GOOGLE_API_KEY` env for AI Studio; Vertex uses ADC + the tenant's default row in `tenant_integrations(system='vertex')` for project/location (VERTEX-02). No new env vars or service dependencies — `google-genai>=1.0.0` is already in `requirements.txt`. Pick provider/model at `POST /api/v1/copilot/sessions`; the `GET /providers` endpoint lists supported providers and default models dynamically.
+>
+> - **COPILOT-01b.i Agent runner + session streaming (2026-04-22)**: Adds the LLM-driven half of the copilot. New API router at `/api/v1/copilot/sessions` (CRUD + `/turns` SSE streaming + `/providers` metadata). No new environment variables — Anthropic API key is resolved per-tenant through the existing ADMIN-03 resolver (set the `LLM_ANTHROPIC_API_KEY` tenant secret or `ORCHESTRATOR_ANTHROPIC_API_KEY` env fallback). No service dependencies beyond the `anthropic>=0.30.0` package already in `requirements.txt`. User-facing UI lands in COPILOT-02; today's surface is back-end only and driven by the typed frontend bindings in `frontend/src/lib/api.ts`.
+>
+> - **COPILOT-01a Draft-workspace foundation (2026-04-22)**: First slice of the workflow authoring copilot. Adds migration `0022` with three new tenant-scoped tables (`workflow_drafts`, `copilot_sessions`, `copilot_turns`) and a new API router at `/api/v1/copilot/drafts`. Run `alembic upgrade head` after pulling. No new environment variables; no new service dependencies. The agent runner itself (that actually drives an LLM through the tool surface) and the system-KB RAG ingestion land in COPILOT-01b — so nothing user-facing has changed yet. Full architecture + schema + HTTP surface documented in `codewiki/copilot.md`.
+>
 > - **RLS-01 Systemic `get_tenant_db` cutover (2026-04-21)**: Fixed a latent bug where nearly every tenant-scoped API endpoint used the tenant-unaware `get_db` dependency instead of `get_tenant_db`, so the `app.tenant_id` GUC was never set on the request session. Postgres superusers silently bypass all RLS policies, so the breakage stayed hidden until a tenant followed STARTUP-01's `rls_posture` warn check and switched the app DB role to a non-superuser — at which point `POST /api/v1/workflows` immediately 500-ed with `InsufficientPrivilege: new row violates row-level security policy`. Header-based endpoints now use `Depends(get_tenant_db)`; path-based A2A endpoints keep `Depends(get_db)` plus an explicit `set_tenant_context(db, path_tenant_id)` call (they can't use `get_tenant_db` because it reads the `X-Tenant-Id` header, not the URL path). The change is mandatory for any non-superuser deployment — **run the app under a non-superuser role going forward** (STARTUP-01 will keep warning you otherwise). New `tests/test_rls_dependency_wired.py` guards the wiring.
 >
 > - **ADMIN-03 Per-tenant LLM provider credentials (2026-04-21)**: Google AI Studio / OpenAI / Anthropic API keys (and the OpenAI base URL) can now be per-tenant. Keys live in the existing Fernet-encrypted `tenant_secrets` vault under four well-known names (`LLM_GOOGLE_API_KEY`, `LLM_OPENAI_API_KEY`, `LLM_OPENAI_BASE_URL`, `LLM_ANTHROPIC_API_KEY`). New `engine/llm_credentials_resolver` threads tenant_id into all seven chat/agent/stream call sites with env fallback. Dialog lives behind the toolbar **Key** icon — password-masked inputs, per-field source badges (tenant override / env default / not configured), clear-to-reset buttons. New read-only `GET /api/v1/llm-credentials` endpoint returns per-provider status **without** ever exposing secret values. Vertex continues to use ADC + per-tenant project routing (VERTEX-02) — ADMIN-03 is for AI Studio / OpenAI / Anthropic. Embedding paths still use env keys — follow-up if tenants need per-tenant embedding billing.
@@ -96,7 +118,7 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │
 ├── frontend/                       # React + TypeScript visual builder
 │   └── src/
-│       ├── App.tsx                 # Three-panel layout + OIDC auth gate
+│       ├── App.tsx                 # Three-panel layout + OIDC/local auth gate
 │       ├── store/
 │       │   ├── flowStore.ts        # Zustand canvas state
 │       │   └── workflowStore.ts    # Zustand workflow CRUD + execution
@@ -107,7 +129,7 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │       │   └── utils.ts            # Tailwind cn() utility
 │       └── components/
 │           ├── auth/
-│           │   └── LoginPage.tsx   # OIDC SSO login screen
+│           │   └── LoginPage.tsx   # OIDC SSO OR local username/password login screen
 │           ├── canvas/
 │           │   └── FlowCanvas.tsx  # React Flow canvas
 │           ├── nodes/
@@ -134,9 +156,9 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │   ├── main.py                     # App entry point (v0.8.0)
 │   ├── requirements.txt            # Python dependencies
 │   ├── alembic.ini                 # Migration config
-│   ├── alembic/versions/           # 0001 … 0019 — see §5.2
+│   ├── alembic/versions/           # 0001 … 0033 — see §5.2
 │   └── app/
-│       ├── config.py               # Settings from env (incl. OIDC)
+│       ├── config.py               # Settings from env (incl. OIDC + local-auth seed)
 │       ├── database.py             # SQLAlchemy setup
 │       ├── observability.py        # Langfuse tracing
 │       ├── api/
@@ -149,7 +171,9 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │       │   ├── schemas.py          # Pydantic request/response models
 │       │   ├── conversations.py    # Conversation session inspection
 │       │   ├── memory.py           # Memory profile CRUD + memory inspection
-│       │   └── auth.py             # OIDC Authorization Code + PKCE flow
+│       │   ├── auth.py             # OIDC Authorization Code + PKCE flow
+│       │   ├── auth_local.py       # LOCAL-AUTH-01 — POST /auth/local/login + GET /auth/me
+│       │   └── users.py            # LOCAL-AUTH-01 — admin user CRUD under /api/v1/users
 │       ├── engine/
 │       │   ├── dag_runner.py       # Ready-queue DAG executor (sticky-note filter in parse_graph)
 │       │   ├── node_handlers.py    # Per-type dispatch (pin short-circuit, mcpServerLabel)
@@ -168,13 +192,15 @@ The orchestrator can run on its own. The only external runtime contracts are:
 │       │   └── config_validator.py # Graph config validation
 │       ├── models/
 │       │   ├── workflow.py         # WorkflowDefinition, Instance, Snapshot, Log
-│       │   └── tenant.py           # TenantToolOverride, TenantSecret
+│       │   ├── tenant.py           # TenantToolOverride, TenantSecret
+│       │   └── user.py             # LOCAL-AUTH-01 — User (local password auth)
 │       ├── workers/
 │       │   ├── celery_app.py       # Celery configuration
 │       │   ├── tasks.py            # execute, resume, retry, resume_paused tasks
 │       │   └── scheduler.py        # Celery Beat cron scheduler + snapshot pruning
 │       └── security/
-│           ├── jwt_auth.py         # JWT creation + validation
+│           ├── jwt_auth.py         # JWT creation + validation (dev / jwt / local / oidc modes)
+│           ├── local_auth.py       # LOCAL-AUTH-01 — argon2 hashing + authenticate + admin seed
 │           ├── vault.py            # Fernet-encrypted credential vault
 │           ├── rate_limiter.py     # Per-tenant rate limiting
 │           └── tenant.py           # get_tenant_id dependency
@@ -282,6 +308,16 @@ ORCHESTRATOR_OIDC_CLIENT_ID=
 ORCHESTRATOR_OIDC_CLIENT_SECRET=
 ORCHESTRATOR_OIDC_REDIRECT_URI=http://localhost:8001/auth/oidc/callback
 ORCHESTRATOR_OIDC_TENANT_CLAIM=email
+
+# Optional — Local password auth (LOCAL-AUTH-01). Set auth_mode=local and
+# (on first boot only) seed a bootstrap admin via the env vars below.
+# After the admin row exists, change the password via the API instead.
+# Active Directory / LDAP binding is deferred to a follow-up revision.
+# ORCHESTRATOR_AUTH_MODE=local
+# ORCHESTRATOR_LOCAL_ADMIN_USERNAME=admin
+# ORCHESTRATOR_LOCAL_ADMIN_PASSWORD=change-me-in-production
+# ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID=default
+# ORCHESTRATOR_PASSWORD_MIN_LENGTH=8
 ```
 
 ---
@@ -318,6 +354,8 @@ This applies all revisions under `alembic/versions/`, including (among others):
 - **0017** — `async_jobs` (AutomationEdge poll queue with Diverted pause-the-clock accounting) + `tenant_integrations` (per-tenant external-system connection defaults) + `workflow_instances.suspended_reason` column
 - **0018** — **DV-07** — `workflow_definitions.is_active BOOLEAN NOT NULL DEFAULT TRUE`. Existing rows backfill to active; Schedule Triggers skip `is_active=false` workflows (manual Run / PATCH / duplicate still work)
 - **0019** — **MCP-02** — `tenant_mcp_servers` (per-tenant MCP registry with `auth_mode` discriminator + partial unique index enforcing one default per tenant) + empty `tenant_mcp_server_tool_fingerprints` side table forward-declared for MCP-06 drift detection
+- **0020–0032** — tenant policies, copilot drafts/sessions, accepted patterns, test scenarios, approval audit log, suspended-at timestamps, model-override columns (see individual migration files)
+- **0033** — **LOCAL-AUTH-01** — `users` table for local password authentication (tenant-scoped argon2id password_hash, is_admin flag, disabled flag, case-insensitive `(tenant_id, lower(username))` unique index, RLS enabled + forced)
 
 Use `alembic current` to verify the DB revision after upgrading.
 
@@ -497,6 +535,57 @@ npm run dev
 
 Open **http://localhost:8080**. You can drag nodes, connect them, and configure properties. Workflow execution requires the backend services.
 
+### 6.3 Local password auth mode — first-boot walkthrough (LOCAL-AUTH-01)
+
+Use this when you want the orchestrator to own usernames/passwords directly, without an external IdP. Active Directory / LDAP binding is deferred to a follow-up revision.
+
+1. **Set env vars** (backend `.env`):
+
+   ```env
+   ORCHESTRATOR_AUTH_MODE=local
+   ORCHESTRATOR_LOCAL_ADMIN_USERNAME=admin
+   ORCHESTRATOR_LOCAL_ADMIN_PASSWORD=a-sufficiently-long-password
+   ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID=default
+   ```
+
+   Frontend `.env.local`:
+
+   ```env
+   VITE_AUTH_MODE=local
+   VITE_TENANT_ID=default
+   ```
+
+2. **Run migrations to head** — adds `users` table with RLS (migration 0033):
+
+   ```bash
+   cd backend && alembic upgrade head
+   ```
+
+3. **Start the API.** On first boot the lifespan hook reads the seed env vars, creates the admin row under tenant `default`, and logs `local-auth: seeded admin user`. Subsequent boots are no-ops — changing the seed vars after the row exists has **no effect**.
+
+4. **Sign in.** Open the frontend, enter `default` / `admin` / your password. The token is stored in tab-scoped `sessionStorage` as `ae_access_token`.
+
+5. **Manage users via the admin API** (Bearer token from step 4 required; token must carry `is_admin: true`):
+
+   ```bash
+   # Create a regular user
+   curl -X POST http://localhost:8001/api/v1/users \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"username":"alice","password":"a-long-enough-passphrase","email":"alice@example.com","is_admin":false}'
+
+   # List users in the caller's tenant
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/v1/users
+
+   # Reset password
+   curl -X PUT http://localhost:8001/api/v1/users/$UID/password \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"password":"brand-new-passphrase"}'
+   ```
+
+   The endpoint refuses self-disable and self-delete, so a lone admin cannot accidentally lock the tenant out.
+
 ---
 
 ## 7. Environment Variables
@@ -520,7 +609,11 @@ Backend settings use the `ORCHESTRATOR_` prefix; frontend uses `VITE_` variables
 | `ORCHESTRATOR_OPENAI_API_KEY` | No | `""` | **Fallback** OpenAI API key when the tenant has no `LLM_OPENAI_API_KEY` vault row (ADMIN-03). |
 | `ORCHESTRATOR_OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | **Fallback** OpenAI-compatible base URL when the tenant has no `LLM_OPENAI_BASE_URL` vault row. |
 | `ORCHESTRATOR_ANTHROPIC_API_KEY` | No | `""` | **Fallback** Anthropic API key when the tenant has no `LLM_ANTHROPIC_API_KEY` vault row (ADMIN-03). |
-| `ORCHESTRATOR_AUTH_MODE` | No | `dev` | `dev` (X-Tenant-Id header) or `jwt` (Bearer token) |
+| `ORCHESTRATOR_AUTH_MODE` | No | `dev` | `dev` (X-Tenant-Id header), `jwt` (Bearer token), or `local` (username/password against the `users` table — issues JWT). OIDC is an additive layer toggled independently by `ORCHESTRATOR_OIDC_ENABLED`. |
+| `ORCHESTRATOR_PASSWORD_MIN_LENGTH` | No | `8` | Minimum password length for local auth (LOCAL-AUTH-01). |
+| `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` | No | `""` | Bootstrap admin username, seeded on first boot into `auth_mode=local`. Empty disables seeding. |
+| `ORCHESTRATOR_LOCAL_ADMIN_PASSWORD` | No | `""` | Bootstrap admin password. Only consulted when the seed admin row doesn't yet exist; changing it later has no effect — use the password-reset endpoint. |
+| `ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID` | No | `default` | Tenant the bootstrap admin is created under. |
 | `ORCHESTRATOR_VAULT_KEY` | No | `""` | Fernet encryption key for credential vault |
 | `ORCHESTRATOR_RATE_LIMIT_REQUESTS` | No | `100` | **Fallback** max API requests per tenant per window when no `tenant_policies.rate_limit_requests_per_window` override exists (ADMIN-02). |
 | `ORCHESTRATOR_RATE_LIMIT_WINDOW` | No | `1 minute` | **DEPRECATED** — slowapi-format string, not actually consumed post-ADMIN-02. Use `ORCHESTRATOR_RATE_LIMIT_WINDOW_SECONDS` instead. |
@@ -645,10 +738,24 @@ ORCHESTRATOR_REDIS_URL=redis://redis:6379/0
 ORCHESTRATOR_SECRET_KEY=change-me-in-production
 ORCHESTRATOR_USE_CELERY=true
 
-# Security hardening
+# Security hardening — choose ONE of the three production auth modes:
+#
+#   jwt   — pre-issued Bearer tokens minted by an external IdP / service.
+#   local — built-in username/password login against the ``users`` table.
+#   oidc  — set ORCHESTRATOR_OIDC_ENABLED=true and configure the OIDC_* vars.
+#
+# The three are not mutually exclusive at the code level (OIDC adds a
+# /auth/oidc router on top of whichever mode resolves tenant_id), but
+# pick one primary flow for operators.
 ORCHESTRATOR_AUTH_MODE=jwt
 ORCHESTRATOR_VAULT_KEY=...
 ORCHESTRATOR_CORS_ORIGINS=["https://your-orchestrator-ui.example.com"]
+
+# If ORCHESTRATOR_AUTH_MODE=local, seed the bootstrap admin on first boot.
+# Only the very first boot with an empty ``users`` table consumes these.
+# ORCHESTRATOR_LOCAL_ADMIN_USERNAME=admin
+# ORCHESTRATOR_LOCAL_ADMIN_PASSWORD=change-me-in-production
+# ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID=default
 ```
 
 3. **Run migrations** (once per deploy):
@@ -671,7 +778,7 @@ alembic upgrade head
 |----------|----------|---------|-------------|
 | `VITE_API_URL` | No | `http://localhost:8001` | Backend base URL |
 | `VITE_TENANT_ID` | No | `default` | Tenant ID sent as `X-Tenant-Id` in dev mode |
-| `VITE_AUTH_MODE` | No | `""` | Set to `oidc` to show the SSO login gate and use Bearer tokens |
+| `VITE_AUTH_MODE` | No | `""` | Set to `oidc` to show the SSO login gate or `local` to show a username/password login form. Both use Bearer tokens stored tab-scoped in `sessionStorage`. |
 
 ---
 

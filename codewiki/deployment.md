@@ -96,7 +96,7 @@ All backend settings use the `ORCHESTRATOR_` prefix via Pydantic Settings. They 
 | `ORCHESTRATOR_REDIS_URL` | `redis://localhost:6379/0` | Redis URL for Celery |
 | `ORCHESTRATOR_SECRET_KEY` | `change-me-in-production` | JWT signing key |
 | `ORCHESTRATOR_CORS_ORIGINS` | `["http://localhost:8080", "http://localhost:8082"]` | Allowed CORS origins |
-| `ORCHESTRATOR_AUTH_MODE` | `dev` | `dev` (header-based) or `jwt` (Bearer token) |
+| `ORCHESTRATOR_AUTH_MODE` | `dev` | `dev` (`X-Tenant-Id` header), `jwt` (pre-issued Bearer), or `local` (username/password — LOCAL-AUTH-01). OIDC is additive via `ORCHESTRATOR_OIDC_ENABLED` regardless of mode. |
 | `ORCHESTRATOR_USE_CELERY` | `false` | Enable Celery worker; false = in-process threads |
 
 ### LLM providers
@@ -152,6 +152,17 @@ All backend settings use the `ORCHESTRATOR_` prefix via Pydantic Settings. They 
 | `ORCHESTRATOR_OIDC_TENANT_CLAIM` | `email` | ID token claim used as tenant_id |
 | `ORCHESTRATOR_OIDC_SCOPES` | `openid email profile` | OAuth scopes |
 
+### Local password auth (LOCAL-AUTH-01, optional)
+
+Set `ORCHESTRATOR_AUTH_MODE=local` to activate. Active Directory / LDAP binding is explicitly deferred; see [Security](security.md) §Local password mode.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHESTRATOR_PASSWORD_MIN_LENGTH` | `8` | Minimum password length enforced at create / reset time |
+| `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` | `""` | Bootstrap admin username — seeded once on first boot into `auth_mode=local` |
+| `ORCHESTRATOR_LOCAL_ADMIN_PASSWORD` | `""` | Bootstrap admin password — consumed only when the seed row does not yet exist |
+| `ORCHESTRATOR_LOCAL_ADMIN_TENANT_ID` | `default` | Tenant the bootstrap admin is created under |
+
 ### Observability
 
 | Variable | Default | Description |
@@ -175,7 +186,7 @@ Set in a `.env` file in the `frontend/` directory.
 |----------|---------|-------------|
 | `VITE_API_URL` | `http://localhost:8000` | Backend API base URL |
 | `VITE_TENANT_ID` | `default` | Tenant ID for dev mode |
-| `VITE_AUTH_MODE` | `dev` | `dev` or `oidc` |
+| `VITE_AUTH_MODE` | `dev` | `dev` (headers only), `oidc` (SSO login gate), or `local` (username/password gate — LOCAL-AUTH-01) |
 | `VITE_OIDC_AUTHORITY` | — | OIDC provider URL |
 | `VITE_OIDC_CLIENT_ID` | — | OIDC client ID |
 
@@ -239,7 +250,7 @@ Key packages: `react`, `@xyflow/react`, `zustand`, `tailwindcss`, `lucide-react`
 
 1. **Set `ORCHESTRATOR_SECRET_KEY`** to a strong random value for JWT signing.
 2. **Set `ORCHESTRATOR_VAULT_KEY`** to a Fernet key for encrypting tenant secrets.
-3. **Switch `ORCHESTRATOR_AUTH_MODE`** to `jwt` or enable OIDC for real authentication.
+3. **Switch `ORCHESTRATOR_AUTH_MODE`** to `jwt` (external IdP), `local` (built-in username/password — seed a bootstrap admin via `ORCHESTRATOR_LOCAL_ADMIN_USERNAME` / `_PASSWORD` on first boot), or enable OIDC SSO for real authentication.
 4. **Enable Celery** (`ORCHESTRATOR_USE_CELERY=true`) for production workloads to avoid blocking the API server.
 5. **Use `pgvector`** (not FAISS) for knowledge base storage in production — FAISS indexes are ephemeral in containerized environments.
 6. **Configure CORS origins** to match your actual frontend URL.

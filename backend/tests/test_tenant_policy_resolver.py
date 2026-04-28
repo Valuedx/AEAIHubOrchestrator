@@ -37,6 +37,17 @@ def _row(
     mcp_pool_size: int | None = None,
     rate_limit_requests_per_window: int | None = None,
     rate_limit_window_seconds: int | None = None,
+    smart_04_lints_enabled: bool | None = None,
+    smart_06_mcp_discovery_enabled: bool | None = None,
+    smart_02_pattern_library_enabled: bool | None = None,
+    smart_01_scenario_memory_enabled: bool | None = None,
+    smart_01_strict_promote_gate_enabled: bool | None = None,
+    smart_05_vector_docs_enabled: bool | None = None,
+    default_llm_provider: str | None = None,
+    default_llm_model: str | None = None,
+    default_embedding_provider: str | None = None,
+    default_embedding_model: str | None = None,
+    allowed_model_families: list[str] | None = None,
 ):
     row = MagicMock()
     row.execution_quota_per_hour = execution_quota_per_hour
@@ -44,6 +55,21 @@ def _row(
     row.mcp_pool_size = mcp_pool_size
     row.rate_limit_requests_per_window = rate_limit_requests_per_window
     row.rate_limit_window_seconds = rate_limit_window_seconds
+    # SMART-XX flags — None means "column exists on the row but no
+    # value was set for the override", matching nullable-column
+    # semantics (resolver should treat it as env fallback).
+    row.smart_04_lints_enabled = smart_04_lints_enabled
+    row.smart_06_mcp_discovery_enabled = smart_06_mcp_discovery_enabled
+    row.smart_02_pattern_library_enabled = smart_02_pattern_library_enabled
+    row.smart_01_scenario_memory_enabled = smart_01_scenario_memory_enabled
+    row.smart_01_strict_promote_gate_enabled = smart_01_strict_promote_gate_enabled
+    row.smart_05_vector_docs_enabled = smart_05_vector_docs_enabled
+    # MODEL-01.e — per-tenant model defaults + family allowlist.
+    row.default_llm_provider = default_llm_provider
+    row.default_llm_model = default_llm_model
+    row.default_embedding_provider = default_embedding_provider
+    row.default_embedding_model = default_embedding_model
+    row.allowed_model_families = allowed_model_families
     return row
 
 
@@ -70,6 +96,20 @@ class TestEnvFallback:
             "mcp_pool_size": "env_default",
             "rate_limit_requests_per_window": "env_default",
             "rate_limit_window_seconds": "env_default",
+            # SMART-XX flags (every SMART-XX ticket that ships adds
+            # its key here).
+            "smart_04_lints_enabled": "env_default",
+            "smart_06_mcp_discovery_enabled": "env_default",
+            "smart_02_pattern_library_enabled": "env_default",
+            "smart_01_scenario_memory_enabled": "env_default",
+            "smart_01_strict_promote_gate_enabled": "env_default",
+            "smart_05_vector_docs_enabled": "env_default",
+            # MODEL-01.e — per-tenant model defaults + allowlist.
+            "default_llm_provider": "env_default",
+            "default_llm_model": "env_default",
+            "default_embedding_provider": "env_default",
+            "default_embedding_model": "env_default",
+            "allowed_model_families": "env_default",
         }
 
     def test_no_row_for_tenant_returns_env_defaults(self, patched_settings):
@@ -122,6 +162,20 @@ class TestRowOverrides:
             "mcp_pool_size": "tenant_policy",
             "rate_limit_requests_per_window": "tenant_policy",
             "rate_limit_window_seconds": "tenant_policy",
+            # SMART-XX flags — row fixture doesn't set them so they
+            # fall through to env_default.
+            "smart_04_lints_enabled": "env_default",
+            "smart_06_mcp_discovery_enabled": "env_default",
+            "smart_02_pattern_library_enabled": "env_default",
+            "smart_01_scenario_memory_enabled": "env_default",
+            "smart_01_strict_promote_gate_enabled": "env_default",
+            "smart_05_vector_docs_enabled": "env_default",
+            # MODEL-01.e — row fixture doesn't set them.
+            "default_llm_provider": "env_default",
+            "default_llm_model": "env_default",
+            "default_embedding_provider": "env_default",
+            "default_embedding_model": "env_default",
+            "allowed_model_families": "env_default",
         }
 
     def test_partial_override_inherits_missing_fields_from_env(self, patched_settings):

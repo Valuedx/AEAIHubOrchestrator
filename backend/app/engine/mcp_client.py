@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any
 
 from app.engine.mcp_server_resolver import (
@@ -215,27 +216,60 @@ async def _list_tools_async(
 
 # ---------------------------------------------------------------------------
 # Sync wrappers
+#
+# The MCP SDK binds its AnyIO task-group + streamable-HTTP transport to
+# whichever event loop happens to be running when the session is
+# created. The old implementation spun up a **new** loop (via
+# ``asyncio.run``) on a throwaway worker thread for every sync call,
+# which meant:
+#
+#   1. Concurrent sync callers raced to register a "current" loop.
+#   2. Pooled sessions created on loop A couldn't be reused from loop B
+#      — the task group was bound to A, which no longer existed.
+#   3. ``list_tools`` sometimes returned empty because the session
+#      initialization completed on a loop that was already being torn
+#      down before the response arrived.
+#
+# Fix: a single module-level event loop running in a daemon background
+# thread. ``asyncio.run_coroutine_threadsafe`` lets any number of sync
+# callers (FastAPI handler threads, Celery workers, in-process DAG
+# threads) submit work to it safely. Pools and transports stay pinned
+# to one loop for the life of the process. Mirrors the pattern already
+# in use for ``app.engine.embedding_provider``.
 # ---------------------------------------------------------------------------
 
 
+_loop: asyncio.AbstractEventLoop | None = None
+_loop_lock = threading.Lock()
+
+
 def _get_or_create_loop() -> asyncio.AbstractEventLoop:
-    try:
-        loop = asyncio.get_running_loop()
-        return loop
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
+    global _loop
+    with _loop_lock:
+        if _loop is None or _loop.is_closed():
+            _loop = asyncio.new_event_loop()
+            t = threading.Thread(
+                target=_loop.run_forever,
+                name="mcp-event-loop",
+                daemon=True,
+            )
+            t.start()
+        return _loop
 
 
 def _run_async(coro, timeout: float):
+    """Submit *coro* to the dedicated background loop and block until it
+    finishes (or *timeout* seconds elapse).
+
+    Callers are always sync: FastAPI threadpool handlers, Celery
+    workers, in-process DAG worker threads. ``run_coroutine_threadsafe``
+    is the only supported way to cross the loop boundary from a
+    non-loop thread; it also handles reentrancy cleanly if the loop
+    ever runs in the calling thread's process.
+    """
     loop = _get_or_create_loop()
-    if loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=timeout)
-    return loop.run_until_complete(coro)
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
 
 
 def call_tool(
@@ -250,7 +284,7 @@ def call_tool(
         target = resolve_mcp_server(tenant_id, server_label)
         return _run_async(
             _call_tool_async(tool_name, arguments, target, tenant_id),
-            timeout=120,
+            timeout=60,
         )
     except Exception as exc:
         logger.error("MCP call_tool(%s) failed: %s", tool_name, exc)

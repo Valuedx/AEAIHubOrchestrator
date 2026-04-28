@@ -81,7 +81,11 @@ class TestGoogleClientFactory:
 
         # Recorded constructor kwargs — this is the whole point of the
         # Vertex backend: ``vertexai=True`` + project + location, no api_key.
-        assert client.init_kwargs == {
+        # (http_options is asserted separately below.)
+        init_kwargs_without_http = {
+            k: v for k, v in client.init_kwargs.items() if k != "http_options"
+        }
+        assert init_kwargs_without_http == {
             "vertexai": True,
             "project": "my-proj",
             "location": "europe-west4",
@@ -103,12 +107,48 @@ class TestGoogleClientFactory:
              patch("google.genai.Client", _FakeGenaiClient):
             client = _google_client("genai")
 
-        assert client.init_kwargs == {"api_key": "key-123"}
+        init_kwargs_without_http = {
+            k: v for k, v in client.init_kwargs.items() if k != "http_options"
+        }
+        assert init_kwargs_without_http == {"api_key": "key-123"}
 
     def test_unknown_backend_raises(self):
         from app.engine.llm_providers import _google_client
         with pytest.raises(ValueError, match="Unknown google backend"):
             _google_client("bedrock")
+
+    def test_client_carries_configured_read_timeout(self):
+        """Regression: google-genai's default 5 s httpx read timeout is too
+        short for Gemini 3.1 Pro tool-calling round-trips (30-90 s common).
+        The factory must pass ``http_options.timeout`` (in milliseconds)
+        equal to ``settings.google_llm_timeout_seconds * 1000`` on BOTH
+        backends so copilot calls on Vertex don't raise ``httpx.ReadTimeout``.
+        """
+        from app.config import settings
+        from app.engine.llm_providers import _google_client
+
+        with patch.object(settings, "vertex_project", "proj"), \
+             patch.object(settings, "vertex_location", "us-central1"), \
+             patch.object(settings, "google_llm_timeout_seconds", 180), \
+             patch("google.genai.Client", _FakeGenaiClient):
+            client = _google_client("vertex")
+
+        http_options = client.init_kwargs.get("http_options")
+        assert http_options is not None, (
+            "_google_client must pass http_options so httpx doesn't use "
+            "the 5 s default read timeout"
+        )
+        assert http_options.timeout == 180_000, (
+            "http_options.timeout should be set in milliseconds "
+            f"(got {http_options.timeout!r} — expected 180_000)"
+        )
+
+        # Same contract on the genai backend.
+        with patch.object(settings, "google_api_key", "k"), \
+             patch.object(settings, "google_llm_timeout_seconds", 60), \
+             patch("google.genai.Client", _FakeGenaiClient):
+            client = _google_client("genai")
+        assert client.init_kwargs["http_options"].timeout == 60_000
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +355,11 @@ class TestPerTenantVertexTarget:
             client = _google_client("vertex", tenant_id="tenant-x")
 
         # The tenant row beat the env default — this is the whole point.
-        assert client.init_kwargs == {
+        # http_options is asserted in its own test.
+        init_kwargs_without_http = {
+            k: v for k, v in client.init_kwargs.items() if k != "http_options"
+        }
+        assert init_kwargs_without_http == {
             "vertexai": True,
             "project": "tenant-x-proj",
             "location": "europe-west4",

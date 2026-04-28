@@ -103,7 +103,109 @@ def validate_graph_configs(graph_json: dict) -> list[str]:
         if label == "Sub-Workflow":
             warnings.extend(_validate_sub_workflow(node_id, config, graph_json))
 
+    # CYCLIC-01.c — graph-level loopback edge checks. Run once per
+    # graph (not per node) because the rules are about edges, not
+    # about node configs.
+    warnings.extend(_validate_loopback_edges(graph_json))
+
     return warnings
+
+
+def _validate_loopback_edges(graph_json: dict) -> list[str]:
+    """Four hard rules that fail save if violated:
+
+    1. ``maxIterations`` must be an integer in [1, 100].
+    2. ``LOOPBACK_NO_EXIT`` — cycle body must have at least one
+       forward edge exiting the cycle. Without an exit, the only
+       termination is the iteration cap, which is almost always a
+       bug.
+    3. Only one loopback edge per source node. If an author needs
+       two different branches to loop, they should use a Switch /
+       two Condition nodes — overloading a single source is the
+       kind of thing that reads easily in code but confuses the
+       runtime's per-edge iteration counters.
+    4. Loopback ``target`` must be a forward ancestor of ``source``.
+       Otherwise it's not a cycle, it's a forward skip that happened
+       to tag itself as a loopback.
+    """
+    from app.engine.cyclic_analysis import (
+        LOOPBACK_HARD_CAP,
+        cycle_body,
+        has_forward_exit,
+        is_forward_ancestor,
+        loopback_edges,
+        loopback_max_iterations,
+    )
+
+    errors: list[str] = []
+    edges = loopback_edges(graph_json)
+    if not edges:
+        return errors
+
+    # Rule 3 — duplicate-source detection.
+    seen_sources: dict[str, str] = {}  # source → edge_id of first loopback
+    for e in edges:
+        source = str(e.get("source"))
+        edge_id = str(e.get("id", f"{source}->{e.get('target')}"))
+        if source in seen_sources:
+            errors.append(
+                f"Loopback edge '{edge_id}': source '{source}' already has "
+                f"another loopback ('{seen_sources[source]}'). A single source "
+                "can only own one loopback — split into separate Condition "
+                "branches or add a Switch node."
+            )
+            continue
+        seen_sources[source] = edge_id
+
+    for e in edges:
+        source = str(e.get("source"))
+        target = str(e.get("target"))
+        edge_id = str(e.get("id", f"{source}->{target}"))
+
+        # Rule 1 — maxIterations range.
+        raw_max = loopback_max_iterations(e)
+        if raw_max is None and "maxIterations" in e:
+            # Present but non-integer.
+            errors.append(
+                f"Loopback edge '{edge_id}': 'maxIterations' must be an integer, "
+                f"got {e['maxIterations']!r}"
+            )
+        elif raw_max is not None:
+            if raw_max < 1:
+                errors.append(
+                    f"Loopback edge '{edge_id}': 'maxIterations' must be ≥ 1 "
+                    f"(got {raw_max}). An edge with zero iterations is dead."
+                )
+            elif raw_max > LOOPBACK_HARD_CAP:
+                errors.append(
+                    f"Loopback edge '{edge_id}': 'maxIterations' must be ≤ "
+                    f"{LOOPBACK_HARD_CAP} (got {raw_max}). The runtime clamps "
+                    "anyway; fix the graph so operators see the real cap."
+                )
+
+        # Rule 4 — target must be forward-ancestor of source.
+        if not is_forward_ancestor(target, source, graph_json):
+            errors.append(
+                f"Loopback edge '{edge_id}': target '{target}' is not reachable "
+                f"from source '{source}' via forward edges, so this isn't a "
+                "cycle. Did you mean a forward edge?"
+            )
+            # Skip the exit-path check for a malformed cycle — the
+            # body would be empty and the error message would be
+            # confusing.
+            continue
+
+        # Rule 2 — cycle body must have a forward exit.
+        body = cycle_body(target, source, graph_json)
+        if body and not has_forward_exit(body, graph_json):
+            errors.append(
+                f"Loopback edge '{edge_id}': cycle body {sorted(body)} has no "
+                "forward exit path. The only way out is the iteration cap, "
+                "which is almost always a bug. Add a Condition whose false "
+                "branch exits the cycle."
+            )
+
+    return errors
 
 
 def _validate_notification(node_id: str, config: dict) -> list[str]:

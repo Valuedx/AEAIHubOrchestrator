@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { useFlowStore } from "@/store/flowStore";
 import { getWorkflowTemplate } from "@/lib/templates";
+import { getCachedModelDefaults, resolveTemplateTiers } from "@/lib/useModels";
 import type { AgenticNodeData } from "@/types/nodes";
 import { nextBackoffMs, POLL_MAX_ATTEMPTS } from "@/lib/retry";
 import {
@@ -22,6 +23,7 @@ import {
   type LogLite,
   type NodeStatus,
 } from "@/lib/executionStatus";
+import { serialiseEdgesForSave, hydrateEdgesFromLoad } from "@/types/edges";
 
 interface WorkflowState {
   currentWorkflow: WorkflowOut | null;
@@ -121,12 +123,20 @@ interface WorkflowState {
   retryInstance: (workflowId: string, instanceId: string, fromNodeId?: string) => Promise<void>;
   /** Fetch and cache the context snapshot for a suspended instance. */
   fetchInstanceContext: (workflowId: string, instanceId: string) => Promise<void>;
-  /** Resume a suspended instance with optional approval payload and context patch. */
+  /** Resume a suspended instance with optional approval payload and context patch.
+   *  HITL-01.a — callers pass `options.approver`/`decision`/`reason` so the
+   *  audit log captures who approved / rejected and why. Omitting them is
+   *  back-compat with the v0 shape but produces an "anonymous" audit row. */
   resumeInstance: (
     workflowId: string,
     instanceId: string,
     approvalPayload: Record<string, unknown>,
     contextPatch?: Record<string, unknown>,
+    options?: {
+      approver?: string;
+      decision?: "approved" | "rejected";
+      reason?: string;
+    },
   ) => Promise<void>;
   pollInstance: (workflowId: string, instanceId: string) => Promise<void>;
   streamInstance: (workflowId: string, instanceId: string) => void;
@@ -370,7 +380,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       const wf = await api.getWorkflow(id);
       const graph = wf.graph_json;
       const newNodes = (graph.nodes ?? []) as Node[];
-      const newEdges = (graph.edges ?? []) as Edge[];
+      const newEdges = hydrateEdgesFromLoad((graph.edges ?? []) as Edge[]);
 
       useFlowStore.getState().replaceGraph(newNodes, newEdges);
 
@@ -396,7 +406,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const { nodes, edges } = useFlowStore.getState();
-      const graph_json = { nodes, edges };
+      const graph_json = { nodes, edges: serialiseEdgesForSave(edges) };
       const current = get().currentWorkflow;
 
       let wf: WorkflowOut;
@@ -494,7 +504,12 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     }
     const prev = get()._sseCleanup;
     if (prev) prev();
-    const { nodes, edges } = t.graph;
+    // MODEL-01.f — swap TIER-marked configs for the tenant's resolved
+    // defaults. When the cache is cold (first session load before
+    // prefetchModelDefaults resolves), the template literals stay —
+    // they're already valid registry entries so execution works.
+    const resolved = resolveTemplateTiers(t.graph, getCachedModelDefaults());
+    const { nodes, edges } = resolved;
     useFlowStore.getState().replaceGraph(nodes, edges);
     set({
       currentWorkflow: null,
@@ -517,7 +532,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     const prev = get()._sseCleanup;
     if (prev) prev();
     const newNodes = (graph.nodes ?? []) as Node[];
-    const newEdges = (graph.edges ?? []) as Edge[];
+    const newEdges = hydrateEdgesFromLoad((graph.edges ?? []) as Edge[]);
     useFlowStore.getState().replaceGraph(newNodes, newEdges);
     set({
       currentWorkflow: null,
@@ -538,7 +553,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   exportCurrentGraph: () => {
     const { nodes, edges } = useFlowStore.getState();
-    const graph_json = { nodes, edges };
+    const graph_json = { nodes, edges: serialiseEdgesForSave(edges) };
     return new Blob([JSON.stringify(graph_json, null, 2)], {
       type: "application/json",
     });
@@ -842,15 +857,22 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     }
   },
 
-  resumeInstance: async (workflowId, instanceId, approvalPayload, contextPatch) => {
+  resumeInstance: async (workflowId, instanceId, approvalPayload, contextPatch, options) => {
     set({ isExecuting: true, error: null, instanceContext: null });
     try {
-      const instance = await api.callbackWorkflow(workflowId, instanceId, approvalPayload, contextPatch);
+      const instance = await api.callbackWorkflow(
+        workflowId, instanceId, approvalPayload, contextPatch, options,
+      );
       set({
         activeInstance: { ...instance, logs: get().activeInstance?.logs ?? [] },
-        isExecuting: true,
+        // HITL-01.a — a rejected resume closes the instance
+        // immediately (status=failed); don't keep the executing
+        // banner spinning forever in that case.
+        isExecuting: options?.decision !== "rejected",
       });
-      get().streamInstance(workflowId, instance.id);
+      if (options?.decision !== "rejected") {
+        get().streamInstance(workflowId, instance.id);
+      }
     } catch (e) {
       set({ error: String(e), isExecuting: false });
     }
@@ -864,7 +886,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     if (canvasVersion === v) return;
     if (v === wf.version) {
       const nodes = (wf.graph_json.nodes ?? []) as Node[];
-      const edges = (wf.graph_json.edges ?? []) as Edge[];
+      const edges = hydrateEdgesFromLoad((wf.graph_json.edges ?? []) as Edge[]);
       useFlowStore.getState().replaceGraph(nodes, edges);
       set({
         isDirty: false,
@@ -875,7 +897,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     try {
       const { graph_json } = await api.getGraphAtVersion(workflowId, v);
       const nodes = (graph_json.nodes ?? []) as Node[];
-      const edges = (graph_json.edges ?? []) as Edge[];
+      const edges = hydrateEdgesFromLoad((graph_json.edges ?? []) as Edge[]);
       useFlowStore.getState().replaceGraph(nodes, edges);
       set({
         isDirty: true,

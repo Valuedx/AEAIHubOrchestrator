@@ -23,7 +23,10 @@ from app.api.async_jobs import router as async_jobs_router
 from app.api.tenant_integrations import router as tenant_integrations_router
 from app.api.tenant_mcp_servers import router as tenant_mcp_servers_router
 from app.api.tenant_policies import router as tenant_policies_router
+from app.api.models import router as models_router
 from app.api.llm_credentials import router as llm_credentials_router
+from app.api.copilot_drafts import router as copilot_drafts_router
+from app.api.copilot_sessions import router as copilot_sessions_router
 from app.security.rate_limiter import limiter
 from app.security.tenant_rate_limit import TenantRateLimitMiddleware
 from app.security.tenant_context import TenantContextMiddleware
@@ -53,6 +56,18 @@ async def lifespan(app: FastAPI):
             )
         else:
             logging.getLogger(__name__).info("All startup checks passed.")
+
+    # LOCAL-AUTH-01 — idempotent admin seed. No-op unless auth_mode=local
+    # AND ORCHESTRATOR_LOCAL_ADMIN_USERNAME/PASSWORD are set. Runs after
+    # startup checks so a DB outage surfaces via the normal health
+    # signal rather than an opaque seed failure.
+    try:
+        from app.security.local_auth import ensure_admin_seeded
+        ensure_admin_seeded()
+    except Exception as exc:  # pragma: no cover — seed is best-effort
+        logging.getLogger(__name__).warning(
+            "local-auth admin seed skipped: %s", exc,
+        )
     yield
 
 
@@ -105,15 +120,33 @@ app.include_router(
     tags=["tenant-policy"],
 )
 app.include_router(
+    models_router,
+    prefix="/api/v1/models",
+    tags=["models"],
+)
+app.include_router(
     llm_credentials_router,
     prefix="/api/v1/llm-credentials",
     tags=["llm-credentials"],
 )
+app.include_router(copilot_drafts_router)
+app.include_router(copilot_sessions_router)
 
 if settings.oidc_enabled:
     from app.api.auth import router as oidc_router
     app.include_router(oidc_router)
     logging.getLogger(__name__).info("OIDC federation enabled (issuer: %s)", settings.oidc_issuer)
+
+# LOCAL-AUTH-01 — local username/password auth. The login + /auth/me
+# routes are only mounted when auth_mode=local so dev/jwt/oidc
+# deployments don't expose a surface they can't service. Admin user
+# CRUD is on the same gate.
+if settings.auth_mode == "local":
+    from app.api.auth_local import router as auth_local_router
+    from app.api.users import router as users_router
+    app.include_router(auth_local_router)
+    app.include_router(users_router, prefix="/api/v1/users", tags=["users"])
+    logging.getLogger(__name__).info("Local password auth enabled")
 
 from app.observability import shutdown as _shutdown_langfuse
 atexit.register(_shutdown_langfuse)

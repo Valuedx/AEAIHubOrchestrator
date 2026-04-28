@@ -47,6 +47,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -79,18 +80,72 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["a2a"])
 
 # ---------------------------------------------------------------------------
-# State mapping
+# State mapping (A2A-01.a + 01.b)
 # ---------------------------------------------------------------------------
+#
+# A2A v1.0 defines 8 task states:
+#
+#   Active:      submitted, working
+#   Terminal:    completed, failed, canceled, rejected
+#   Interrupted: input-required, auth-required
+#   Unknown:     unknown (explicit "we don't know what state this is in")
+#
+# Our WorkflowInstance status field is coarser — we track lifecycle
+# mostly via ``queued / running / completed / suspended / failed /
+# cancelled``. The mapping below bridges the two, using
+# ``suspended_reason`` to disambiguate the *kind* of suspension:
+#
+#   suspended + reason=None             → input-required  (HITL approval)
+#   suspended + reason="async_external" → input-required  (waiting on
+#                                          an external system —
+#                                          AutomationEdge, webhook,
+#                                          etc. Closest spec fit.)
+#   suspended + reason="auth_required"  → auth-required   (reserved for
+#                                          a future slice where a node
+#                                          flags missing creds to the
+#                                          caller; the string is
+#                                          recognised here so the
+#                                          producer side can land
+#                                          without a matching A2A
+#                                          change)
+#   failed    + reason="rejected"       → rejected        (validation or
+#                                          policy refused the draft
+#                                          before execution; distinct
+#                                          from a runtime failure)
+
 
 _STATUS_MAP: dict[str, str] = {
     "queued":    "submitted",
     "running":   "working",
     "completed": "completed",
-    "suspended": "input-required",
     "failed":    "failed",
     "cancelled": "canceled",
     "paused":    "input-required",
 }
+
+
+def _map_a2a_state(instance: WorkflowInstance) -> str:
+    """Translate a WorkflowInstance's persisted status + suspend
+    reason into an A2A v1.0 task state string.
+
+    See the table above for the full mapping. Anything we don't
+    recognise returns ``"unknown"`` — the spec requires a valid
+    enum value so defaulting to ``working`` would be a lie.
+    """
+    status = instance.status or "unknown"
+    reason = instance.suspended_reason
+
+    if status == "suspended":
+        if reason == "auth_required":
+            return "auth-required"
+        # async_external + None (HITL) both surface as input-required;
+        # the caller distinguishes via the message payload.
+        return "input-required"
+
+    if status == "failed" and reason == "rejected":
+        return "rejected"
+
+    return _STATUS_MAP.get(status, "unknown")
 
 
 def _utcnow() -> datetime:
@@ -139,7 +194,7 @@ def _instance_to_task(
     session_id: str | None = None,
 ) -> dict:
     """Convert a WorkflowInstance into an A2A Task dict."""
-    state = _STATUS_MAP.get(instance.status, "working")
+    state = _map_a2a_state(instance)
     timestamp = _utcnow().isoformat()
 
     status: dict = {"state": state, "timestamp": timestamp}
@@ -153,12 +208,17 @@ def _instance_to_task(
                 "parts": [{"text": approval_msg}],
             }
 
-    # For completed, surface the final LLM response from context
+    # For completed, surface the final response as a multi-part
+    # artifact (A2A-01.c): one TextPart with the prose response the
+    # caller probably wants to show the user, plus a DataPart
+    # carrying the full non-internal context so pipelines that pipe
+    # our output into their own workflows get the structured side
+    # for free.
     artifacts = []
     if state == "completed" and instance.context_json:
-        response_text = _extract_final_response(instance.context_json)
-        if response_text:
-            artifacts = [{"index": 0, "parts": [{"text": response_text}], "lastChunk": True}]
+        parts = _build_completed_artifact_parts(instance.context_json)
+        if parts:
+            artifacts = [{"index": 0, "parts": parts, "lastChunk": True}]
 
     return {
         "id": str(instance.id),
@@ -166,6 +226,37 @@ def _instance_to_task(
         "status": status,
         "artifacts": artifacts,
     }
+
+
+def _build_completed_artifact_parts(context_json: dict) -> list[dict]:
+    """Build the Part list for a completed task's artifact.
+
+    Emits up to two parts:
+
+    1. TextPart with the final LLM response (same string
+       ``_extract_final_response`` used to return).
+    2. DataPart with every non-internal key in the context dict —
+       the downstream workflow's structured output. Internal
+       ``_``-prefixed keys are stripped so we don't leak
+       ``_approval_message`` etc. to the A2A caller.
+
+    If neither yields anything we return ``[]`` and
+    ``_instance_to_task`` suppresses the artifact entirely.
+    """
+    parts: list[dict] = []
+
+    response_text = _extract_final_response(context_json)
+    if response_text:
+        parts.append({"text": response_text})
+
+    public = {
+        k: v for k, v in context_json.items()
+        if not str(k).startswith("_")
+    }
+    if public:
+        parts.append({"data": public, "mimeType": "application/json"})
+
+    return parts
 
 
 def _extract_final_response(context_json: dict) -> str:
@@ -184,11 +275,77 @@ def _extract_final_response(context_json: dict) -> str:
     return ""
 
 
+def _read_metadata_skill_id(message: Any) -> str | None:
+    """A2A v1.0 ``message/send`` clients carry the skill identifier
+    inside ``message.metadata`` rather than as a top-level ``skillId``
+    field. Extract it (accepting both camelCase and snake_case) so
+    the dispatcher's method-name aliasing doesn't force callers to
+    duplicate the id at two levels.
+    """
+    if not isinstance(message, dict):
+        return None
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    return metadata.get("skillId") or metadata.get("skill_id")
+
+
+def _parse_message_parts(message: Any) -> dict[str, Any]:
+    """Fan an inbound A2A v1.0 Message out into the richer shape
+    downstream workflows want (A2A-01.c).
+
+    Returns::
+
+        {
+          "text": str,        # concatenated text parts
+          "data": list[Any],  # every DataPart's payload, in order
+          "files": list[dict],# every FilePart's reference, in order
+        }
+
+    Text parts are joined with single spaces — the same behaviour
+    the v0.2.x ``_tasks_send`` had, so existing workflows keep
+    receiving ``trigger_payload.message`` as a plain string. Data
+    and file parts are net-new in 01.c: workflows that want the
+    richer payload read ``trigger_payload.message_parts`` instead.
+    """
+    text_bits: list[str] = []
+    data_bits: list[Any] = []
+    file_bits: list[dict[str, Any]] = []
+
+    if not isinstance(message, dict):
+        return {"text": "", "data": [], "files": []}
+
+    for part in message.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        if isinstance(part.get("text"), str):
+            text_bits.append(part["text"])
+        if part.get("data") is not None:
+            data_bits.append(part["data"])
+        file_ref = part.get("file")
+        if isinstance(file_ref, dict):
+            # Preserve whichever of bytes / uri the caller supplied.
+            # mimeType + name are best-effort; mirrored through so
+            # engine-side handlers can route on them.
+            file_bits.append({
+                "name": file_ref.get("name"),
+                "mimeType": file_ref.get("mimeType") or part.get("mimeType"),
+                "bytes": file_ref.get("bytes"),
+                "uri": file_ref.get("uri"),
+            })
+
+    return {
+        "text": " ".join(text_bits).strip(),
+        "data": data_bits,
+        "files": file_bits,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Agent card
 # ---------------------------------------------------------------------------
 
-@router.get("/tenants/{tenant_id}/.well-known/agent.json")
+@router.get("/tenants/{tenant_id}/.well-known/agent-card.json")
 def agent_card(
     tenant_id: str,
     request: Request,
@@ -200,11 +357,49 @@ def agent_card(
     No authentication required — agent cards are public discovery documents.
     The tenant is taken from the URL path, not the ``X-Tenant-Id`` header,
     so the RLS context is set inline rather than via ``get_tenant_db``.
+
+    **A2A spec v1.0** places the agent card at
+    ``/.well-known/agent-card.json``; v0.2.x placed it at
+    ``/.well-known/agent.json``. We serve both paths so clients on
+    either spec version discover us without guessing (see the
+    ``agent_card_legacy`` alias below).
     """
+    return _build_agent_card(tenant_id, db, request)
+
+
+@router.get("/tenants/{tenant_id}/.well-known/agent.json")
+def agent_card_legacy(
+    tenant_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """A2A v0.2.x legacy discovery path. Delegates to the same
+    builder as the v1.0 path so both responses are identical."""
+    return _build_agent_card(tenant_id, db, request)
+
+
+def _build_agent_card(
+    tenant_id: str, db: Session, request: Request,
+) -> dict:
+    """Shared agent-card body used by both discovery paths.
+
+    Layout follows A2A v1.0 (A2A-01.b): provider + securitySchemes +
+    security + defaultInputModes + defaultOutputModes + capabilities
+    + skills. Optional fields (provider fields + documentationUrl)
+    suppress themselves when unset so a minimally-configured card is
+    still spec-valid.
+    """
+    from app.config import settings
+
     set_tenant_context(db, tenant_id)
+    # Ephemeral rows default is_published=False so the filter below
+    # already excludes them, but pin the invariant explicitly — a
+    # future bug that flips is_published on an ephemeral shouldn't
+    # leak the copilot's throwaway workflow into a tenant's public
+    # agent card.
     workflows = (
         db.query(WorkflowDefinition)
-        .filter_by(tenant_id=tenant_id, is_published=True)
+        .filter_by(tenant_id=tenant_id, is_published=True, is_ephemeral=False)
         .order_by(WorkflowDefinition.name)
         .all()
     )
@@ -218,23 +413,65 @@ def agent_card(
             "name": wf.name,
             "description": wf.description or "",
             "inputModes": ["text"],
-            "outputModes": ["text"],
+            "outputModes": ["text", "data"],
         }
         for wf in workflows
     ]
 
-    return {
+    card: dict = {
         "name": f"AE Orchestrator — {tenant_id}",
         "description": "Agentic workflow orchestration engine",
         "url": agent_url,
         "version": "1.0",
+        # Input / output modes the agent accepts by default at the
+        # skill level. Individual skills can override (we echo the
+        # same defaults per skill today since every published
+        # workflow consumes text and emits text+data).
+        "defaultInputModes": ["text"],
+        "defaultOutputModes": ["text", "data"],
         "capabilities": {
             "streaming": True,
             "pushNotifications": False,
             "stateTransitionHistory": False,
+            # We don't split public vs. extended cards today — the
+            # same card body is returned regardless of auth — so
+            # extendedAgentCard is false and we don't implement
+            # ``agent/getExtendedAgentCard``.
+            "extendedAgentCard": False,
         },
+        # Bearer is the only scheme today. Declared here so v1.0
+        # clients' security negotiation picks it automatically
+        # rather than 401-ing and guessing.
+        "securitySchemes": {
+            "bearer": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": (
+                    "A2A API key issued via POST /api/v1/a2a/keys. "
+                    "Send as Authorization: Bearer <key>."
+                ),
+            },
+        },
+        "security": [{"bearer": []}],
         "skills": skills,
     }
+
+    # ---- Optional fields (suppress when unset) ----
+
+    provider: dict = {}
+    if settings.a2a_provider_organization:
+        provider["organization"] = settings.a2a_provider_organization
+    if settings.a2a_provider_url:
+        provider["url"] = settings.a2a_provider_url
+    if settings.a2a_provider_email:
+        provider["email"] = settings.a2a_provider_email
+    if provider:
+        card["provider"] = provider
+
+    if settings.a2a_documentation_url:
+        card["documentationUrl"] = settings.a2a_documentation_url
+
+    return card
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +486,27 @@ async def a2a_dispatcher(
     verified_tenant: str = Depends(_get_a2a_tenant),
     db: Session = Depends(get_db),
 ):
-    """Single JSON-RPC 2.0 endpoint. Routes by body.method."""
+    """Single JSON-RPC 2.0 endpoint. Routes by body.method.
+
+    **Method aliasing (A2A-01.a).** We accept both the v0.2.x and v1.0
+    method names so existing clients keep working while 2026-era
+    v1.0 clients (Google ADK, LangGraph A2A, Bedrock AgentCore,
+    Inkeep, etc.) discover and call us without a shim. The v1.0
+    aliases are:
+
+      * ``message/send``           → same handler as ``tasks/send``
+      * ``message/sendStreaming``  → same handler as ``tasks/sendSubscribe``
+
+    Param-shape compatibility: v1.0 senders typically pass the skill
+    identifier in ``message.metadata.skillId`` rather than as a
+    top-level ``skillId`` field. ``_tasks_send`` + ``_tasks_send_subscribe``
+    read from both locations so either shape works.
+    """
     method = body.method
     params = body.params
 
-    if method == "tasks/send":
+    # Send a message / create a task. v0.2.x + v1.0 names share one handler.
+    if method in {"tasks/send", "message/send"}:
         result = _tasks_send(params, tenant_id, db)
         return {"jsonrpc": "2.0", "id": body.id, "result": result}
 
@@ -265,8 +518,8 @@ async def a2a_dispatcher(
         result = _tasks_cancel(params, tenant_id, db)
         return {"jsonrpc": "2.0", "id": body.id, "result": result}
 
-    if method == "tasks/sendSubscribe":
-        # Streaming — returns SSE, not JSON
+    # Streaming. v0.2.x + v1.0 names share one SSE handler.
+    if method in {"tasks/sendSubscribe", "message/sendStreaming"}:
         return await _tasks_send_subscribe(params, tenant_id, body.id, request, db)
 
     return {
@@ -285,12 +538,25 @@ async def a2a_dispatcher(
 
 def _tasks_send(params: dict, tenant_id: str, db: Session) -> dict:
     """Create a WorkflowInstance and return the initial Task object."""
-    raw_skill_id = params.get("skillId") or params.get("skill_id")
-    session_id   = params.get("sessionId") or params.get("session_id") or str(uuid.uuid4())
     message      = params.get("message") or {}
+    # Skill routing: v0.2.x clients pass ``skillId`` / ``skill_id`` at the
+    # top level; v1.0 ``message/send`` has no top-level skill field so
+    # clients put it inside ``message.metadata.skillId`` (Google ADK's
+    # convention). Accept either shape so the dispatcher can alias the
+    # method names without forcing callers to change their payload.
+    raw_skill_id = (
+        params.get("skillId")
+        or params.get("skill_id")
+        or _read_metadata_skill_id(message)
+    )
+    session_id   = params.get("sessionId") or params.get("session_id") or str(uuid.uuid4())
 
     if not raw_skill_id:
-        raise HTTPException(400, "tasks/send requires a skillId")
+        raise HTTPException(
+            400,
+            "send requires a skillId (top-level `skillId`, or "
+            "`message.metadata.skillId` for v1.0 clients)",
+        )
 
     try:
         skill_uuid = uuid.UUID(str(raw_skill_id))
@@ -305,15 +571,16 @@ def _tasks_send(params: dict, tenant_id: str, db: Session) -> dict:
     if not wf:
         raise HTTPException(404, f"Skill '{raw_skill_id}' not found or not published")
 
-    # Extract text from A2A message parts (guard against malformed message)
-    parts = message.get("parts", []) if isinstance(message, dict) else []
-    text = " ".join(
-        p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")
-    ).strip()
-
-    trigger_payload = {
+    # A2A-01.c — fan the message out across text / data / file
+    # parts. `message` stays a plain string for back compat with
+    # existing workflows that read trigger_payload.message; the
+    # rich shape lands on trigger_payload.message_parts so newer
+    # workflows can read data + file payloads without parsing.
+    parsed = _parse_message_parts(message)
+    trigger_payload: dict[str, Any] = {
         "session_id": session_id,
-        "message": text,
+        "message": parsed["text"],
+        "message_parts": parsed,
         "a2a": True,
     }
     # Propagate caller-supplied task id for idempotency tracking

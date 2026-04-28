@@ -35,16 +35,19 @@ The RAG (Retrieval-Augmented Generation) system lets users upload documents, chu
 
 ## Embedding providers
 
-Defined in `backend/app/engine/embedding_provider.py`. The `EMBEDDING_REGISTRY` maps `(provider, model)` to dimension.
+Defined in `backend/app/engine/embedding_provider.py`, mirrored into the central [model registry](model-registry.md). `EMBEDDING_REGISTRY` (back-compat) maps `(provider, model)` to dimension; `EMBEDDING_MODELS` in the registry carries the full metadata (dim + modalities + preview flag).
 
-| Provider | Model | Dimensions | API key env var |
-|----------|-------|-----------|-----------------|
-| `openai` | `text-embedding-3-small` | 1536 | `ORCHESTRATOR_OPENAI_API_KEY` |
-| `openai` | `text-embedding-3-large` | 3072 | `ORCHESTRATOR_OPENAI_API_KEY` |
-| `google` | `text-embedding-004` | 768 | `ORCHESTRATOR_GOOGLE_API_KEY` |
-| `vertex` | `gemini-embedding-001` | 3072 | GCP credentials + `ORCHESTRATOR_VERTEX_PROJECT` |
-| `vertex` | `text-embedding-005` | 768 | GCP credentials + `ORCHESTRATOR_VERTEX_PROJECT` |
-| `vertex` | `text-multilingual-embedding-002` | 768 | GCP credentials + `ORCHESTRATOR_VERTEX_PROJECT` |
+| Provider | Model | Dimensions | Modalities | API key env var |
+|----------|-------|-----------|-----------|-----------------|
+| `openai` | `text-embedding-3-small` | 1536 | text | `ORCHESTRATOR_OPENAI_API_KEY` |
+| `openai` | `text-embedding-3-large` | 3072 | text | `ORCHESTRATOR_OPENAI_API_KEY` |
+| `google` | `text-embedding-004` | 768 | text | `ORCHESTRATOR_GOOGLE_API_KEY` |
+| `google` / `vertex` | `gemini-embedding-2` | 3072 (Matryoshka) | **text + image + video + audio** | GCP credentials + `ORCHESTRATOR_VERTEX_PROJECT` (or `ORCHESTRATOR_GOOGLE_API_KEY`) |
+| `google` / `vertex` | `gemini-embedding-001` | 3072 | text | GCP credentials + `ORCHESTRATOR_VERTEX_PROJECT` |
+| `vertex` | `text-embedding-005` | 768 | text | GCP credentials + `ORCHESTRATOR_VERTEX_PROJECT` |
+| `vertex` | `text-multilingual-embedding-002` | 768 | text | GCP credentials + `ORCHESTRATOR_VERTEX_PROJECT` |
+
+**`gemini-embedding-2` is Google's first natively multimodal embedding model** — text, images, video, and audio all map into a single 3072-dim space. For KBs ingesting mixed-media content (screenshot library, audio transcripts alongside PDFs, etc.) this is the recommended default on Vertex/Google tenants. Pick it at KB creation time and the pipeline routes attachments as native parts instead of pre-transcribing to text. Dim is reducible via `output_dimensionality` for cost-tuning.
 
 ### Task types
 

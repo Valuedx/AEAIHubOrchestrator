@@ -95,9 +95,15 @@ def check_scheduled_workflows():
         # DV-07 — only active workflows fire on schedule. Manual Run
         # still works for inactive workflows (users toggle them off
         # precisely so cron stops while iteration continues).
+        # COPILOT-01b.ii.b — ephemeral rows never fire schedules; they
+        # exist solely to back a copilot trial run that already
+        # completed (or is being awaited via get_execution_logs).
         workflows = (
             db.query(WorkflowDefinition)
-            .filter(WorkflowDefinition.is_active.is_(True))
+            .filter(
+                WorkflowDefinition.is_active.is_(True),
+                WorkflowDefinition.is_ephemeral.is_(False),
+            )
             .all()
         )
         now = datetime.now(timezone.utc)
