@@ -4,6 +4,7 @@ import { EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW } from "@/lib/exampleComplexWorkfl
 import { EXAMPLE_OPERATIONS_ROUTING_WORKFLOW } from "@/lib/exampleOperationsRoutingWorkflow";
 import { AE_OPS_ROUTING_TEMPLATE } from "@/lib/aeOpsRoutingTemplate";
 import { AE_OPS_SUPPORT_V7_TEMPLATE } from "@/lib/aeOpsSupportV7Template";
+import { AE_OPS_SUPPORT_V8_TEMPLATE } from "@/lib/aeOpsSupportV8Template";
 // MODEL-01.f — tier constants live in their own module to avoid a
 // circular import with the example workflow files above.
 import {
@@ -3018,6 +3019,28 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     category: "operations",
     tags: ["AE_Ops_Routing_Template", "automationedge", "AIOps", "ReAct", "HITL", "router"],
     graph: AE_OPS_ROUTING_TEMPLATE,
+  }),
+  asTemplate({
+    id: "ae-ops-support-v8",
+    name: "AE Ops L1 support — V8 (router + worker + critic, case tools as MCP)",
+    description:
+      "A simplified L1 AutomationEdge ops support agent grounded in named patterns from Anthropic's Building Effective Agents and OpenAI's Practical Guide to Agents. ~28 nodes (vs V7's 76). One Worker ReAct (gemini-3-flash) handles diagnostics, remediation, output_missing, NEED_INFO, resolution_update, and correction — its consolidated prompt encodes audience rules, no-hallucination, glossary-first, ask-one-question, and an AE architecture primer. Routing pattern preserved (Intent Classifier with 5 intents); the 'ops' branch is the catch-all. An independent Verifier ReAct (gemini-2.5-flash, 2 iters) with fresh context catches what the Worker might rationalise about its own action. Case management (add_worknote, update_state, handoff, close, add_evidence, get) and glossary translation are exposed as ALWAYS-AVAILABLE MCP tools so the Worker calls them directly. Cost-aware tiering: 2.5-flash everywhere except the Worker hot path; max_tokens trimmed; conversation memory capped at 10 turns; Worker prompt structured for Vertex prefix caching (static rules first, dynamic context block at end).",
+    category: "customer-support",
+    tags: [
+      "automationedge",
+      "L1-support",
+      "single-agent",
+      "router-worker-critic",
+      "ReAct",
+      "MCP",
+      "case-tools",
+      "glossary",
+      "verifier",
+      "evaluator-optimizer",
+      "cost-optimised",
+      "prompt-caching",
+    ],
+    graph: AE_OPS_SUPPORT_V8_TEMPLATE,
   }),
   asTemplate({
     id: "ae-ops-support-v7",
