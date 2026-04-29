@@ -286,7 +286,7 @@ def _load_tool_definitions(
     """
     from app.engine.mcp_client import get_openai_style_tool_defs, list_tools
     
-    if tool_names is None:
+    if not tool_names:
         raw = list_tools(tenant_id=tenant_id, server_label=server_label)
         
         # SMART-FILTER: If we have context, prune tools that are clearly irrelevant
