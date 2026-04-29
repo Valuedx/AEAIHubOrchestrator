@@ -114,7 +114,7 @@ class TurnScore:
 # ---------------------------------------------------------------------------
 
 def execute_turn(workflow_id: str, session_id: str, user_role: str, message: str,
-                 timeout_seconds: int = 90) -> TurnArtifacts:
+                 timeout_seconds: int = 180) -> TurnArtifacts:
     """POST one turn through the orchestrator, poll to completion / suspend, harvest artifacts."""
     art = TurnArtifacts(turn_index=-1, user_input=message)
     t0 = time.time()
@@ -184,30 +184,36 @@ def _harvest(ctx: dict, art: TurnArtifacts) -> None:
                     break
     art.final_reply = reply or ""
 
-    # Intent (V7 → node_3 / V8 → node_router)
+    # Intent (V7 → node_3 / V8 → node_router). The Intent Classifier returns
+    # `intents` as a flat list of strings (e.g. ["small_talk"]) plus a single
+    # `confidence` float — not a list of objects. See intent_classifier.py.
     for nid in ("node_router", "node_3"):
-        node = cj.get(nid) or {}
-        intents = node.get("intents") or []
+        node = cj.get(nid)
+        if not isinstance(node, dict):
+            continue
+        intents = node.get("intents") if isinstance(node.get("intents"), list) else None
         if intents:
-            top = intents[0] if isinstance(intents, list) else {}
-            art.intent = top.get("name")
-            art.intent_score = top.get("score")
+            art.intent = intents[0] if isinstance(intents[0], str) else None
+            art.intent_score = node.get("confidence")
             break
 
     # Case state (V7 → node_2b / V8 → node_3)
     for nid in ("node_3", "node_2b"):
-        node = cj.get(nid) or {}
-        j = node.get("json") if isinstance(node, dict) else None
+        node = cj.get(nid)
+        if not isinstance(node, dict):
+            continue
+        j = node.get("json")
         if isinstance(j, dict) and j.get("state"):
             art.case_state = j.get("state")
             break
 
-    # Tool calls — scan every node for an "iterations" list (ReAct), pull tool calls
+    # Tool calls — scan every node for an "iterations" list (ReAct), pull tool calls.
+    # Defensive against str / unexpected shapes in the run context.
     for nid, node in cj.items():
         if not isinstance(node, dict):
             continue
-        iters = node.get("iterations")
-        if not isinstance(iters, list):
+        iters = node.get("iterations") if isinstance(node.get("iterations"), list) else None
+        if not iters:
             continue
         for it in iters:
             if not isinstance(it, dict):
@@ -222,8 +228,10 @@ def _harvest(ctx: dict, art: TurnArtifacts) -> None:
 
     # Verifier (V7 → node_v3 / V8 → node_verifier)
     for nid in ("node_verifier", "node_v3"):
-        node = cj.get(nid) or {}
-        text = node.get("text") if isinstance(node, dict) else None
+        node = cj.get(nid)
+        if not isinstance(node, dict):
+            continue
+        text = node.get("text")
         if text:
             art.verifier_text = text
             break
@@ -454,7 +462,7 @@ def main() -> int:
         for lbl, p_, t_ in overall:
             sections.insert(2, f"| {lbl} | {p_} | {t_} |")
 
-    Path(args.out).write_text("\n".join(sections))
+    Path(args.out).write_text("\n".join(sections), encoding="utf-8")
     print(f"\nReport: {args.out}")
     return 0
 

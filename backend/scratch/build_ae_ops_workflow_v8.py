@@ -254,8 +254,8 @@ Replies are 2–4 sentences unless the user asks for detail. End with a question
 WORKER_PROMPT_DYNAMIC = """
 === CURRENT TURN CONTEXT ===
 user_role:           {{ trigger.user_role | default('business') }}
-router_intent:       {{ node_router.intents[0].name | default('ops') }}
-router_confidence:   {{ node_router.intents[0].score | default(0.0) }}
+router_intent:       {{ node_router.intents[0] | default('ops') }}
+router_confidence:   {{ node_router.confidence | default(0.0) }}
 case_id:             {{ node_3.json.id[:8] | default('') }}
 case_state:          {{ node_3.json.state | default('NEW') }}
 prior_evidence:      {{ node_3.json.evidence | length | default(0) }}
@@ -487,13 +487,25 @@ def build_graph() -> dict:
                     "name": "ops",
                     "description": "Anything operational — diagnostics, remediation, missing output, status check, resolution update, correction. The catch-all for the Worker agent.",
                     "examples": [
-                        "my report didn't arrive", "request id 12345 failed",
+                        # missing output / report (business)
+                        "my report didn't arrive", "where is my daily recon",
+                        "the dashboard isn't refreshing", "no daily output today",
+                        # failure listings / status checks (catches "which requests failed")
+                        "which requests have failed recently",
+                        "what failed today", "show recent failures",
+                        "any failed runs this morning", "list stuck workflows",
+                        "what's broken", "anything failing", "any errors today",
+                        # specific id'd diagnostics (tech)
+                        "request id 12345 failed", "diagnose request 9876",
+                        "agent worker-12 is down", "investigate request 555",
+                        # remediation
                         "the agent is stuck", "restart the worker",
-                        "where is my daily recon", "actually I just got it",
-                        "no I meant the OCR one", "the workflow is broken",
-                        "diagnose request 9876", "rerun yesterday's batch",
+                        "rerun yesterday's batch", "terminate request 12345",
+                        # mid-thread updates (lower-priority intents win when their cues are present)
+                        "actually I just got it", "no I meant the OCR one",
+                        "the workflow is broken",
                     ],
-                    "priority": 50,
+                    "priority": 80,  # bumped above small_talk's 100? no — small_talk is 100, ops is 80. Slash-commands like /handoff (200) still win. The lexical-match score breaks ties when phrasings overlap.
                 },
             ],
         },
@@ -506,7 +518,7 @@ def build_graph() -> dict:
         "node_route", "Switch",
         {
             "icon": "git-fork",
-            "expression": "node_router.intents[0].name",
+            "expression": "node_router.intents[0]",
             "cases": [
                 {"value": "small_talk", "label": "Small talk"},
                 {"value": "rca_request", "label": "RCA"},
@@ -667,26 +679,34 @@ def build_graph() -> dict:
     # pair so the runtime doesn't deadlock waiting for non-fired branches.
     # We mint per-branch Bridge+Save nodes pointing to the same convergence
     # marker (case_patch + reply produced from the active branch).
+    # Each branch produces its own user-facing reply via Bridge+Save. Note:
+    # the ops branch's user-facing reply comes from `node_worker`, not from
+    # the Verifier — the Verifier produces audit metadata (VERIFIED_OK /
+    # FAIL / NOOP) that stays in run context for downstream review. We wire
+    # the Bridge AFTER the Verifier so the audit step still gates the reply
+    # ordering, but `responseNodeId` points at the Worker so the user sees
+    # the Worker's actual answer.
     bridges = [
-        ("node_smalltalk",       "node_b_st",  "node_s_st",  1860, 80,  "Reply (small-talk)"),
-        ("node_rca",             "node_b_rca", "node_s_rca", 1860, 180, "Reply (RCA)"),
-        ("node_handoff_reply",   "node_b_ho",  "node_s_ho",  2100, 420, "Reply (handoff)"),
-        ("node_cancel_reply",    "node_b_cn",  "node_s_cn",  2100, 520, "Reply (cancel)"),
-        ("node_verifier",        "node_b_op",  "node_s_op",  2100, 300, "Reply (ops)"),
-        ("node_4d",              "node_b_hf",  "node_s_hf",  1140, 560, "Reply (handed-off)"),
+        # (replyFromNode, predecessorNode, bridgeId, saveId, x, y, label)
+        ("node_smalltalk",     "node_smalltalk",     "node_b_st",  "node_s_st",  1860, 80,  "Reply (small-talk)"),
+        ("node_rca",           "node_rca",           "node_b_rca", "node_s_rca", 1860, 180, "Reply (RCA)"),
+        ("node_handoff_reply", "node_handoff_reply", "node_b_ho",  "node_s_ho",  2100, 420, "Reply (handoff)"),
+        ("node_cancel_reply",  "node_cancel_reply",  "node_b_cn",  "node_s_cn",  2100, 520, "Reply (cancel)"),
+        ("node_worker",        "node_verifier",      "node_b_op",  "node_s_op",  2100, 300, "Reply (ops)"),
+        ("node_4d",            "node_4d",            "node_b_hf",  "node_s_hf",  1140, 560, "Reply (handed-off)"),
     ]
-    for src, bridge_id, save_id, x, y, label in bridges:
+    for reply_src, pred, bridge_id, save_id, x, y, label in bridges:
         nodes.append(_node(
             bridge_id, "Bridge User Reply",
-            {"icon": "message-square", "responseNodeId": src, "messageExpression": ""},
+            {"icon": "message-square", "responseNodeId": reply_src, "messageExpression": ""},
             x=x, y=y, display_name=label, category="action",
         ))
-        edges.append(_edge(src, bridge_id))
+        edges.append(_edge(pred, bridge_id))
         nodes.append(_node(
             save_id, "Save Conversation State",
             {
                 "icon": "save",
-                "responseNodeId": src,
+                "responseNodeId": reply_src,
                 "sessionIdExpression": "trigger.session_id",
                 "userMessageExpression": "trigger.message",
             },
