@@ -143,14 +143,14 @@
           "path": "/ae/ops/inbound",
           "method": "POST"
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "Ops intake (webhook or Studio)",
         "nodeCategory": "trigger"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 0,
@@ -165,14 +165,14 @@
           "icon": "history",
           "sessionIdExpression": "trigger.session_id"
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "Load session history",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 220,
@@ -196,14 +196,14 @@
           "historyNodeId": "node_2",
           "userMessageExpression": "trigger.message"
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "Route message to specialist",
         "nodeCategory": "agent"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 460,
@@ -220,14 +220,14 @@
           "trueLabel": "Diagnostics",
           "falseLabel": "Next"
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "If intent = diagnostics",
         "nodeCategory": "logic"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 700,
@@ -244,14 +244,14 @@
           "trueLabel": "Remediation",
           "falseLabel": "Next"
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "Else if intent = remediation",
         "nodeCategory": "logic"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 940,
@@ -268,14 +268,14 @@
           "trueLabel": "RCA",
           "falseLabel": "Ops default"
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "Else if intent = RCA report",
         "nodeCategory": "logic"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1180,
@@ -289,19 +289,28 @@
         "config": {
           "icon": "repeat",
           "model": "gemini-3-flash-preview",
-          "tools": [],
+          "tools": [
+            "ae.request.get_summary",
+            "ae.request.get_failure_message",
+            "ae.request.get_logs",
+            "ae.request.list_by_status",
+            "ae.agent.get_status",
+            "ae.agent.analyze_logs",
+            "ae.support.diagnose_failed_request",
+            "ae.support.get_system_health"
+          ],
           "provider": "google",
-          "systemPrompt": "You are the Diagnostic Specialist (parity: agents/diagnostic_agent.py). Investigate RPA/workflow failures: pull status, logs, dependencies, files. Prefer MCP tools for status, logs, and diagnostics. Summarize evidence before suggesting fixes.",
+          "systemPrompt": "You are the Diagnostic Specialist for AutomationEdge.\nRULES:\n1. If a Request ID is given, call 'ae.support.diagnose_failed_request' FIRST.\n2. Use 'ae.agent.get_status' to check the assigned agent.\n3. Use 'ae.request.get_logs' or 'ae.agent.analyze_logs' for stack traces.\n4. STOP calling tools once you have the failure reason. Summarize findings clearly.\n5. Never repeat the same tool call with the same arguments.",
           "maxIterations": 12
         },
-        "status": "idle",
-        "displayName": "Diagnostics specialist (ReAct + tools)",
+        "status": "skipped",
+        "displayName": "Diagnostics Specialist (Smart)",
         "nodeCategory": "agent"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 980,
@@ -315,19 +324,23 @@
         "config": {
           "icon": "repeat",
           "model": "gemini-3-flash-preview",
-          "tools": [],
+          "tools": [
+            "ae.agent.restart_service",
+            "ae.agent.get_status",
+            "ae.request.get_summary"
+          ],
           "provider": "google",
-          "systemPrompt": "You are the Remediation Specialist (parity: agents/remediation_agent.py). Execute corrective actions: restart workflows, notifications, safe config changes. Use MCP remediation/notification tools when available. Confirm impact before destructive steps.",
-          "maxIterations": 12
+          "systemPrompt": "You are the Remediation Specialist for AutomationEdge.\nRULES:\n1. Always call 'ae.agent.get_status' BEFORE attempting any restart.\n2. Restarting is a HIGH-PRIVILEGE operation \u2014 calling 'ae.agent.restart_service' will automatically pause for Human Approval.\n3. After actions, verify impact with 'ae.agent.get_status'.\n4. Provide a final answer immediately once the action is complete or awaiting approval.",
+          "maxIterations": 10
         },
-        "status": "idle",
-        "displayName": "Remediation specialist (ReAct + tools)",
+        "status": "skipped",
+        "displayName": "Remediation Specialist (HITL-Gated)",
         "nodeCategory": "agent"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1180,
@@ -346,14 +359,14 @@
           "temperature": 0.35,
           "systemPrompt": "You are the RCA Specialist (parity: agents/rca_agent.py / generate_rca_report). Produce a structured incident report: Summary, Timeline, Root cause, Impact, Prevention, Audience (business vs technical) using trigger.user_role when present. Use conversation and prior node outputs in context; if data is thin, say what is missing."
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "RCA report author",
         "nodeCategory": "agent"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1420,
@@ -368,19 +381,25 @@
         "config": {
           "icon": "brain",
           "model": "gemini-3-flash-preview",
-          "tools": [],
+          "tools": [
+            "ae.workflow.list",
+            "ae.request.list_by_status",
+            "ae.request.get_summary",
+            "ae.agent.get_status",
+            "ae.support.get_system_health"
+          ],
           "provider": "google",
-          "systemPrompt": "You are the Ops Orchestrator (parity: agents/orchestrator_agent.py + agents/orchestrator.py). Default handler for AutomationEdge ops: workflows, queues, schedules, agents, batch jobs. Guide investigation, tool use, and next steps. If the user needs deep logs vs fixes vs RCA, note which specialist would own it in the main app.",
+          "systemPrompt": "You are the Ops Orchestrator for AutomationEdge.\nRULES:\n1. For workflow status queries, call 'ae.workflow.list' ONCE with the workflow name.\n2. For failure queries, call 'ae.request.list_by_status' ONCE.\n3. Do NOT repeat the same search with slightly different keywords.\n4. If a tool returns no results, tell the user \u2014 do not keep searching.\n5. Summarize what you found and provide a final answer within 3-4 tool calls.",
           "maxIterations": 8
         },
-        "status": "idle",
-        "displayName": "Default ops orchestrator",
+        "status": "completed",
+        "displayName": "Ops Orchestrator (Smart)",
         "nodeCategory": "agent"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1420,
@@ -396,14 +415,14 @@
           "timeout": 86400,
           "approvalMessage": "Approve remediation actions before they are persisted to conversation history (parity: gateway AWAITING_APPROVAL)."
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "Human gate: approve remediation",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1420,
@@ -421,14 +440,14 @@
           "sessionIdExpression": "trigger.session_id",
           "userMessageExpression": "trigger.message"
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "Save turn \u00b7 diagnostics answer",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1680,
@@ -445,14 +464,14 @@
           "sessionIdExpression": "trigger.session_id",
           "userMessageExpression": "trigger.message"
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "Save turn \u00b7 remediation (after approval)",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1680,
@@ -469,14 +488,14 @@
           "sessionIdExpression": "trigger.session_id",
           "userMessageExpression": "trigger.message"
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "Save turn \u00b7 RCA answer",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1680,
@@ -494,14 +513,14 @@
           "sessionIdExpression": "trigger.session_id",
           "userMessageExpression": "trigger.message"
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "Save turn \u00b7 default ops answer",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1680,
@@ -517,14 +536,14 @@
           "responseNodeId": "node_7",
           "messageExpression": ""
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "Chat reply \u00b7 diagnostics",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1320,
@@ -540,14 +559,14 @@
           "responseNodeId": "node_8",
           "messageExpression": ""
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "Chat reply \u00b7 remediation",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1280,
@@ -563,14 +582,14 @@
           "responseNodeId": "node_9",
           "messageExpression": ""
         },
-        "status": "idle",
+        "status": "skipped",
         "displayName": "Chat reply \u00b7 RCA",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1540,
@@ -586,14 +605,14 @@
           "responseNodeId": "node_10",
           "messageExpression": ""
         },
-        "status": "idle",
+        "status": "completed",
         "displayName": "Chat reply \u00b7 default ops",
         "nodeCategory": "action"
       },
       "type": "agenticNode",
       "measured": {
         "width": 180,
-        "height": 114
+        "height": 113
       },
       "position": {
         "x": 1540,

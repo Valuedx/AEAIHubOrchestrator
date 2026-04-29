@@ -1,3 +1,10 @@
+"""
+Apply smart HDFC_WF configuration to the database.
+- Assigns explicit tool lists to each ReAct specialist
+- Adds improved system prompts with early-exit instructions
+- Bumps maxIterations for diagnostics
+Run this after every UI re-import of the workflow.
+"""
 import json
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -8,76 +15,113 @@ Session = sessionmaker(bind=engine)
 session = Session()
 
 DIAGNOSTIC_TOOLS = [
-    "ae.request.get_summary", 
-    "ae.request.get_failure_message", 
-    "ae.request.get_logs", 
-    "ae.agent.get_status", 
-    "ae.agent.analyze_logs", 
-    "ae.support.diagnose_failed_request", 
-    "ae.support.get_system_health"
+    "ae.request.get_summary",
+    "ae.request.get_failure_message",
+    "ae.request.get_logs",
+    "ae.request.list_by_status",
+    "ae.agent.get_status",
+    "ae.agent.analyze_logs",
+    "ae.support.diagnose_failed_request",
+    "ae.support.get_system_health",
 ]
 
 REMEDIATION_TOOLS = [
-    "ae.agent.restart_service", 
-    "ae.agent.get_status", 
-    "ae.request.get_summary"
+    "ae.agent.restart_service",
+    "ae.agent.get_status",
+    "ae.request.get_summary",
 ]
 
 DEFAULT_OPS_TOOLS = [
-    "ae.request.search",
+    "ae.workflow.list",
+    "ae.request.list_by_status",
+    "ae.request.get_summary",
     "ae.agent.get_status",
-    "ae.support.get_system_health"
+    "ae.support.get_system_health",
 ]
 
+DIAG_PROMPT = (
+    "You are the Diagnostic Specialist for AutomationEdge.\n"
+    "RULES:\n"
+    "1. If a Request ID is given, call 'ae.support.diagnose_failed_request' FIRST.\n"
+    "2. Use 'ae.agent.get_status' to check the assigned agent.\n"
+    "3. Use 'ae.request.get_logs' or 'ae.agent.analyze_logs' for stack traces.\n"
+    "4. STOP calling tools once you have the failure reason. Summarize findings clearly.\n"
+    "5. Never repeat the same tool call with the same arguments."
+)
+
+REMED_PROMPT = (
+    "You are the Remediation Specialist for AutomationEdge.\n"
+    "RULES:\n"
+    "1. Always call 'ae.agent.get_status' BEFORE attempting any restart.\n"
+    "2. Restarting is a HIGH-PRIVILEGE operation — calling 'ae.agent.restart_service' "
+    "will automatically pause for Human Approval.\n"
+    "3. After actions, verify impact with 'ae.agent.get_status'.\n"
+    "4. Provide a final answer immediately once the action is complete or awaiting approval."
+)
+
+OPS_PROMPT = (
+    "You are the Ops Orchestrator for AutomationEdge.\n"
+    "RULES:\n"
+    "1. For workflow status queries, call 'ae.workflow.list' ONCE with the workflow name.\n"
+    "2. For failure queries, call 'ae.request.list_by_status' ONCE.\n"
+    "3. Do NOT repeat the same search with slightly different keywords.\n"
+    "4. If a tool returns no results, tell the user — do not keep searching.\n"
+    "5. Summarize what you found and provide a final answer within 3-4 tool calls."
+)
+
 try:
-    # 1. Fetch the workflow
     query = text("SELECT id, graph_json FROM workflow_definitions WHERE name = 'HDFC_WF'")
     row = session.execute(query).fetchone()
-    
     if not row:
-        print("HDFC_WF not found")
+        print("ERROR: HDFC_WF not found in database")
         exit(1)
-        
+
     wf_id = row.id
     graph = row.graph_json
-    
-    # 2. Apply updates to nodes
+
+    changes = 0
     for node in graph.get("nodes", []):
         node_id = node.get("id")
         config = node.get("data", {}).get("config", {})
-        
-        # Node 7: Diagnostics Specialist
+
         if node_id == "node_7":
-            node["data"]["displayName"] = "Diagnostics Specialist (Smarter)"
             config["tools"] = DIAGNOSTIC_TOOLS
-            config["systemPrompt"] = (
-                "You are the Diagnostic Specialist. Your goal is to find the ROOT CAUSE of failure.\n"
-                "1. Always start by calling 'ae.support.diagnose_failed_request' if a Request ID is provided.\n"
-                "2. Use 'ae.agent.analyze_logs' to look for stack traces.\n"
-                "3. Use 'ae.support.get_system_health' to check for infrastructure issues.\n"
-                "Be concise. Summarize evidence before concluding."
-            )
-            
-        # Node 8: Remediation Specialist
-        if node_id == "node_8":
-            node["data"]["displayName"] = "Remediation Specialist (HITL-Gated)"
+            config["systemPrompt"] = DIAG_PROMPT
+            config["maxIterations"] = 12
+            node["data"]["displayName"] = "Diagnostics Specialist (Smart)"
+            changes += 1
+
+        elif node_id == "node_8":
             config["tools"] = REMEDIATION_TOOLS
-            config["systemPrompt"] = (
-                "You are the Remediation Specialist. You execute corrective actions.\n"
-                "IMPORTANT: Restarting an agent service is a high-privilege operation. "
-                "When you call 'ae.agent.restart_service', the system will automatically pause for Human Approval.\n"
-                "Always check 'ae.agent.get_status' before and after actions to verify impact."
-            )
+            config["systemPrompt"] = REMED_PROMPT
+            config["maxIterations"] = 10
+            node["data"]["displayName"] = "Remediation Specialist (HITL-Gated)"
+            changes += 1
 
-        # Node 10: Default Ops Orchestrator
-        if node_id == "node_10":
+        elif node_id == "node_10":
             config["tools"] = DEFAULT_OPS_TOOLS
+            config["systemPrompt"] = OPS_PROMPT
+            config["maxIterations"] = 8
+            node["data"]["displayName"] = "Ops Orchestrator (Smart)"
+            changes += 1
 
-    # 3. Save back to DB
-    update_query = text("UPDATE workflow_definitions SET graph_json = :graph WHERE id = :id")
-    session.execute(update_query, {"graph": json.dumps(graph), "id": wf_id})
+    update = text("UPDATE workflow_definitions SET graph_json = :graph WHERE id = :id")
+    session.execute(update, {"graph": json.dumps(graph), "id": wf_id})
     session.commit()
-    print(f"Successfully updated HDFC_WF ({wf_id}) with smart tool routing and HITL prompts.")
+    print(f"Updated {changes} nodes in HDFC_WF ({wf_id})")
+
+    # Also write the updated JSON file for reference
+    with open(f"hdfc_workflow_{wf_id}.json", "w") as f:
+        json.dump(graph, f, indent=2)
+    print(f"Wrote hdfc_workflow_{wf_id}.json")
+
+    # Verify
+    r2 = session.execute(text("SELECT graph_json FROM workflow_definitions WHERE name='HDFC_WF'")).fetchone()
+    g2 = r2[0]
+    for n in g2["nodes"]:
+        if n["id"] in ("node_7", "node_8", "node_10"):
+            t = n["data"]["config"].get("tools", [])
+            print(f"  VERIFY {n['id']}: tools={len(t)} maxIter={n['data']['config'].get('maxIterations')}")
 
 finally:
     session.close()

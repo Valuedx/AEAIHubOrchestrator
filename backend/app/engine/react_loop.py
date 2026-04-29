@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 _MAX_ITERATIONS_HARD_CAP = 25
 _REACT_TOTAL_TIMEOUT = 200  # seconds — hard cap for entire ReAct loop
 
+# SMART-FILTER-02 — stop-words that match virtually every tool description
+# and defeat keyword-based tool filtering.
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "it", "in", "on", "of", "to", "for", "and",
+    "or", "not", "with", "by", "at", "from", "as", "be", "was", "are",
+    "can", "you", "i", "me", "my", "we", "do", "did", "does", "will",
+    "would", "could", "should", "have", "has", "had", "this", "that",
+    "what", "which", "who", "how", "if", "so", "but", "all", "any",
+    "no", "yes", "please", "hi", "hello", "hey", "thanks", "thank",
+    "get", "give", "show", "tell", "find", "look", "see", "know",
+    "want", "need", "help", "check", "about", "also",
+})
+
 
 def run_react_loop(
     node_data: dict,
@@ -112,7 +125,13 @@ def run_react_loop(
                 "memory_debug": memory_debug,
             }
 
-        logger.info("ReAct [%s/%s] iteration %d/%d (%.1fs elapsed)", provider, model, i + 1, max_iterations, elapsed)
+        logger.info("ReAct [%s/%s] iteration %d/%d (%.1fs elapsed, tools=%d)", provider, model, i + 1, max_iterations, elapsed, len(tool_defs))
+
+        # WRAPUP-01 — When approaching the iteration limit, inject a system
+        # message telling the LLM to stop calling tools and provide a summary.
+        if i == max_iterations - 2:
+            logger.info("ReAct injecting wrap-up instruction (iteration %d of %d)", i + 1, max_iterations)
+            messages = handler["inject_wrapup"](messages)
 
         iteration_start = time.monotonic()
         try:
@@ -208,8 +227,22 @@ def run_react_loop(
 
         messages = handler["append_tool_results"](messages, response, tool_results)
 
-    final_text = "Maximum iterations reached without final answer."
-    iterations.append({"iteration": max_iterations, "action": "max_iterations_exceeded"})
+    # EXHAUST-01 — Instead of returning a dead-end message, make one final
+    # LLM call WITHOUT tools to force a summary of everything gathered so far.
+    logger.info("ReAct max iterations reached — forcing summary call")
+    try:
+        summary_resp = handler["call"](
+            model, messages, [],  # empty tools forces text-only response
+            temperature, max_tokens, tenant_id=tenant_id,
+        )
+        final_text = summary_resp.get("content") or "Maximum iterations reached without final answer."
+        total_usage["input_tokens"] += summary_resp["usage"]["input_tokens"]
+        total_usage["output_tokens"] += summary_resp["usage"]["output_tokens"]
+    except Exception as exc:
+        logger.error("ReAct summary call failed: %s", exc)
+        final_text = "Maximum iterations reached without final answer."
+
+    iterations.append({"iteration": max_iterations + 1, "action": "forced_summary"})
 
     return {
         "response": final_text,
@@ -217,7 +250,7 @@ def run_react_loop(
         "model": model,
         "usage": total_usage,
         "iterations": iterations,
-        "total_iterations": max_iterations,
+        "total_iterations": max_iterations + 1,
         "memory_debug": memory_debug,
     }
 
@@ -289,35 +322,38 @@ def _load_tool_definitions(
     if tool_names is None:
         raw = list_tools(tenant_id=tenant_id, server_label=server_label)
         
-        # SMART-FILTER: If we have context, prune tools that are clearly irrelevant
-        # to the current user query to save tokens and avoid LLM confusion.
+        # SMART-FILTER-02: Prune tools based on meaningful keywords only.
+        # Removes English stop-words before scoring to prevent false matches.
         filtered_tools = raw
-        query = str(context.get("trigger", {}).get("message", "") or "").lower()
-        if query and context:
-            # Simple keyword scoring for "Smart" filtering
-            keywords = set(re.findall(r"\w+", query))
-            if keywords:
-                scored = []
-                for t in raw:
-                    name = t["name"].lower()
-                    desc = t["description"].lower()
-                    score = 0
-                    # Boost for direct matches in name/desc
-                    for kw in keywords:
-                        if kw in name: score += 5
-                        if kw in desc: score += 2
-                    # Base score for essential diagnostic/status tools
-                    if any(x in name for x in ("status", "health", "summary")):
-                        score += 1
-                    scored.append((score, t))
-                
-                # Take tools with score > 0, or at least the top 15 most relevant
-                scored.sort(key=lambda x: x[0], reverse=True)
-                filtered_tools = [t for score, t in scored if score > 0][:15]
-                
-                # Ensure we have at least SOME tools if scoring was too aggressive
-                if not filtered_tools:
-                    filtered_tools = raw[:10]
+        if context:
+            query = str(context.get("trigger", {}).get("message", "") or "").lower()
+            if query:
+                all_words = set(re.findall(r"\w+", query))
+                keywords = all_words - _STOP_WORDS  # remove stop-words
+                if keywords:
+                    scored = []
+                    for t in raw:
+                        name = t["name"].lower()
+                        desc = t["description"].lower()
+                        score = 0
+                        for kw in keywords:
+                            if kw in name: score += 5
+                            if kw in desc: score += 2
+                        # Always include core diagnostic/status tools
+                        if any(x in name for x in ("status", "health", "summary", "diagnose")):
+                            score += 3
+                        scored.append((score, t))
+                    
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    filtered_tools = [t for s, t in scored if s > 0][:15]
+                    
+                    if not filtered_tools:
+                        filtered_tools = raw[:10]
+                    
+                    logger.info(
+                        "SMART-FILTER: query keywords=%s → %d/%d tools selected",
+                        keywords, len(filtered_tools), len(raw),
+                    )
         
         return [
             {
@@ -592,7 +628,7 @@ def _google_call_backend(
         tools=google_tools,
     )
 
-    logger.info("ReAct starting Google GenAI call (model=%s, tools=%d)", model, len(google_tools) if google_tools else 0)
+    logger.info("ReAct starting Google GenAI call (model=%s, functions=%d)", model, len(func_decls) if google_tools else 0)
     resp = client.models.generate_content(model=model, contents=contents, config=config)
     logger.info("ReAct Google GenAI call finished")
     usage = resp.usage_metadata
@@ -701,22 +737,48 @@ def _google_append(state: dict, response: dict, tool_results: list[dict]) -> dic
         "user_message": "Continue based on the tool results above.",
     }
 
+_WRAPUP_MSG = (
+    "IMPORTANT: You are running out of iterations. "
+    "Do NOT call any more tools. Summarize all findings you have gathered so far "
+    "and provide your final answer to the user NOW."
+)
+
+
+def _openai_inject_wrapup(messages: list[dict]) -> list[dict]:
+    """Inject a wrap-up system message for OpenAI-style message lists."""
+    messages = list(messages)
+    messages.append({"role": "system", "content": _WRAPUP_MSG})
+    return messages
+
+
+def _anthropic_inject_wrapup(state: dict) -> dict:
+    """Inject a wrap-up instruction into the Anthropic system prompt."""
+    return {**state, "system": state["system"] + "\n\n" + _WRAPUP_MSG}
+
+
+def _google_inject_wrapup(state: dict) -> dict:
+    """Inject a wrap-up instruction into the Google/Vertex system prompt."""
+    return {**state, "system": state["system"] + "\n\n" + _WRAPUP_MSG}
+
 
 _PROVIDERS: dict[str, dict[str, Any]] = {
     "openai": {
         "init": _openai_init,
         "call": _openai_call,
         "append_tool_results": _openai_append,
+        "inject_wrapup": _openai_inject_wrapup,
     },
     "anthropic": {
         "init": _anthropic_init,
         "call": _anthropic_call,
         "append_tool_results": _anthropic_append,
+        "inject_wrapup": _anthropic_inject_wrapup,
     },
     "google": {
         "init": _google_init,
         "call": _google_call,
         "append_tool_results": _google_append,
+        "inject_wrapup": _google_inject_wrapup,
     },
     "vertex": {
         # Vertex reuses the genai-backed init + append helpers; only
@@ -724,5 +786,6 @@ _PROVIDERS: dict[str, dict[str, Any]] = {
         "init": _google_init,
         "call": _vertex_call,
         "append_tool_results": _google_append,
+        "inject_wrapup": _google_inject_wrapup,
     },
 }
