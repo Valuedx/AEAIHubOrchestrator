@@ -314,7 +314,16 @@ def _load_tool_definitions(
     
     if not tool_names:
         raw = list_tools(tenant_id=tenant_id, server_label=server_label)
-        
+
+        # ALWAYS-AVAILABLE tools — pinned regardless of keyword score so the
+        # Worker can always reach for case management + glossary translation
+        # + tool meta operations. These never get filtered out by SMART-06.
+        # (The MCP server marks them `always_available: true` in metadata,
+        # but list_tools doesn't propagate that field through the wire format
+        # — so we maintain the allowlist here as the source of truth.)
+        ALWAYS_AVAILABLE_PREFIXES = ("case.", "glossary.")
+        ALWAYS_AVAILABLE_NAMES: set[str] = set()  # exact names to pin
+
         # SMART-FILTER: If we have context, prune tools that are clearly irrelevant
         # to the current user query to save tokens and avoid LLM confusion.
         filtered_tools = raw
@@ -323,10 +332,17 @@ def _load_tool_definitions(
             # Simple keyword scoring for "Smart" filtering
             keywords = set(re.findall(r"\w+", query))
             if keywords:
+                always = []
                 scored = []
                 for t in raw:
                     name = t["name"].lower()
                     desc = t["description"].lower()
+                    if (
+                        any(name.startswith(p) for p in ALWAYS_AVAILABLE_PREFIXES)
+                        or t["name"] in ALWAYS_AVAILABLE_NAMES
+                    ):
+                        always.append(t)
+                        continue
                     score = 0
                     # Boost for direct matches in name/desc
                     for kw in keywords:
@@ -336,15 +352,17 @@ def _load_tool_definitions(
                     if any(x in name for x in ("status", "health", "summary")):
                         score += 1
                     scored.append((score, t))
-                
+
                 # Take tools with score > 0, or at least the top 15 most relevant
                 scored.sort(key=lambda x: x[0], reverse=True)
-                filtered_tools = [t for score, t in scored if score > 0][:15]
-                
+                relevant = [t for score, t in scored if score > 0][:15]
+
+                filtered_tools = always + relevant
+
                 # Ensure we have at least SOME tools if scoring was too aggressive
                 if not filtered_tools:
                     filtered_tools = raw[:10]
-        
+
         return [
             {
                 "type": "function",
