@@ -1573,16 +1573,20 @@ def main() -> int:
 
     # POST to orchestrator
     payload = {
-        "name": "AE Ops Support — V5 (hybrid + audience-aware + additive)",
-        "description": "V5 = V4 + (1) Intent Classifier in HYBRID mode (heuristic fast-path, "
-                       "fast-LLM fallback below 0.6 confidence — handles nuance & corrections). "
-                       "(2) Cross-cutting prompt rules: audience-aware language (business vs "
-                       "tech), confidence hedging, memory awareness (reads node_2.messages), "
-                       "verification after destructive actions. (3) New intents: output_missing, "
-                       "resolution_update, cancel_or_withdraw, correction — with case-state "
-                       "side-effects (RESOLVED_PENDING_CONFIRMATION, audit-worknote-on-withdraw). "
-                       "(4) Per-specialist case-state HTTP PATCHes for full audit trail. "
-                       "Pending V5.3 (fallback ticket-ID exit) + V5.6 (output_missing playbook).",
+        "name": "AE Ops Support — V7 (NEED_INFO + verification + glossary)",
+        "description": "V7 = V6 + (1) NEED_INFO interceptor: when a business user asks "
+                       "about an issue without an identifier, a Code+Switch+LLM subgraph "
+                       "asks one targeted question and parks the case in NEED_INFO so the "
+                       "next turn carries the answer forward (no re-asking loop). "
+                       "(2) Verification specialist: after a destructive remediation, a "
+                       "follow-up ReAct pass confirms the action actually worked. "
+                       "(3) Glossary translation: business-language descriptions "
+                       "(\"my daily recon report didn't arrive\") map to AE workflow IDs "
+                       "via /api/glossary/lookup before diagnostics. "
+                       "(4) No-hallucination diagnostics rule: specialists must not invent "
+                       "data when the user-supplied identifier returns no matches. "
+                       "Inherits from V5/V6: hybrid intent classifier, audience-aware prompts, "
+                       "ticket-ID fallback exits, per-specialist case-state PATCHes.",
         "graph_json": graph,
     }
     headers = {"X-Tenant-Id": TENANT_ID, "Content-Type": "application/json"}

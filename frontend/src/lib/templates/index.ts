@@ -3,6 +3,7 @@ import type { AgenticNodeData } from "@/types/nodes";
 import { EXAMPLE_IT_SUPPORT_HELPDESK_WORKFLOW } from "@/lib/exampleComplexWorkflow";
 import { EXAMPLE_OPERATIONS_ROUTING_WORKFLOW } from "@/lib/exampleOperationsRoutingWorkflow";
 import { AE_OPS_ROUTING_TEMPLATE } from "@/lib/aeOpsRoutingTemplate";
+import { AE_OPS_SUPPORT_V7_TEMPLATE } from "@/lib/aeOpsSupportV7Template";
 // MODEL-01.f — tier constants live in their own module to avoid a
 // circular import with the example workflow files above.
 import {
@@ -3017,6 +3018,27 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     category: "operations",
     tags: ["AE_Ops_Routing_Template", "automationedge", "AIOps", "ReAct", "HITL", "router"],
     graph: AE_OPS_ROUTING_TEMPLATE,
+  }),
+  asTemplate({
+    id: "ae-ops-support-v7",
+    name: "AE Ops L1 support — case-tracked, audience-aware, NEED_INFO loop-safe",
+    description:
+      "An L1 AutomationEdge ops support agent that opens a ticket on every inbound message, classifies intent (diagnostics / remediation / RCA / output_missing / resolution_update / cancel / correction) with a fast-LLM hybrid classifier, and hands off to the right specialist. Business-language phrasing (\"my daily recon report didn't arrive\") is translated to AE workflow IDs via a glossary lookup before diagnostics. When a business user asks about an issue without an identifier, a NEED_INFO subgraph asks one targeted question and parks the case so the next turn carries the answer forward — no re-asking loops. Destructive remediations run behind a Human Approval gate followed by a verification specialist that confirms the action actually worked. Diagnostics specialists are barred from inventing data when a user-supplied identifier returns no matches; failure paths exit with a ticket ID and case state instead of vague apologies. Every step PATCHes the case for a full audit trail.",
+    category: "customer-support",
+    tags: [
+      "automationedge",
+      "L1-support",
+      "case-tracked",
+      "intent-classifier",
+      "entity-extraction",
+      "ReAct",
+      "HITL",
+      "verification",
+      "glossary",
+      "NEED_INFO",
+      "audit",
+    ],
+    graph: AE_OPS_SUPPORT_V7_TEMPLATE,
   }),
   asTemplate({
     id: "rag-knowledge-qa",
