@@ -316,12 +316,33 @@ def _load_tool_definitions(
         raw = list_tools(tenant_id=tenant_id, server_label=server_label)
 
         # ALWAYS-AVAILABLE tools — pinned through whatever filter runs so the
-        # Worker can always reach for case management + glossary translation.
+        # Worker can always reach for case management + glossary translation
+        # + the basic AE discovery primitives that bootstrap any investigation.
         # The MCP server marks these `always_available: true` in metadata,
         # but list_tools doesn't propagate that field through the wire format
         # so the orchestrator-side allowlist is the source of truth.
+        #
+        # ALWAYS_AVAILABLE_NAMES intentionally includes a small set of AE
+        # discovery entry points (search / list / get_status / get_summary)
+        # that the embedding ranker would otherwise miss when the user query
+        # uses an action verb ("restart") — embedding similarity favours
+        # action tools (ae.agent.restart_service) over the discovery tools
+        # the Worker needs to call FIRST. Discovery tools are read-only and
+        # cheap; pinning them is essentially free.
         ALWAYS_AVAILABLE_PREFIXES = ("case.", "glossary.")
-        ALWAYS_AVAILABLE_NAMES: set[str] = set()
+        ALWAYS_AVAILABLE_NAMES: set[str] = {
+            "ae.workflow.search",
+            "ae.workflow.list",
+            "ae.workflow.list_for_user",
+            "ae.workflow.get_details",
+            "ae.workflow.get_recent_failure_stats",
+            "ae.request.list_recent",
+            "ae.request.get_summary",
+            "ae.request.get_failure_message",
+            "ae.agent.list_running",
+            "ae.agent.list_stopped",
+            "ae.agent.get_status",
+        }
 
         # Top-K domain tools exposed to the model. 15 was too tight when the
         # query word ("restart") matched action tools (ae.agent.restart_service)
