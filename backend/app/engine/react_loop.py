@@ -315,53 +315,123 @@ def _load_tool_definitions(
     if not tool_names:
         raw = list_tools(tenant_id=tenant_id, server_label=server_label)
 
-        # ALWAYS-AVAILABLE tools — pinned regardless of keyword score so the
-        # Worker can always reach for case management + glossary translation
-        # + tool meta operations. These never get filtered out by SMART-06.
-        # (The MCP server marks them `always_available: true` in metadata,
+        # ALWAYS-AVAILABLE tools — pinned through whatever filter runs so the
+        # Worker can always reach for case management + glossary translation.
+        # The MCP server marks these `always_available: true` in metadata,
         # but list_tools doesn't propagate that field through the wire format
-        # — so we maintain the allowlist here as the source of truth.)
+        # so the orchestrator-side allowlist is the source of truth.
         ALWAYS_AVAILABLE_PREFIXES = ("case.", "glossary.")
-        ALWAYS_AVAILABLE_NAMES: set[str] = set()  # exact names to pin
+        ALWAYS_AVAILABLE_NAMES: set[str] = set()
 
-        # SMART-FILTER: If we have context, prune tools that are clearly irrelevant
-        # to the current user query to save tokens and avoid LLM confusion.
-        filtered_tools = raw
-        query = str(context.get("trigger", {}).get("message", "") or "").lower()
-        if query and context:
-            # Simple keyword scoring for "Smart" filtering
-            keywords = set(re.findall(r"\w+", query))
-            if keywords:
-                always = []
-                scored = []
-                for t in raw:
-                    name = t["name"].lower()
-                    desc = t["description"].lower()
-                    if (
-                        any(name.startswith(p) for p in ALWAYS_AVAILABLE_PREFIXES)
-                        or t["name"] in ALWAYS_AVAILABLE_NAMES
-                    ):
-                        always.append(t)
-                        continue
-                    score = 0
-                    # Boost for direct matches in name/desc
-                    for kw in keywords:
-                        if kw in name: score += 5
-                        if kw in desc: score += 2
-                    # Base score for essential diagnostic/status tools
-                    if any(x in name for x in ("status", "health", "summary")):
-                        score += 1
-                    scored.append((score, t))
+        # Top-K domain tools exposed to the model. 15 was too tight when the
+        # query word ("restart") matched action tools (ae.agent.restart_service)
+        # higher than the discovery tools the Worker needs first
+        # (ae.workflow.search). 25 gives the embedding ranker more headroom
+        # without saturating Gemini's function-calling budget — still well
+        # under the practical ~30-40 declarations limit.
+        TOP_K_DOMAIN = 25
 
-                # Take tools with score > 0, or at least the top 15 most relevant
+        query = str((context or {}).get("trigger", {}).get("message", "") or "").strip()
+
+        # Split into pinned vs candidate-domain pools
+        pinned: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        for t in raw:
+            tname = t["name"]
+            if (
+                any(tname.startswith(p) for p in ALWAYS_AVAILABLE_PREFIXES)
+                or tname in ALWAYS_AVAILABLE_NAMES
+            ):
+                pinned.append(t)
+            else:
+                candidates.append(t)
+
+        # Embedding-based semantic filter for the domain pool. Replaces the
+        # earlier keyword-regex scoring (the user explicitly flagged that
+        # pattern as an anti-pattern — fast LLMs / embeddings should be the
+        # primary classifier, not heuristics).
+        #
+        # Strategy:
+        #   1. Embed the query (tenant-cached via embedding_cache).
+        #   2. Embed each tool's "name + description" once and cache it
+        #      (the same get_or_embed path Intent Classifier uses).
+        #   3. Cosine-rank, take top-K.
+        # Falls back to "expose all candidates" on any embedding error so a
+        # transient provider hiccup never strands the agent without tools.
+        ranked: list[dict[str, Any]] = candidates  # default fallback
+        if query and candidates:
+            try:
+                from app.engine.embedding_cache_helper import get_or_embed
+
+                embed_provider = (
+                    getattr(settings, "smart_05_embedding_provider", None)
+                    or settings.embedding_default_provider
+                    or "vertex"
+                )
+                embed_model = (
+                    getattr(settings, "smart_05_embedding_model", None)
+                    or "text-embedding-005"
+                )
+
+                tool_texts = [
+                    f"{t['name']}\n{(t.get('description') or '').strip()}"
+                    for t in candidates
+                ]
+                with SessionLocal() as db:
+                    from app.database import set_tenant_context
+                    set_tenant_context(db, tenant_id)
+                    query_vec = get_or_embed(
+                        tenant_id, [query], embed_provider, embed_model, db
+                    )[0]
+                    tool_vecs = get_or_embed(
+                        tenant_id, tool_texts, embed_provider, embed_model, db
+                    )
+
+                def _cosine(a: list[float], b: list[float]) -> float:
+                    if not a or not b:
+                        return 0.0
+                    dot = 0.0
+                    na = 0.0
+                    nb = 0.0
+                    for x, y in zip(a, b):
+                        dot += x * y
+                        na += x * x
+                        nb += y * y
+                    if na <= 0 or nb <= 0:
+                        return 0.0
+                    return dot / ((na ** 0.5) * (nb ** 0.5))
+
+                scored = [
+                    (_cosine(query_vec, tv), t)
+                    for tv, t in zip(tool_vecs, candidates)
+                ]
                 scored.sort(key=lambda x: x[0], reverse=True)
-                relevant = [t for score, t in scored if score > 0][:15]
+                ranked = [t for _, t in scored[:TOP_K_DOMAIN]]
+                top5 = ", ".join(
+                    f"{t['name']}={s:.3f}" for s, t in scored[:5]
+                )
+                logger.info(
+                    "ReAct tool filter: %d pinned + top-%d of %d via embeddings "
+                    "(%s/%s); top5: %s",
+                    len(pinned),
+                    len(ranked),
+                    len(candidates),
+                    embed_provider,
+                    embed_model,
+                    top5,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Embedding-based tool filter failed (%s); falling back to "
+                    "exposing first %d candidates plus pinned set",
+                    exc,
+                    TOP_K_DOMAIN,
+                )
+                ranked = candidates[:TOP_K_DOMAIN]
 
-                filtered_tools = always + relevant
-
-                # Ensure we have at least SOME tools if scoring was too aggressive
-                if not filtered_tools:
-                    filtered_tools = raw[:10]
+        filtered_tools = pinned + ranked
+        if not filtered_tools:
+            filtered_tools = raw[:10]
 
         return [
             {
