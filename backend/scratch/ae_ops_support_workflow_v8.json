@@ -453,7 +453,7 @@
         "label": "ReAct Agent",
         "config": {
           "icon": "repeat",
-          "model": "gemini-3-flash-preview",
+          "model": "gemini-2.5-flash",
           "provider": "vertex",
           "tools": [],
           "maxIterations": 5,
@@ -654,7 +654,7 @@
         "config": {
           "icon": "message-square",
           "responseNodeId": "node_worker",
-          "messageExpression": ""
+          "messageExpression": "node_worker.response if (node_worker.response and \"iterations reached\" not in node_worker.response and \"Maximum iterations\" not in node_worker.response) else \"I'm having trouble completing my investigation this turn \u2014 let me try again with more detail. Could you share the exact workflow name as it appears in AutomationEdge, a recent request ID, or the agent name? I've opened a support case and recorded my partial findings for the team to review.\""
         },
         "status": "idle",
         "displayName": "Reply (ops)",

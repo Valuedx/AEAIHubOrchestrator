@@ -719,15 +719,18 @@ def build_graph() -> dict:
     # 7e (default). The Worker — single ReAct that handles diagnostics,
     # remediation, output_missing, NEED_INFO, resolution_update, correction.
     # Top-15 semantic tool filter is applied automatically when tools=[]
-    # (SMART-06). Step limit is 5 — eval showed 8 was too generous; the
-    # Worker would burn iterations on retries when tools 404'd. The
-    # STOP-AND-ASK BUDGET in the prompt + this hard cap together prevent
-    # the "Maximum iterations reached without final answer" failure mode.
+    # (SMART-06). Step limit is 5.
+    #
+    # MODEL CHOICE: switched gemini-3-flash-preview → gemini-2.5-flash after
+    # eval + manual chat showed 3-flash-preview exhibiting non-deterministic
+    # termination (sometimes 4 iters → final_response, sometimes 6 iters →
+    # max_iterations_exceeded on identical input). 2.5-flash is more
+    # disciplined at honoring "stop calling tools, emit text" instructions.
     nodes.append(_node(
         "node_worker", "ReAct Agent",
         {
             "icon": "repeat",
-            "model": GEMINI_FLASH,
+            "model": GEMINI_25_FLASH,
             "provider": "vertex",
             "tools": [],  # SMART-06 + top-15 semantic filter
             "maxIterations": 5,
@@ -775,19 +778,44 @@ def build_graph() -> dict:
     # the Bridge AFTER the Verifier so the audit step still gates the reply
     # ordering, but `responseNodeId` points at the Worker so the user sees
     # the Worker's actual answer.
+    #
+    # SAFETY-NET messageExpression for the ops branch: if the Worker hit
+    # max_iterations or produced an empty reply, the Bridge falls back to
+    # a graceful clarifying message instead of leaking "Maximum iterations
+    # reached" to the user. Eval + manual chat showed both gemini-3-flash-
+    # preview AND gemini-2.5-flash occasionally fail to terminate cleanly
+    # on ambiguous "restart X" prompts; this catches those cases.
+    #
+    # Bridge messageExpression uses safe_eval (Python expression subset),
+    # NOT Jinja — so this is a single ternary, not a {% if %} block.
+    OPS_FALLBACK = (
+        "I'm having trouble completing my investigation this turn — let me try "
+        "again with more detail. Could you share the exact workflow name as it "
+        "appears in AutomationEdge, a recent request ID, or the agent name? "
+        "I've opened a support case and recorded my partial findings for the "
+        "team to review."
+    )
+    # node_worker.response is where ReAct stores its final reply (NOT .text — that
+    # field is empty for ReAct nodes). Discovered the hard way during eval.
+    OPS_FALLBACK_TEMPLATE = (
+        f'node_worker.response if (node_worker.response and '
+        f'"iterations reached" not in node_worker.response and '
+        f'"Maximum iterations" not in node_worker.response) '
+        f'else "{OPS_FALLBACK}"'
+    )
     bridges = [
-        # (replyFromNode, predecessorNode, bridgeId, saveId, x, y, label)
-        ("node_smalltalk",     "node_smalltalk",     "node_b_st",  "node_s_st",  1860, 80,  "Reply (small-talk)"),
-        ("node_rca",           "node_rca",           "node_b_rca", "node_s_rca", 1860, 180, "Reply (RCA)"),
-        ("node_handoff_reply", "node_handoff_reply", "node_b_ho",  "node_s_ho",  2100, 420, "Reply (handoff)"),
-        ("node_cancel_reply",  "node_cancel_reply",  "node_b_cn",  "node_s_cn",  2100, 520, "Reply (cancel)"),
-        ("node_worker",        "node_verifier",      "node_b_op",  "node_s_op",  2100, 300, "Reply (ops)"),
-        ("node_4d",            "node_4d",            "node_b_hf",  "node_s_hf",  1140, 560, "Reply (handed-off)"),
+        # (replyFromNode, predecessorNode, bridgeId, saveId, x, y, label, messageExpression)
+        ("node_smalltalk",     "node_smalltalk",     "node_b_st",  "node_s_st",  1860, 80,  "Reply (small-talk)", ""),
+        ("node_rca",           "node_rca",           "node_b_rca", "node_s_rca", 1860, 180, "Reply (RCA)", ""),
+        ("node_handoff_reply", "node_handoff_reply", "node_b_ho",  "node_s_ho",  2100, 420, "Reply (handoff)", ""),
+        ("node_cancel_reply",  "node_cancel_reply",  "node_b_cn",  "node_s_cn",  2100, 520, "Reply (cancel)", ""),
+        ("node_worker",        "node_verifier",      "node_b_op",  "node_s_op",  2100, 300, "Reply (ops)", OPS_FALLBACK_TEMPLATE),
+        ("node_4d",            "node_4d",            "node_b_hf",  "node_s_hf",  1140, 560, "Reply (handed-off)", ""),
     ]
-    for reply_src, pred, bridge_id, save_id, x, y, label in bridges:
+    for reply_src, pred, bridge_id, save_id, x, y, label, msg_expr in bridges:
         nodes.append(_node(
             bridge_id, "Bridge User Reply",
-            {"icon": "message-square", "responseNodeId": reply_src, "messageExpression": ""},
+            {"icon": "message-square", "responseNodeId": reply_src, "messageExpression": msg_expr},
             x=x, y=y, display_name=label, category="action",
         ))
         edges.append(_edge(pred, bridge_id))
