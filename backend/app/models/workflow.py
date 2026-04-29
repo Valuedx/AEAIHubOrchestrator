@@ -48,7 +48,15 @@ class WorkflowDefinition(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
-    instances = relationship("WorkflowInstance", back_populates="definition")
+    instances = relationship(
+        "WorkflowInstance",
+        back_populates="definition",
+        cascade="all, delete-orphan",
+    )
+    snapshots = relationship(
+        "WorkflowSnapshot",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_wf_def_tenant_name", "tenant_id", "name"),
@@ -101,12 +109,25 @@ class WorkflowInstance(Base):
     parent_node_id = Column(String(128), nullable=True)
 
     definition = relationship("WorkflowDefinition", back_populates="instances")
-    execution_logs = relationship("ExecutionLog", back_populates="instance")
+    execution_logs = relationship(
+        "ExecutionLog",
+        back_populates="instance",
+        cascade="all, delete-orphan",
+    )
+    checkpoints = relationship(
+        "InstanceCheckpoint",
+        cascade="all, delete-orphan",
+    )
+    approvals = relationship(
+        "ApprovalAuditLog",
+        cascade="all, delete-orphan",
+    )
     children = relationship(
         "WorkflowInstance",
         foreign_keys=[parent_instance_id],
         backref=backref("parent_instance_rel", remote_side=[id]),
         lazy="dynamic",
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
