@@ -215,7 +215,7 @@ ALWAYS-AVAILABLE (pinned — never filtered out by SMART-06):
   - case.close(reason)                 — close the case (e.g. on user-confirmed resolution).
   - case.add_evidence(kind, content)   — attach diagnostic evidence (log excerpt, screenshot, tool output snapshot).
   - glossary.lookup(description)       — translate business phrasing to a workflow_id.
-  - google_search(query)               — Vertex-grounded web search; use when an error code, SaaS name, or product term is unfamiliar.
+  - google_search(query)               — Web search; use when an error code, SaaS name, or product term is unfamiliar. (PENDING WIRING — see scratch/V8_NOTES.md.)
 
 DOMAIN TOOLS (semantically filtered — top-15 picked per turn from the AE MCP catalog of ~116):
   - ae.workflow.* / ae.request.* / ae.agent.* / ae.schedule.* / ae.support.* — the operational fabric.
