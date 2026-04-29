@@ -84,6 +84,26 @@ def run_react_loop(
         context=context,
     )
 
+    # TOOL-NAME-NORMALIZATION — Gemini's function-calling spec disallows dots
+    # in tool names, so the Vertex SDK sanitizes "case.add_worknote" →
+    # "case_add_worknote" before showing it to the model. The model then
+    # invokes the sanitized name, but mcp_client.call_tool needs the
+    # original dotted name to route correctly. Build a map of every
+    # plausible sanitization variant → original name.
+    tool_name_map: dict[str, str] = {}
+    for _td in tool_defs:
+        _original = (_td.get("function") or {}).get("name", "")
+        if not _original:
+            continue
+        tool_name_map[_original] = _original
+        tool_name_map[_original.replace(".", "_")] = _original
+        # Last-segment fallback (model occasionally drops the namespace
+        # entirely). Skip if it would collide with a previously-mapped
+        # original name from a different namespace.
+        _last = _original.rsplit(".", 1)[-1]
+        if _last and _last not in tool_name_map:
+            tool_name_map[_last] = _original
+
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     iterations: list[dict[str, Any]] = []
 
@@ -158,7 +178,13 @@ def run_react_loop(
         tool_results = []
         tools_start = time.monotonic()
         for tc in response["tool_calls"]:
-            tool_name = tc["name"]
+            raw_name = tc["name"]
+            # Translate Vertex-sanitized name (case_add_worknote) back to the
+            # MCP-registered original (case.add_worknote). Falls through if
+            # already a known name.
+            tool_name = tool_name_map.get(raw_name, raw_name)
+            if tool_name != raw_name:
+                logger.info("ReAct tool name normalized: %r → %r", raw_name, tool_name)
             tool_args = tc["arguments"]
             logger.info("ReAct calling tool: %s(%s)", tool_name, json.dumps(tool_args)[:200])
 
