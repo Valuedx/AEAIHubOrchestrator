@@ -4,6 +4,7 @@ from app.models.knowledge import KnowledgeBase, KBDocument, KBChunk
 from app.models.embedding_cache import EmbeddingCache
 from app.models.memory import ConversationEpisode, ConversationMessage, MemoryProfile, MemoryRecord, EntityFact
 from app.models.user import User
+from app.models.support_case import SupportCase, SUPPORT_CASE_STATES
 
 __all__ = [
     "WorkflowDefinition",
@@ -21,4 +22,6 @@ __all__ = [
     "MemoryRecord",
     "EntityFact",
     "User",
+    "SupportCase",
+    "SUPPORT_CASE_STATES",
 ]

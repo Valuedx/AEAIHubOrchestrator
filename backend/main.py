@@ -27,6 +27,7 @@ from app.api.models import router as models_router
 from app.api.llm_credentials import router as llm_credentials_router
 from app.api.copilot_drafts import router as copilot_drafts_router
 from app.api.copilot_sessions import router as copilot_sessions_router
+from app.api.support_cases import router as support_cases_router
 from app.security.rate_limiter import limiter
 from app.security.tenant_rate_limit import TenantRateLimitMiddleware
 
@@ -127,6 +128,7 @@ app.include_router(
 )
 app.include_router(copilot_drafts_router)
 app.include_router(copilot_sessions_router)
+app.include_router(support_cases_router)
 
 if settings.oidc_enabled:
     from app.api.auth import router as oidc_router

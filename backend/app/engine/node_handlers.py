@@ -260,7 +260,7 @@ def _handle_action(
         )
 
     if config.get("url"):
-        return _call_http(config)
+        return _call_http(config, context)
 
     logger.warning("Action node '%s' has no executable config", label)
     return {"output": None, "warning": "No action configured"}
@@ -295,23 +295,60 @@ def _call_mcp_tool(
         return result
 
 
-def _call_http(config: dict) -> dict[str, Any]:
-    """Make a generic HTTP request."""
+def _call_http(config: dict, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Make a generic HTTP request.
+
+    ``url``, every header value, and ``body`` go through Jinja2 rendering
+    against the execution context, so workflow authors can do:
+
+        url:    http://localhost:8001/api/v1/support-cases/by-session/{{ trigger.session_id }}
+        body:   {"session_id": "{{ trigger.session_id }}", "title": "{{ node_3.intent }}"}
+        headers: { "X-Tenant-Id": "{{ trigger.tenant_id | default('default') }}" }
+
+    Empty body is sent as ``content=None`` so GET / DELETE requests don't
+    accidentally carry an empty-string body, which some servers reject.
+    On JSON content-type, the response body is parsed and surfaced as
+    ``json``; otherwise raw text under ``body``.
+    """
+    from app.engine.prompt_template import render_prompt
+
+    ctx = context or {}
+
+    def _render(value: Any) -> Any:
+        return render_prompt(value, ctx) if isinstance(value, str) else value
+
+    rendered_url = _render(config["url"])
+    rendered_method = config.get("method", "GET")
+    rendered_headers = {k: _render(v) for k, v in (config.get("headers") or {}).items()}
+    rendered_body = _render(config.get("body") or "") or None
+
     try:
         resp = httpx.request(
-            method=config.get("method", "GET"),
-            url=config["url"],
-            headers=config.get("headers", {}),
-            content=config.get("body", None),
+            method=rendered_method,
+            url=rendered_url,
+            headers=rendered_headers,
+            content=rendered_body,
             timeout=30.0,
         )
-        return {
+        out: dict[str, Any] = {
             "status_code": resp.status_code,
-            "body": resp.text[:10000],
+            "url": rendered_url,
         }
+        # Parse JSON if the response advertises it — otherwise raw text. The
+        # parsed dict gets dot-accessible in downstream nodes (Switch /
+        # ReAct / next HTTP Request).
+        ctype = (resp.headers.get("content-type") or "").lower()
+        if "application/json" in ctype:
+            try:
+                out["json"] = resp.json()
+            except Exception:
+                out["body"] = resp.text[:10000]
+        else:
+            out["body"] = resp.text[:10000]
+        return out
     except httpx.HTTPError as exc:
         logger.error("HTTP request failed: %s", exc)
-        return {"error": str(exc)}
+        return {"error": str(exc), "url": rendered_url}
 
 
 def _handle_logic(

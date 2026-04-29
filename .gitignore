@@ -1,5 +1,7 @@
 # Backend
 backend/.env
+backend/.env.*
+backend/.secrets/
 backend/.pytest_cache/
 backend/**/__pycache__/
 backend/**/*.pyc
@@ -37,3 +39,4 @@ dump.rdb
 
 # Frontend environment
 frontend/.env
+frontend/.env.*
