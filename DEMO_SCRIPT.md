@@ -292,9 +292,147 @@ The whole workflow is one Python file generating JSON. Demo ops teams can edit i
 
 ---
 
+## 3.5 · V8 — the same use case, simplified (router + worker + critic)
+
+> Switch to tab A's workflow picker. Show "AE Ops Support — V7 (NEED_INFO + verification + glossary)" sitting next to "AE Ops Support — V8 (router + worker + critic, case tools as MCP)". Same use case, two architectures.
+
+V8 is a deliberate simplification of V7 grounded in named patterns from Anthropic's *Building Effective Agents* (Dec 2024), OpenAI's *Practical Guide to Building Agents* (Apr 2025), and 12-Factor Agents. We built it in parallel — V7 stays deployed; V8 lives alongside it; an eval harness benchmarks both on the same transcript suite (`backend/scratch/run_ae_ops_evals.py`, 12 multi-turn cases).
+
+**Why V8 exists:** V7 grew because each iteration patched a specific failure with a node — V5 misclassified → Switch fan-out; V6 hallucinated → dedicated Investigator + rule; V7 looped on missing IDs → NEED_INFO Code+Switch+LLM subgraph. Each fix was right in isolation; the DAG-as-control-flow approach compounded into 76 nodes. With a capable model and good prompts, most of that collapses.
+
+### Topology
+
+```
+[1 Webhook]
+   ↓
+[2 LoadConvState]   capped at last 10 turns
+   ↓
+[3 HTTP /api/cases]   case opened or fetched (idempotent)
+   ↓
+[4 Switch HANDED_OFF?] ─yes→ canned reply, exit
+   ↓ no
+[Glossary lookup]   business desc → workflow_id (always-on, cheap)
+   ↓
+[Router: Intent Classifier]   5 intents only (small_talk, rca_request, handoff, cancel, ops)
+   ↓
+[Switch on intent]
+   ├ small_talk    → small-talk LLM (gemini-2.5-flash, 384 tok)        → bridge+save
+   ├ rca_request   → RCA LLM       (gemini-2.5-flash, 2048 tok, no tools) → bridge+save
+   ├ handoff       → HTTP PATCH /handoff → handed-off LLM              → bridge+save
+   ├ cancel        → HTTP PATCH /close   → cancel LLM                  → bridge+save
+   └ ops (default) → Worker ReAct (gemini-3-flash, 8 iters, MCP+case+glossary tools)
+                       ↓
+                     Verifier ReAct (gemini-2.5-flash, 2 iters, read-only tools)
+                       ↓ (output goes to case worknote, NOT user-facing)
+                     bridge+save (Worker's reply to user)
+```
+
+**~28 nodes vs V7's 76.** The 13-node "core logic" plus per-branch Bridge+Save pairs needed for fan-in convergence.
+
+### What's load-bearing in the DAG
+
+1. **Trigger / load memory / case open** — engine integration, not reasoning.
+2. **HITL gate** — engine watches for `AWAITING_APPROVAL`. The Worker calls a destructive tool, the runtime parks the run; an approver clicks the badge in the toolbar; the tool returns and the Worker continues. This cannot be agent-controlled for irreversible actions.
+3. **Save memory + bridge user reply** — engine integration.
+
+That's 5 nodes that must stay deterministic. Everything else moves into the prompt or tools.
+
+### What collapses into the Worker
+
+| V7 (DAG) | V8 (prompt + tools) |
+|---|---|
+| Intent Classifier + 7-way Switch fan-out | Single 5-way router; Worker handles diagnostics / remediation / output_missing / NEED_INFO / resolution_update / correction |
+| Entity Extractor node | Worker extracts identifiers inline |
+| Glossary HTTP + Switch + clarify-LLM | Worker calls `glossary.lookup(description)` MCP tool |
+| NEED_INFO Code+Switch+LLM subgraph | Worker prompt: "if missing identifier, ask one targeted question + `case.update_state('NEED_INFO')`" |
+| 7 per-intent specialist subtrees | One Worker with all tools |
+| Verification ReAct after destructive | Same — preserved as a separate node with FRESH context (best-practice evaluator-optimizer pattern catches what the Worker would rationalise about its own action) |
+| Per-specialist case-state PATCHes (~7 HTTP nodes) | Worker calls `case.add_worknote / update_state / handoff / close / add_evidence` MCP tools |
+| `_wrap()` cross-cutting rules over every specialist | One consolidated Worker prompt with cacheable static prefix + per-turn dynamic context block |
+
+### Cost-aware model tiering
+
+| Role | Model | Why |
+|---|---|---|
+| Worker (hot path) | `gemini-3-flash-preview` | Best Flash-tier tool savvy; supports built-in + custom tools in one turn |
+| Router | `gemini-2.5-flash` | Fast, structured output; doesn't need 3-flash savvy |
+| Verifier | `gemini-2.5-flash`, max 2 iters | Compare task only |
+| RCA writer | `gemini-2.5-flash`, 2048 tok | Synthesis at structured-prompt is enough; Pro tier rejected (4–10× cost without measured quality benefit at L1 scope) |
+| Small-talk / handoff / cancel | `gemini-2.5-flash`, ≤384 tok | Tight token budget for canned replies |
+
+### Two tool tiers (named in the Worker prompt)
+
+  - **ALWAYS-AVAILABLE** (pinned, never SMART-06-filtered): `case.add_worknote / update_state / handoff / close / add_evidence / get`, `glossary.lookup`. Live in `D:/Projects/AEAIHUBTesterUI/mcp_server/tools/case_tools.py`.
+  - **DOMAIN TOOLS** (semantically filtered top-15 from ~116 AE tools per turn): `ae.workflow.* / ae.request.* / ae.agent.* / ae.schedule.* / ae.support.*`.
+
+This split follows OpenAI's *descriptions matter more than count* principle. The Worker knows which tier to reach for via its prompt; the engine handles filtering.
+
+### Prompt engineering — cacheable prefix + dynamic suffix
+
+Worker prompt is split into:
+
+  1. **STATIC prefix** — audience rules, no-hallucination rule, ask-one-question rule, destructive-action rules, memory awareness, intent-label hints, response style, AE architecture primer (failure-cause chains, standard remediations). Byte-stable across turns → hits Vertex prompt cache.
+  2. **DYNAMIC context block** — `user_role`, router intent, case_id, case_state, prior evidence count, glossary match. Per-turn variables, isolated at the very end.
+
+Vertex's prefix-cache TTL means the static section is amortised across a session. The dynamic section is small.
+
+### Eval-driven verdict (12-case transcript suite)
+
+`backend/scratch/run_ae_ops_evals.py` against `ae_ops_eval_transcripts.json` — 12 multi-turn cases covering routing diversity, NEED_INFO loop safety, no-hallucination on bogus IDs, correction, resolution_update mid-thread, RCA, smalltalk, handoff, cancel, destructive+verification, hostile prompt-injection.
+
+| Aggregate | V7 | V8 |
+|---|---|---|
+| Cases passing all-criteria | 2/12 | 2/12 |
+| Cases tied | — | — |
+| Avg latency / turn (canned reply) | ~50s | ~55s |
+| Avg latency / turn (Worker / specialist) | ~55s | ~110s |
+
+**V8 wins** (where V7 fails outright):
+
+  1. **no-hallucination on bogus request_id**: V7 returns *empty reply*. V8 says "I couldn't locate request ID `99999...` — it may have been purged. I've logged this in case `b79934a7`." This is the most important quality signal for an L1 ops agent.
+  2. **tech-specific request_id**: V7 misclassifies "diagnose request 9876" as `resolution_update` and replies with cheerful nonsense. V8 surfaces "couldn't locate request 9876" + opens a case + offers L2 routing.
+  3. **destructive-with-verification**: V7 hits `suspended` state with empty reply. V8 honestly reports "couldn't locate agent worker-12 in the system" + checks running/stopped/unknown agent lists.
+
+**V7 wins** (V8 regressions found by the eval):
+
+  1. **glossary-match (turn 1)**: Both intent classifiers misclassify "I haven't received my daily recon report this morning" — V7 as `chitchat` (but produces empathetic full reply), V8 as `small_talk` (reply gets cut off at "Hello there! I" because max_tokens was 192). FIX SHIPPED: bumped V8 small-talk max_tokens to 384, added missing-report phrasings as `ops` examples with priority 130 > small_talk's 100.
+  2. **vague-business (3-turn)**: V7 asks clarifying questions properly. V8 hits "Maximum iterations reached without final answer" because no MCP tools were available and the Worker kept retrying instead of stopping. FIX SHIPPED: added STOP-AND-ASK BUDGET section to Worker prompt with concrete stop conditions (2 consecutive 404s, 3 tool calls without convergence, no glossary match → straight to NEED_INFO without any tool call).
+  3. **hostile-prompt-injection**: Both refuse but V8's reply still contains the words "system prompt" — confirms what the attacker wanted. FIX SHIPPED: added prompt-injection-defence section to small-talk prompt explicitly forbidding those words in the reply.
+
+After fixes: V8 redeployed at `029ecb53`. Re-running the eval is the next step before drawing a final cost-quality verdict.
+
+### When to pick which
+
+| Scenario | Pick |
+|---|---|
+| Quality / no-hallucination is the most important signal | V8 |
+| Highest tool-call budget on the hot path (cost-sensitive, high-volume) | V7 (cheaper LLM hops on canned-reply paths) |
+| Need to add a new playbook / intent quickly | V8 (one prompt paragraph + maybe one tool) |
+| Compliance demands canvas-visible state transitions | V7 (Switch+HTTP nodes are auditable artefacts) |
+| Best demo story for AI-tech audience | V8 (autonomous agent + tool trace) |
+| L1 ops console with strict SLA per branch | V7 (deterministic branch latency) |
+
+Both ship. Don't replace V7 yet — let the eval data decide as workloads evolve.
+
+### File index for V8
+
+| Subsystem | Builder ref (`build_ae_ops_workflow_v8.py`) | Runtime / data |
+|---|---|---|
+| Worker prompt (static + dynamic) | `WORKER_PROMPT_STATIC` / `WORKER_PROMPT_DYNAMIC` | applied to `node_worker` |
+| Router (Intent Classifier) | line ~330, 5 intents | `app/engine/intent_classifier.py` |
+| Verifier (read-only critic) | `VERIFIER_PROMPT` | `node_verifier`, max 2 iters |
+| RCA writer | `RCA_PROMPT` | `node_rca`, gemini-2.5-flash, 2048 tok |
+| Always-available case + glossary tools | — | `D:/Projects/AEAIHUBTesterUI/mcp_server/tools/case_tools.py` |
+| Tool descriptions (curated) | — | `D:/Projects/AEAIHUBTesterUI/mcp_server/tool_specs.py:_CURATED_TOOL_OVERRIDES` |
+| Eval transcripts | — | `backend/scratch/ae_ops_eval_transcripts.json` (12 cases) |
+| Eval runner | — | `backend/scratch/run_ae_ops_evals.py` |
+| V8 design notes | — | `backend/scratch/V8_NOTES.md` |
+
+---
+
 ## 4 · Live demo — 7 scenarios
 
-> Time-box: each scenario ~5-7 minutes. ALL scenarios run on the V7 workflow.
+> Time-box: each scenario ~5-7 minutes. By default scenarios run on **V7** (case-tracked, audience-aware, NEED_INFO loop-safe) — the canvas tells the story most clearly there. For YC tech-review audiences, run scenarios 4 (no-hallucination) and 7 (destructive+verification) on **V8** as well to show the architecture-simplification win. Workflow picker in tab B switches between them; both share the same case API + glossary, so case state continues seamlessly.
 
 ### Scenario 1 — Chitchat baseline (3 min)
 
