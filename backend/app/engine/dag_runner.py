@@ -469,6 +469,29 @@ def resume_graph(
         )
 
     already_executed = set(context.keys()) - {"trigger", "approval"}
+
+    # HITL-resume fix: when a tool inside a ReAct node returned
+    # AWAITING_APPROVAL, the suspending node never completed and
+    # should be RE-EXECUTED on resume (this time with
+    # context["approval"]["approved"]=True so the gate passes
+    # through). Without this, the engine treats the suspending node
+    # as already-done and prunes the downstream subgraph, leaving the
+    # destructive action unfired.
+    if instance.current_node_id and instance.current_node_id in already_executed:
+        already_executed.discard(instance.current_node_id)
+        # Drop its stale (partial) output so the re-execution starts fresh.
+        context.pop(instance.current_node_id, None)
+        logger.info(
+            "Resume: re-running suspended node %s (HITL approval received)",
+            instance.current_node_id,
+        )
+    elif instance.current_node_id:
+        # Node wasn't in context anyway — no-op, but log for traceability.
+        logger.info(
+            "Resume: suspended node %s not in context; engine will pick it up via in-degree",
+            instance.current_node_id,
+        )
+
     _execute_ready_queue(
         db, instance, nodes_map, forward, reverse, in_degree, context,
         skipped=already_executed,
