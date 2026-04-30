@@ -666,6 +666,14 @@ def _execute_ready_queue(
             satisfied[nid] = set()
             _propagate_edges(nid, forward, nodes_map, context, satisfied, pruned)
 
+    # HITL-resume-03: after propagating skipped nodes, a mid-graph resume
+    # point (e.g. node_worker suspended before saving its output) may have
+    # all predecessors satisfied but a non-zero in-degree, so it never lands
+    # in the initial `ready` list above. Bootstrap from _find_ready_nodes so
+    # those nodes are picked up even when `ready` would otherwise be empty.
+    if not ready:
+        ready = _find_ready_nodes(nodes_map, reverse, satisfied, context, skipped, pruned)
+
     while ready:
         ready = [nid for nid in ready if nid not in pruned]
         if not ready:

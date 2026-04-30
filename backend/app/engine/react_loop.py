@@ -107,6 +107,62 @@ def run_react_loop(
     total_usage = {"input_tokens": 0, "output_tokens": 0}
     iterations: list[dict[str, Any]] = []
 
+    # HITL-04 — Re-fire previously-planned destructive tool on resume.
+    # When a destructive tool returned AWAITING_APPROVAL, we persisted
+    # the (tool, args) pair into context["hitl_pending_call"] before
+    # suspending. On resume the engine re-enters this node from scratch;
+    # without intervention the LLM would re-deliberate and often pick a
+    # different action than the one the operator actually approved
+    # (it has no notion of "what was approved"). Instead, fire the
+    # persisted call directly with the approval token, surface the
+    # result to the model as a synthetic user turn, and let it produce
+    # the confirmation reply. The approval is then consumed so any
+    # additional destructive call in this turn re-engages the gate.
+    pending = context.get("hitl_pending_call")
+    approval = context.get("approval") if isinstance(context.get("approval"), dict) else None
+    if pending and approval and approval.get("approved"):
+        pending_tool = pending.get("tool") or ""
+        pending_args = dict(pending.get("arguments") or {})
+        try:
+            logger.info("HITL-04: re-firing approved tool %s on resume", pending_tool)
+            refired_result = _execute_tool(
+                pending_tool, pending_args, tenant_id,
+                server_label=mcp_server_label,
+                context=context,  # injects technical_approval_id from approval
+            )
+        except Exception as exc:
+            logger.error("HITL-04: re-fire of %s failed: %s", pending_tool, exc)
+            refired_result = {"error": f"Approved tool re-fire failed: {exc}"}
+
+        sanitized_refired = _sanitize_tool_result(refired_result)
+        synthetic_notice = (
+            "[System notice — HITL gate cleared]\n"
+            "Your previously-planned tool call was approved by the human "
+            "reviewer and has just been executed on your behalf. "
+            "The approval token is single-use and the action is done.\n\n"
+            f"Tool: {pending_tool}\n"
+            f"Arguments: {json.dumps(pending_args, default=str)[:1000]}\n"
+            f"Result: {json.dumps(sanitized_refired, default=str)[:1500]}\n\n"
+            "Acknowledge the action to the user and report any follow-up "
+            "diagnostics. Do NOT call this tool again in this turn."
+        )
+        initial_messages.append({"role": "user", "content": synthetic_notice})
+
+        iterations.append({
+            "iteration": 0,
+            "action": "approved_tool_executed",
+            "tool_calls": [{"name": pending_tool, "arguments": pending_args}],
+            "tool_results": [
+                {"name": pending_tool, "result_preview": str(sanitized_refired)[:500]}
+            ],
+        })
+
+        # Consume the pending marker and the approval so subsequent
+        # destructive calls in this same turn engage a fresh gate.
+        # Read-only tools that don't check the token are unaffected.
+        context.pop("hitl_pending_call", None)
+        context.pop("approval", None)
+
     handler = _PROVIDERS.get(provider)
     if not handler:
         raise ValueError(f"Unknown LLM provider for ReAct: {provider}")
@@ -201,6 +257,14 @@ def run_react_loop(
                 if isinstance(result, dict) and result.get("status") == "AWAITING_APPROVAL":
                     from app.engine.exceptions import NodeSuspendedAsync
                     logger.info("Tool %s requested approval. Suspending workflow.", tool_name)
+                    # HITL-04 — Persist the planned (tool, args) so resume
+                    # can re-fire it directly instead of re-deliberating.
+                    # Non-underscore key so it survives _get_clean_context.
+                    context["hitl_pending_call"] = {
+                        "tool": tool_name,
+                        "arguments": tool_args,
+                        "iteration": i + 1,
+                    }
                     raise NodeSuspendedAsync(
                         async_job_id=f"hitl-{tool_name}",
                         system="human_approval",
@@ -331,17 +395,27 @@ def _load_tool_definitions(
         # cheap; pinning them is essentially free.
         ALWAYS_AVAILABLE_PREFIXES = ("case.", "glossary.")
         ALWAYS_AVAILABLE_NAMES: set[str] = {
+            # AE discovery / read-only diagnostics
             "ae.workflow.search",
             "ae.workflow.list",
             "ae.workflow.list_for_user",
             "ae.workflow.get_details",
             "ae.workflow.get_recent_failure_stats",
             "ae.request.list_recent",
+            "ae.request.list_failed_recently",
             "ae.request.get_summary",
             "ae.request.get_failure_message",
             "ae.agent.list_running",
             "ae.agent.list_stopped",
             "ae.agent.get_status",
+            # Core remediation tools — always pinned so the Worker never
+            # hallucinates a tool name when these miss the semantic top-K.
+            "ae.request.resubmit_from_start",
+            "ae.request.resubmit_from_failure_point",
+            "ae.request.restart_failed",
+            "ae.request.restart",
+            "ae.request.terminate_running",
+            "ae.request.cancel_new_or_retry",
         }
 
         # Top-K domain tools exposed to the model. 15 was too tight when the
