@@ -945,6 +945,51 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "inspect_context_flow",
+        "side_effects": ["read_only"],
+        "description": (
+            "Read the per-instance context-write trace (CTX-MGMT.H). "
+            "When tracing is on for an instance (always on for "
+            "copilot-ephemeral runs; opt-in via "
+            "`tenant_policies.context_trace_enabled` for production), "
+            "the engine writes one row to `instance_context_trace` "
+            "per `context[node_id] = output` write. Use this to "
+            "answer 'where did node_X come from?' or 'which writes "
+            "touched the case slot?' without scraping "
+            "`instance.context_json` by hand. Returns "
+            "`{instance_id, key_filter, event_count, events: "
+            "[{id, node_id, op, key, size_bytes, reducer, "
+            "overflowed, ts}, ...]}` ordered ts ASC, capped at 200. "
+            "Each event records the reducer that was applied "
+            "(`overwrite` / `append` / `merge` / etc. — CTX-MGMT.L) "
+            "and whether the write overflowed (CTX-MGMT.A). Same "
+            "ephemeral-only safety as get_execution_logs — "
+            "production instances are NOT readable."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["instance_id"],
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": (
+                        "Instance id from a prior execute_draft / "
+                        "run_scenario / run_debug_scenario."
+                    ),
+                },
+                "key": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Filter to events where the slot "
+                        "key matches. Use a trailing `*` for prefix "
+                        "match (e.g. `node_*` returns every node "
+                        "write); omit for all events on the instance."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "suggest_issue_filing",
         "side_effects": ["read_only"],
         "description": (

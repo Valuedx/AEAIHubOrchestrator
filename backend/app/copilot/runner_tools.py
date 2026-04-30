@@ -727,6 +727,8 @@ RUNNER_TOOL_NAMES = {
     "suggest_issue_filing",
     # CTX-MGMT.A — overflow artifact inspection
     "inspect_node_artifact",
+    # CTX-MGMT.H — context-write trace inspection
+    "inspect_context_flow",
 }
 
 
@@ -1008,6 +1010,10 @@ def dispatch(
         )
     if tool_name == "inspect_node_artifact":
         return inspect_node_artifact(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "inspect_context_flow":
+        return inspect_context_flow(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
     raise KeyError(tool_name)
@@ -3145,4 +3151,106 @@ def inspect_node_artifact(
         "budget_bytes": artifact.budget_bytes,
         "output_json": artifact.output_json,
         "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.H — inspect_context_flow
+# ---------------------------------------------------------------------------
+
+
+def inspect_context_flow(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Read the per-instance context-write trace.
+
+    When tracing is on for an instance (ephemeral copilot-initiated
+    runs always; production opts in via tenant_policies), the engine
+    writes one row to ``instance_context_trace`` per
+    ``context[node_id] = output`` write. This tool reads those rows
+    so the agent can answer "where did node_4r come from?" /
+    "which writes touched the case slot?" without scraping
+    ``instance.context_json``.
+
+    Args
+    ----
+    ::
+
+        {
+          "instance_id": "<uuid>",   # required — copilot-ephemeral
+          "key": "<node_id>",        # optional — exact match. Use
+                                     #            "node_*" suffix-* for prefix.
+        }
+
+    Returns
+    -------
+    ::
+
+        {
+          "instance_id": "...",
+          "key_filter": "..." | null,
+          "event_count": N,
+          "events": [
+            {id, node_id, op, key, size_bytes, reducer, overflowed, ts},
+            ...  # capped at 200, ordered ts ASC
+          ]
+        }
+
+    Or ``{"error": "..."}`` if the instance isn't readable (production
+    instance, missing, wrong tenant).
+
+    Same ephemeral-only safety as ``get_execution_logs`` — production
+    instances are NOT readable from the copilot tool surface.
+    """
+    from app.engine.context_trace import fetch_events_for_instance
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance
+
+    instance_id = args.get("instance_id")
+    if not instance_id:
+        return {"error": "inspect_context_flow requires 'instance_id'"}
+    try:
+        instance_uuid = uuid.UUID(str(instance_id))
+    except ValueError:
+        return {"error": f"inspect_context_flow: invalid instance_id {instance_id!r}"}
+
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_uuid, tenant_id=tenant_id)
+        .first()
+    )
+    if instance is None:
+        return {"error": f"Instance {instance_id!r} not found for this tenant"}
+
+    wd = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=instance.workflow_def_id, tenant_id=tenant_id)
+        .first()
+    )
+    if wd is None or not wd.is_ephemeral:
+        return {
+            "error": (
+                "inspect_context_flow only supports copilot-initiated "
+                "(ephemeral) instances."
+            ),
+        }
+
+    key_filter = args.get("key")
+    if key_filter is not None and not isinstance(key_filter, str):
+        return {"error": "inspect_context_flow 'key' must be a string"}
+
+    events = fetch_events_for_instance(
+        db,
+        tenant_id=tenant_id,
+        instance_id=instance_uuid,
+        key=key_filter or None,
+    )
+    return {
+        "instance_id": str(instance_uuid),
+        "key_filter": key_filter,
+        "event_count": len(events),
+        "events": events,
     }

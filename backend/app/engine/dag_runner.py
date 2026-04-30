@@ -489,6 +489,18 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
             parent_chain.append(str(ancestor.workflow_def_id))
         runtime["parent_chain"] = parent_chain
 
+    # CTX-MGMT.H — resolve the context-trace flag once at run start
+    # and stamp it under _runtime. The fast-path check in record_write
+    # is then a single dict lookup; default-off production paths add
+    # zero overhead. Ephemeral instances always trace; production
+    # opts in via tenant_policies.context_trace_enabled.
+    if "context_trace_enabled" not in runtime:
+        from app.engine.context_trace import resolve_trace_flag
+        is_ephemeral = bool(getattr(instance.definition, "is_ephemeral", False))
+        runtime["context_trace_enabled"] = resolve_trace_flag(
+            db, tenant_id=instance.tenant_id, is_ephemeral=is_ephemeral,
+        )
+
     det_tag = ["deterministic"] if deterministic_mode else []
     with trace_workflow(
         workflow_id=str(instance.workflow_def_id),
@@ -1338,6 +1350,20 @@ def _execute_single_node(
             context[node_id] = apply_reducer(
                 reducer_name, context.get(node_id), in_context_value,
             )
+            # CTX-MGMT.H — record the write into instance_context_trace
+            # if tracing is on for this instance (ephemeral or tenant-
+            # opted-in). Fast no-op when disabled. Failure is logged
+            # but never raises — observability isn't a correctness gate.
+            from app.engine.context_trace import record_write
+            record_write(
+                db, context,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
+                node_id=node_id,
+                size_bytes=(overflow_meta.get("size_bytes") if overflow_meta else None),
+                reducer=reducer_name,
+                overflowed=bool(overflow_meta),
+            )
             # _promote_orchestrator_user_reply still reads the full
             # output (not the stub or reduced value) — Bridge nodes
             # are designed to produce small replies, but if a Bridge
@@ -1527,6 +1553,17 @@ def _execute_parallel(
             reducer_name = resolve_reducer(node_data_for_budget)
             context[node_id] = apply_reducer(
                 reducer_name, context.get(node_id), in_context_value,
+            )
+            # CTX-MGMT.H — record the write on the parallel path too.
+            from app.engine.context_trace import record_write
+            record_write(
+                db, context,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
+                node_id=node_id,
+                size_bytes=(overflow_meta.get("size_bytes") if overflow_meta else None),
+                reducer=reducer_name,
+                overflowed=bool(overflow_meta),
             )
             _promote_orchestrator_user_reply(context, output)
             log_entry.status = "completed"

@@ -150,7 +150,8 @@ Engine + node-config improvements driven by the V8/V9/V10 lessons + an Anthropic
 | CTX-MGMT.C | Per-node `dependsOn` / `exposeAs` scope declaration. Privacy + cost win. P1. | **Planned** |
 | CTX-MGMT.E | Native `Coalesce` node + child-evidence promotion channel for sub-workflows. Replaces a walked-back proposal. P1. | **Planned** |
 | CTX-MGMT.G | ReAct iterations: split summary (default) vs full (opt-in `exposeFullIterations`). P1. | **Planned** |
-| CTX-MGMT.I / .J / .F / .H / .M | `outputSchema`, `distillBlocks`, write-time scrub, `context_trace` channel, forgetting/decay. P2/P3 — defer until P0/P1 land. | **Planned** |
+| CTX-MGMT.H | `instance_context_trace` table (migration 0036) + tenant policy flag `context_trace_enabled`. New helper `app/engine/context_trace.py` with fast-path no-op when disabled. Wired into `dag_runner._execute_single_node` on both paths so every context write records `{node_id, op, key, size_bytes, reducer, overflowed, ts}`. Ephemeral instances always trace; production opts in. New copilot tool `inspect_context_flow` for the agent to answer "where did node_X come from?". v1 = writes only; v2 (reads + misses) deferred to land alongside CTX-MGMT.B static lint. **P2** (promoted from later — small + unblocks CTX-MGMT.K compaction). | **Done** — see [context-management-plan.md §3](context-management-plan.md) |
+| CTX-MGMT.I / .J / .F / .M | `outputSchema`, `distillBlocks`, write-time scrub, forgetting/decay. P2/P3 — defer until P0 + remaining P1 items land. | **Planned** |
 
 ---
 

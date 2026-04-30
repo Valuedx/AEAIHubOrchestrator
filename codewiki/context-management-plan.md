@@ -31,7 +31,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **I** | `outputSchema` on every node (not just trigger) | P2 | Not started | — | — |
 | **J** | First-class `distillBlocks` for context distillation | P2 | Not started | — | — |
 | **F** | Scrub-secrets at write-time, not just log-time | P2 | Not started | — | — |
-| **H** | `context_trace` runtime channel + copilot inspector | P2 | Not started | — | — |
+| **H** | `context_trace` runtime channel + copilot inspector | P2 | **Shipped** (branch `ctx-mgmt-h-context-trace`) | — | 2026-05-01 |
 | **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | Not started | — | — |
 
 **Status vocabulary.** `Not started` → `In design` → `In progress` → `Shipped` → `Verified` (when post-merge eval / soak confirms the fix). A `Walked back` state exists for items the literature contradicts; we removed one (E.original — see §6).
@@ -223,11 +223,35 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 
 **Plan.** Run `scrub_secrets` on `context[node_id] = output` write, in `_execute_single_node` (line 1220). Adds CPU cost but closes the leak vector. Pair with V10's redaction patterns (`runner_tools._SECRET_PATTERNS`) so the engine and copilot share one secret dictionary.
 
-### H. `context_trace` runtime channel
+### H. `context_trace` runtime channel — **Shipped 2026-05-01 (v1: writes only)**
 
-**Gap.** No introspection — when context is unexpectedly empty, debugging means eyeballing `context_json`.
+**Gap.** No introspection — when context was unexpectedly empty, debugging meant eyeballing `context_json` by hand. With multi-node graphs (V10 has 28 nodes) and reducer support (CTX-MGMT.L), the question "where did node_4r come from?" needed a structured answer.
 
-**Plan.** Optional `instance_context_trace` table recording every `{node_id, op: write|read|miss, key, size_bytes, ts}`. Copilot tool `inspect_context_flow(instance_id, key)` answers "where was X set / where was it read / where did rendering miss?".
+**What shipped (branch `ctx-mgmt-h-context-trace`).**
+- New `instance_context_trace` table (migration `0036`) — `{instance_id, node_id, op, key, size_bytes, reducer, overflowed, ts}`. RLS tenant-scoped, cascade-delete from `workflow_instances`. Two indexes: `(instance_id, key, ts)` for the inspect-tool point lookup, `(tenant_id, ts)` for retention sweeps.
+- New tenant-policy column `context_trace_enabled` (default FALSE).
+- New module `app/engine/context_trace.py` with pure-fast-path helpers:
+  - `is_trace_enabled(context)` — single dict lookup of `_runtime["context_trace_enabled"]`.
+  - `resolve_trace_flag(db, tenant_id, is_ephemeral)` — returns True for ephemeral instances unconditionally; consults `tenant_policies.context_trace_enabled` for production; defaults False on policy lookup error so prod never traces by accident.
+  - `record_write(db, context, ...)` — fast no-op when disabled; INSERT one row + `flush()` when enabled. Failures are logged but never raised.
+  - `fetch_events_for_instance(db, ...)` — read API with optional exact-key or prefix-key (`node_*`) filter, ordered ts ASC, capped at 200.
+- Per-instance row cap: 500 events. When exceeded, oldest 50 rows dropped in one DELETE. Cap-check itself runs every 50th write to keep per-write overhead bounded.
+- `dag_runner.execute_graph` resolves the trace flag once at start and stamps `_runtime["context_trace_enabled"]` (which survives suspend/resume via CTX-MGMT.D's hoist).
+- `dag_runner._execute_single_node` calls `record_write(...)` after each context assignment on BOTH the sequential and parallel-branch paths. Each event records the configured reducer (CTX-MGMT.L) and whether the write overflowed (CTX-MGMT.A).
+- New copilot runner tool `inspect_context_flow(instance_id, key?)` — same ephemeral-only safety as `get_execution_logs`. Returns `{instance_id, key_filter, event_count, events: [...]}`. Supports exact match and `key_prefix*` filtering.
+
+**v2 (deferred).** Read-event tracking and miss-event tracking. Reads were intentionally skipped — one Jinja prompt can hit hundreds of attribute reads, and the volume blows the 500-cap easily. Misses need Jinja AST work (track template variable resolution failures); the missing-key story is better served by `lint_jinja_dangling_reference` (CTX-MGMT.B) at promote time, complementary to runtime tracing. v2 will add read-event tracking with sampling + the lint at promote time.
+
+**Tests (1120 passed, 1 skipped after this slice — was 1101).**
+- New `tests/test_context_trace.py` (19 tests):
+  - `is_trace_enabled` (six cases: missing context, missing runtime, flag unset, flag explicit-false, flag explicit-true, malformed runtime).
+  - `resolve_trace_flag` (ephemeral always on without consulting policy; prod honors policy on/off; prod stays off on policy lookup error).
+  - `record_write` disabled fast-path (zero DB touches).
+  - `record_write` enabled path (one row added with all fields, flush called, overflowed flag propagates, never raises on DB error).
+  - Trim behavior (cap-check fires every TRACE_TRIM_BATCH writes; doesn't trim when under cap).
+  - `fetch_events_for_instance` (serialised event shape, ts isoformat, prefix filter applies LIKE match).
+
+**Refs.** Anthropic — *"context engineering is the set of strategies for curating and maintaining the optimal set of tokens"*. Observability is what enables that curation in practice.
 
 ### M. Forgetting / decay
 
@@ -303,4 +327,5 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | Plan created. All items at `Not started`. Priority order set (D, A, L, K as P0). Walk-back recorded for original Issue E sub-workflow `outputContext: "all"` after Anthropic-multi-agent literature contradiction. |
 | 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |
 | 2026-05-01 | **CTX-MGMT.A shipped** on branch `ctx-mgmt-a-overflow` (stacked on `ctx-mgmt-d-runtime`). New `node_output_artifacts` table (migration 0035) + RLS + indexes. `app/engine/output_artifact.py` with pure helpers (`estimate_output_size`, `resolve_budget`, `should_overflow`, `materialize_overflow_stub`, `persist_artifact`, `maybe_overflow`). Wired into `dag_runner._execute_single_node` on both sequential and parallel-branch paths — on overflow the artifact is INSERTed and the in-context value becomes a small stub preserving canonical scalar keys (`id`, `status`, `error`, `branch`, etc.) so downstream Jinja still resolves. New copilot runner tool `inspect_node_artifact` (same ephemeral-only safety as `get_execution_logs`). 28 new unit tests + Jinja round-trip tests. Full backend suite 1057 passed (was 1029). Defaults: 64 kB per-node budget, 256 kB hard ceiling, per-node `contextOutputBudget` override. Deferred sub-task: `_save_checkpoint` delta writes — separate optimisation that can land independently. |
+| 2026-05-01 | **CTX-MGMT.H shipped** (v1: writes only) on branch `ctx-mgmt-h-context-trace` (stacked on `ctx-mgmt-l-reducers`). New `instance_context_trace` table (migration 0036) + `tenant_policies.context_trace_enabled` flag. `app/engine/context_trace.py` with fast-path no-op helpers. Wired into `dag_runner._execute_single_node` on both paths so every context write records `{instance_id, node_id, op, key, size_bytes, reducer, overflowed, ts}` when tracing is on. Ephemeral (copilot-initiated) instances always trace; production opts in via the new tenant policy. New copilot runner tool `inspect_context_flow(instance_id, key?)` with exact-match + prefix (`node_*`) filtering. Per-instance cap of 500 events with batched 50-row trim. 19 new unit tests; 1120 backend tests pass (was 1101). Read-event + miss-event tracking deferred to v2 — volume is template-dependent and the missing-key story is better served by `lint_jinja_dangling_reference` (CTX-MGMT.B) at promote time. |
 | 2026-05-01 | **CTX-MGMT.L shipped** on branch `ctx-mgmt-l-reducers` (stacked on `ctx-mgmt-a-overflow`). New `app/engine/reducers.py` with `KNOWN_REDUCERS` registry (6 entries: `overwrite`/`append`/`merge`/`max`/`min`/`counter`) + pure helpers `resolve_reducer` and `apply_reducer`. Wired into `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel-branch) — fires AFTER the overflow check so the overflow stub composes correctly with reducers. `app/engine/config_validator.py` gains `_validate_output_reducer` (rejects unknown names) and `_validate_output_budget` (rejects non-positive budgets) at promote time. Default `overwrite` keeps every existing graph identical; new reducers unlock parallel-branch aggregation, audit trails, counters, max/min trackers without ad-hoc handler code. 44 new unit tests; full backend suite 1101 passed (was 1057). Deferred sub-task: refactoring ForEach + Loop body aggregation to use reducers — invasive, current semantics work, current reducers already add value for new patterns. |

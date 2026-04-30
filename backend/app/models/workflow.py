@@ -207,6 +207,49 @@ class InstanceCheckpoint(Base):
     )
 
 
+class InstanceContextTrace(Base):
+    """CTX-MGMT.H — append-only event log of context writes per instance.
+
+    v1 tracks WRITES only — when ``context[node_id] = output`` happens
+    in ``dag_runner._execute_single_node``. The copilot's
+    ``inspect_context_flow`` runner tool reads this table to answer
+    "where did node_X come from?" / "which node wrote to slot Y?".
+
+    Reads + misses are deferred to v2 — the volume is template-
+    dependent (one Jinja prompt can hit hundreds of attribute reads)
+    and the missing-key story is better served by a static lint
+    (CTX-MGMT.B) at promote time.
+
+    Per-instance row cap (500) is enforced by the helper module
+    (``app/engine/context_trace.py``) — when exceeded, the helper
+    deletes the oldest rows for the instance before inserting the
+    new one. RLS tenant-scoped, cascade-deleted with the parent
+    WorkflowInstance.
+    """
+
+    __tablename__ = "instance_context_trace"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    instance_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_instances.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id = Column(String(128), nullable=False)
+    op = Column(String(16), nullable=False)
+    key = Column(String(256), nullable=False)
+    size_bytes = Column(Integer, nullable=True)
+    reducer = Column(String(32), nullable=True)
+    overflowed = Column(Boolean, nullable=False, default=False)
+    ts = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_ctxtrace_instance_key", "instance_id", "key", "ts"),
+        Index("ix_ctxtrace_tenant_ts", "tenant_id", "ts"),
+    )
+
+
 class NodeOutputArtifact(Base):
     """CTX-MGMT.A — durable side-channel for node outputs that exceed
     the per-node ``contextOutputBudget`` (default 64 kB).
@@ -527,6 +570,13 @@ class TenantPolicy(Base):
     # fallback when embedding provider is unreachable, so enabling
     # the flag is strictly additive).
     smart_05_vector_docs_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
+    )
+    # CTX-MGMT.H — opt-in production tracing of every context write.
+    # Default FALSE because the trace adds one DB INSERT per node per
+    # run. Ephemeral (copilot-initiated) instances always trace
+    # regardless of this flag — copilot debug tools need the data.
+    context_trace_enabled = Column(
         Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
     )
     # MODEL-01.e — per-tenant model defaults + family allowlist.
