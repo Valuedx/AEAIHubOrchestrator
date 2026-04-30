@@ -22,7 +22,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 |---|---|---|---|---|---|
 | **D** | `_runtime` resume-safe namespace for runtime keys | **P0** | **Shipped** (branch `ctx-mgmt-d-runtime`) | — | 2026-05-01 |
 | **A** | Per-node output budget + overflow artifacts | **P0** | **Shipped** (branch `ctx-mgmt-a-overflow`) | — | 2026-05-01 |
-| **L** | Reducer-per-channel state model (`outputReducer`) | **P0** | Not started | — | — |
+| **L** | Reducer-per-channel state model (`outputReducer`) | **P0** | **Shipped** (branch `ctx-mgmt-l-reducers`) | — | 2026-05-01 |
 | **K** | Compaction pass within a single workflow run | **P0** | Not started | — | — |
 | **B** | `lint_jinja_dangling_reference` static lint | P1 | Not started | — | — |
 | **C** | Per-node `dependsOn` / `exposeAs` scope declaration | P1 | Not started | — | — |
@@ -112,21 +112,37 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 
 **Refs.** Anthropic — *"Compaction is the practice of taking a conversation nearing the context window limit, summarizing its contents, and reinitiating a new context window with the summary. Compaction typically serves as the first lever in context engineering"*.
 
-### L. Reducer-per-channel state model
+### L. Reducer-per-channel state model — **Shipped 2026-05-01**
 
-**Gap.** Our context only does last-write-wins per node id. This breaks down for parallel-branch aggregation, append-only audit trails, and counters. Today `_cycle_iterations` is hand-coded; would be a one-line `Counter` reducer.
+**Gap.** Our context only did last-write-wins per node id. This broke down for parallel-branch aggregation, append-only audit trails, and counters. ForEach loop aggregation was hand-coded into the runner.
 
-**Edge cases.** Multiple parallel branches each write evidence — they overwrite each other today. ForEach aggregates via post-loop merge logic; could be a uniform `append` reducer.
+**Edge cases.** Multiple parallel branches each writing evidence — they overwrite each other today. ForEach aggregates via post-loop merge logic; could be a uniform `append` reducer.
 
-**Plan.**
-- Add `data.config.outputReducer: "overwrite" | "append" | "merge" | "max" | "counter"` per node. Default `overwrite` (current behavior).
-- Engine applies the reducer when writing `context[node_id]`. For `append`, the value is `context[node_id] + [output]` (auto-init to list). For `merge`, dict.update semantics. For `counter`, integer accumulation.
-- Validator checks: a node downstream of a parallel-branch with `append` reducer must expect `list[...]`, not the latest single output. Cross-references with `outputSchema` (item I) when both are set.
-- `Coalesce` node (item E) leverages this — its output is an `append`-reduced list of upstream outputs.
+**What shipped (branch `ctx-mgmt-l-reducers`).**
+- New module `app/engine/reducers.py`. `KNOWN_REDUCERS` registry with six entries (`overwrite`, `append`, `merge`, `max`, `min`, `counter`); `DEFAULT_REDUCER = "overwrite"`. Pure helpers `resolve_reducer(node_data)` (with case-insensitive lookup + unknown-name fall-back-to-default + warn) and `apply_reducer(name, current, new)`.
+- Each reducer is type-tolerant — type mismatches log a warning and fall back to overwrite for that specific write rather than raising. Strict guarantees are author-time concerns (validator).
+- `dag_runner._execute_single_node` now resolves the per-node reducer and applies it when writing `context[node_id]`. Same wiring on the parallel-branch executor's `_apply_result`. Reducer fires AFTER the overflow check (CTX-MGMT.A) so an overflowed output gets stub-replaced before the reducer combines it with prior values.
+- `app/engine/config_validator.py` rejects unknown reducer names + non-positive `contextOutputBudget` values at promote time so authors see a clear error rather than the silent runtime fall-back.
+- `_reduce_append` wraps non-list `current` values when present so flipping a node from `overwrite` to `append` on the next run doesn't drop the existing slot value.
+- All reducer types preserve numeric type invariants (counter on int + int returns int; mixed returns float).
 
-**Tests.** Two parallel HTTP nodes write to a downstream LLM via `append` reducer; verify both outputs appear in `context[downstream]`. ForEach replaced with append-reducer pattern; verify equivalent results.
+**Reducer behavior summary.**
 
-**Refs.** LangGraph — *"In LangGraph, key is operator.add, which tells LangGraph to append new messages to the existing list instead of overwriting"*. LangChain *State of Agent Engineering 2026*.
+| Reducer | Use when | Type-mismatch fall-back |
+|---|---|---|
+| `overwrite` (default) | Single-write nodes (the common case). Identical to pre-CTX-MGMT.L. | n/a |
+| `append` | Parallel-branch convergence, audit trails, multi-write aggregation. Auto-init from None to `[]`; wraps non-list current. | None |
+| `merge` | Build up a structured payload across nodes. Dict.update semantics. | Logs + overwrites if either side is non-dict |
+| `max` / `min` | Priority / score aggregation. | Logs + overwrites on non-numeric input |
+| `counter` | Tally/sum across writes. Preserves int type on int+int. | Logs + overwrites on non-numeric input |
+
+**What didn't ship (deferred sub-task).** Refactoring ForEach + Loop body aggregation to *use* reducers (instead of the runner's hand-coded merge into `{loop_results: [...], iterations: N}`) is deferred. It's invasive and the current loop semantics work; reducers add value for new patterns (the future Coalesce node from item E, audit trail channels) without forcing a loop refactor right now.
+
+**Tests (1101 passed, 1 skipped after this slice — was 1057).**
+- New `tests/test_reducers.py` (44 tests): every reducer's happy path + type-mismatch behavior, registry sanity, `resolve_reducer` (default / case-insensitive / unknown fall-back), validator integration (bad reducer name caught, valid name accepted, missing field skipped, negative/non-int budget caught), simulated engine round-trip (append accumulates across two writes; overwrite preserves last-write-wins).
+- All 1057 prior tests pass unchanged — default `overwrite` keeps every existing graph identical.
+
+**Refs.** LangGraph — *"key is operator.add, which tells LangGraph to append new messages to the existing list instead of overwriting"*. LangChain *State of Agent Engineering 2026*.
 
 ---
 
@@ -287,3 +303,4 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | Plan created. All items at `Not started`. Priority order set (D, A, L, K as P0). Walk-back recorded for original Issue E sub-workflow `outputContext: "all"` after Anthropic-multi-agent literature contradiction. |
 | 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |
 | 2026-05-01 | **CTX-MGMT.A shipped** on branch `ctx-mgmt-a-overflow` (stacked on `ctx-mgmt-d-runtime`). New `node_output_artifacts` table (migration 0035) + RLS + indexes. `app/engine/output_artifact.py` with pure helpers (`estimate_output_size`, `resolve_budget`, `should_overflow`, `materialize_overflow_stub`, `persist_artifact`, `maybe_overflow`). Wired into `dag_runner._execute_single_node` on both sequential and parallel-branch paths — on overflow the artifact is INSERTed and the in-context value becomes a small stub preserving canonical scalar keys (`id`, `status`, `error`, `branch`, etc.) so downstream Jinja still resolves. New copilot runner tool `inspect_node_artifact` (same ephemeral-only safety as `get_execution_logs`). 28 new unit tests + Jinja round-trip tests. Full backend suite 1057 passed (was 1029). Defaults: 64 kB per-node budget, 256 kB hard ceiling, per-node `contextOutputBudget` override. Deferred sub-task: `_save_checkpoint` delta writes — separate optimisation that can land independently. |
+| 2026-05-01 | **CTX-MGMT.L shipped** on branch `ctx-mgmt-l-reducers` (stacked on `ctx-mgmt-a-overflow`). New `app/engine/reducers.py` with `KNOWN_REDUCERS` registry (6 entries: `overwrite`/`append`/`merge`/`max`/`min`/`counter`) + pure helpers `resolve_reducer` and `apply_reducer`. Wired into `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel-branch) — fires AFTER the overflow check so the overflow stub composes correctly with reducers. `app/engine/config_validator.py` gains `_validate_output_reducer` (rejects unknown names) and `_validate_output_budget` (rejects non-positive budgets) at promote time. Default `overwrite` keeps every existing graph identical; new reducers unlock parallel-branch aggregation, audit trails, counters, max/min trackers without ad-hoc handler code. 44 new unit tests; full backend suite 1101 passed (was 1057). Deferred sub-task: refactoring ForEach + Loop body aggregation to use reducers — invasive, current semantics work, current reducers already add value for new patterns. |

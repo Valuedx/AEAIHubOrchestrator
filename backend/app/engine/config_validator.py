@@ -103,6 +103,15 @@ def validate_graph_configs(graph_json: dict) -> list[str]:
         if label == "Sub-Workflow":
             warnings.extend(_validate_sub_workflow(node_id, config, graph_json))
 
+        # CTX-MGMT.L — outputReducer is a generic per-node config that
+        # applies to every node type. Validate it here so any author
+        # can opt in regardless of node label.
+        warnings.extend(_validate_output_reducer(node_id, label, config))
+        # CTX-MGMT.A — contextOutputBudget must be a positive integer
+        # if set; the engine clamps to a hard ceiling but author-time
+        # validation catches obviously-wrong values (negative, str).
+        warnings.extend(_validate_output_budget(node_id, label, config))
+
     # CYCLIC-01.c — graph-level loopback edge checks. Run once per
     # graph (not per node) because the rules are about edges, not
     # about node configs.
@@ -393,3 +402,54 @@ def _check_type(value: Any, expected: str) -> bool:
     if expected == "array":
         return isinstance(value, list)
     return True
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.L — outputReducer validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_output_reducer(node_id: str, label: str, config: dict) -> list[str]:
+    """Reject unknown reducer names at promote time so a typo
+    (e.g. ``"appned"``) doesn't silently fall back to ``overwrite``
+    at runtime."""
+    raw = config.get("outputReducer")
+    if raw is None or raw == "":
+        return []  # default ("overwrite") is fine; field is optional
+    from app.engine.reducers import KNOWN_REDUCERS
+
+    name = str(raw).strip().lower()
+    if name not in KNOWN_REDUCERS:
+        return [
+            f"Node {node_id} ({label}): 'outputReducer' value {raw!r} "
+            f"is not a known reducer. Valid: {sorted(KNOWN_REDUCERS)}"
+        ]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.A — contextOutputBudget validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_output_budget(node_id: str, label: str, config: dict) -> list[str]:
+    """``contextOutputBudget`` must be a positive integer if set. The
+    engine's ``resolve_budget`` clamps to a hard ceiling and falls
+    back to default on zero/negative/non-int — but author-time
+    validation catches obviously-wrong values so the author sees a
+    clear error rather than the silent fall-back."""
+    raw = config.get("contextOutputBudget")
+    if raw is None:
+        return []  # unset → engine default
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return [
+            f"Node {node_id} ({label}): 'contextOutputBudget' must be an "
+            f"integer (bytes), got {type(raw).__name__}"
+        ]
+    if raw <= 0:
+        return [
+            f"Node {node_id} ({label}): 'contextOutputBudget' must be > 0, "
+            f"got {raw}. Use a small positive number to opt into stricter "
+            "overflow behavior, or omit the field for the engine default."
+        ]
+    return []

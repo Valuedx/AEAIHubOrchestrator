@@ -1327,12 +1327,22 @@ def _execute_single_node(
                 node_data=node_data,
                 output=output,
             )
-            context[node_id] = in_context_value
+            # CTX-MGMT.L — per-node reducer determines how successive
+            # writes to context[node_id] combine. Default `overwrite`
+            # = last-write-wins (current behavior); other reducers
+            # (`append`, `merge`, `max`, `min`, `counter`) enable
+            # parallel-branch aggregation, audit trails, counters
+            # without ad-hoc merge logic in handlers.
+            from app.engine.reducers import apply_reducer, resolve_reducer
+            reducer_name = resolve_reducer(node_data)
+            context[node_id] = apply_reducer(
+                reducer_name, context.get(node_id), in_context_value,
+            )
             # _promote_orchestrator_user_reply still reads the full
-            # output (not the stub) — Bridge nodes are designed to
-            # produce small replies, but if a Bridge somehow exceeded
-            # budget the user still sees the original reply text in
-            # the promoted root key.
+            # output (not the stub or reduced value) — Bridge nodes
+            # are designed to produce small replies, but if a Bridge
+            # somehow exceeded budget the user still sees the original
+            # reply text in the promoted root key.
             _promote_orchestrator_user_reply(context, output)
 
             log_entry.status = "completed"
@@ -1510,7 +1520,14 @@ def _execute_parallel(
                 node_data=node_data_for_budget,
                 output=output,
             )
-            context[node_id] = in_context_value
+            # CTX-MGMT.L — apply the configured reducer on the
+            # parallel-branch path. Same default-overwrite semantics
+            # so existing graphs are unaffected.
+            from app.engine.reducers import apply_reducer, resolve_reducer
+            reducer_name = resolve_reducer(node_data_for_budget)
+            context[node_id] = apply_reducer(
+                reducer_name, context.get(node_id), in_context_value,
+            )
             _promote_orchestrator_user_reply(context, output)
             log_entry.status = "completed"
             log_entry.completed_at = _utcnow()
