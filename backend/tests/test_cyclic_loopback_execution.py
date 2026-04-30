@@ -13,7 +13,10 @@ What we pin:
     source end up in the body.
   * Loopback gating via Condition.source_handle — only fires on
     the matching branch; non-matching branches silently no-op.
-  * Iteration counter advances via ``context["_cycle_iterations"]``
+  * Iteration counter advances via ``context["_runtime"]["cycle_iterations"]``
+    (CTX-MGMT.D — moved out of flat ``_cycle_iterations`` into the
+    resume-safe ``_runtime`` namespace so HITL inside a cyclic body
+    does not reset the counter)
     (underscore-prefixed so it's stripped from persisted context).
   * Cap enforcement — once current ≥ max_iterations, the loopback
     becomes a no-op and execution falls through to forward edges.
@@ -229,10 +232,10 @@ class TestFireLoopbacks:
         assert "A" not in context
         assert "B" not in context
         assert "C" not in context
-        # Trigger and _cycle_iterations stay.
+        # Trigger and cycle counters stay.
         assert context["trigger"] == {"msg": "hi"}
-        # Iteration counter bumped to 1.
-        assert context["_cycle_iterations"]["lb:C->A"] == 1
+        # Iteration counter bumped to 1 (CTX-MGMT.D — under _runtime).
+        assert context["_runtime"]["cycle_iterations"]["lb:C->A"] == 1
         # Internal-to-cycle satisfaction cleared (B's sat was A;
         # A is now in-cycle → sat[B] should no longer claim A).
         assert "A" not in satisfied.get("B", set())
@@ -252,7 +255,8 @@ class TestFireLoopbacks:
         assert fired is False
         # Context unchanged — no nodes cleared.
         assert "A" in context
-        assert "_cycle_iterations" not in context
+        # No cycle counters were created (CTX-MGMT.D — under _runtime).
+        assert "cycle_iterations" not in (context.get("_runtime") or {})
 
     def test_cap_enforcement_stops_firing_after_max_iterations(self):
         nodes_map, forward, loopbacks = self._linear_setup()
@@ -260,7 +264,8 @@ class TestFireLoopbacks:
             "A": {"response": "ok"},
             "B": {"response": "ok"},
             "C": {"branch": "true"},
-            "_cycle_iterations": {"lb:C->A": 5},  # already at max_iter=5
+            # CTX-MGMT.D — cycle counters under _runtime now.
+            "_runtime": {"cycle_iterations": {"lb:C->A": 5}},  # already at max_iter=5
         }
         satisfied = {"B": {"A"}, "C": {"B"}}
         db = _db()
@@ -316,7 +321,8 @@ class TestFireLoopbacks:
         )
         assert fired is False
         assert db.added == []
-        assert "_cycle_iterations" not in context
+        # No _runtime created for the zero-loopback hot path.
+        assert "cycle_iterations" not in (context.get("_runtime") or {})
 
     def test_hard_cap_clamps_author_supplied_max_iter(self):
         """Author sets maxIterations=999 via the edge dict;
@@ -340,7 +346,8 @@ class TestFireLoopbacks:
         }
         context = {
             "A": {}, "B": {},
-            "_cycle_iterations": {"lb-overcap": LOOPBACK_HARD_CAP},  # at cap
+            # CTX-MGMT.D — cycle counters under _runtime.
+            "_runtime": {"cycle_iterations": {"lb-overcap": LOOPBACK_HARD_CAP}},  # at cap
         }
         satisfied = {"B": {"A"}}
         db = _db()

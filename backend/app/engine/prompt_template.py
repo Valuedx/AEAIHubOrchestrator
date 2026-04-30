@@ -138,7 +138,11 @@ def build_structured_context_block(
         parts.append(truncate_to_tokens(block, remaining))
         remaining = max(0, remaining - count_prompt_tokens(parts[-1]))
 
-    loop_item = context.get("_loop_item")
+    # CTX-MGMT.D — loop_item lives under _runtime; legacy fall-back.
+    runtime = context.get("_runtime") or {}
+    loop_item = runtime.get("loop_item")
+    if loop_item is None:
+        loop_item = context.get("_loop_item")
     if loop_item is not None and remaining > 0:
         block = (
             "**Current loop item:**\n```json\n"

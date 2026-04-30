@@ -132,7 +132,12 @@ def run_react_loop(
     # result to the model as a synthetic user turn, and let it produce
     # the confirmation reply. The approval is then consumed so any
     # additional destructive call in this turn re-engages the gate.
-    pending = context.get("hitl_pending_call")
+    # CTX-MGMT.D — hitl_pending_call lives under _runtime so it survives
+    # the suspend/resume strip. Fall back to the legacy flat key for
+    # any context_json still in the old shape — the dag_runner entry
+    # points hoist on resume, but defence in depth.
+    runtime = context.get("_runtime") or {}
+    pending = runtime.get("hitl_pending_call") or context.get("hitl_pending_call")
     approval = context.get("approval") if isinstance(context.get("approval"), dict) else None
     if pending and approval and approval.get("approved"):
         pending_tool = pending.get("tool") or ""
@@ -174,7 +179,9 @@ def run_react_loop(
         # Consume the pending marker and the approval so subsequent
         # destructive calls in this same turn engage a fresh gate.
         # Read-only tools that don't check the token are unaffected.
-        context.pop("hitl_pending_call", None)
+        if isinstance(context.get("_runtime"), dict):
+            context["_runtime"].pop("hitl_pending_call", None)
+        context.pop("hitl_pending_call", None)  # legacy shape
         context.pop("approval", None)
 
     handler = _PROVIDERS.get(provider)
@@ -273,8 +280,15 @@ def run_react_loop(
                     logger.info("Tool %s requested approval. Suspending workflow.", tool_name)
                     # HITL-04 — Persist the planned (tool, args) so resume
                     # can re-fire it directly instead of re-deliberating.
-                    # Non-underscore key so it survives _get_clean_context.
-                    context["hitl_pending_call"] = {
+                    # CTX-MGMT.D — under _runtime now so it survives the
+                    # suspend/resume strip via the explicit allowlist
+                    # rather than the previous "happens to not start
+                    # with underscore" accident.
+                    runtime_pending = context.get("_runtime")
+                    if not isinstance(runtime_pending, dict):
+                        runtime_pending = {}
+                        context["_runtime"] = runtime_pending
+                    runtime_pending["hitl_pending_call"] = {
                         "tool": tool_name,
                         "arguments": tool_args,
                         "iteration": i + 1,

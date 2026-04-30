@@ -31,8 +31,93 @@ def _utcnow() -> datetime:
 
 
 def _get_clean_context(context: dict[str, Any]) -> dict[str, Any]:
-    """Strip internal runtime keys (prefixed with '_') before DB storage."""
-    return {k: v for k, v in context.items() if not k.startswith("_")}
+    """Strip internal runtime keys ('_*') before DB storage.
+
+    EXCEPT ``_runtime`` (CTX-MGMT.D) — that key carries durable runtime
+    state that MUST survive suspend/resume:
+
+      * ``_runtime["loop_item"]`` / ``loop_index`` / ``loop_iteration`` /
+        ``loop_item_var`` — set by ForEach + Loop iteration runners.
+      * ``_runtime["cycle_iterations"]`` — per-loopback-edge counters
+        (cyclic graphs / CYCLIC-01.b).
+      * ``_runtime["parent_chain"]`` — sub-workflow recursion guard.
+      * ``_runtime["hitl_pending_call"]`` — re-fire payload for the
+        engine's HITL gate (HITL-04).
+
+    Without this exception, HITL inside a ForEach iteration restarts at
+    index 0 on resume, cyclic counters reset to 0, and the HITL re-fire
+    pattern breaks. ``_trace``, ``_instance_id``, ``_workflow_def_id``,
+    ``_current_node_id`` stay top-level + ephemeral — they're rebuilt
+    each invocation from instance metadata or the trace context.
+    """
+    return {
+        k: v for k, v in context.items()
+        if not k.startswith("_") or k == "_runtime"
+    }
+
+
+# CTX-MGMT.D — `_runtime` namespace plumbing.
+#
+# Producers write under `_runtime[...]` via `_get_runtime(context)`.
+# Consumers read via `_get_runtime(context).get(...)` or via the
+# convenience accessor below. Resume-time hoist recovers any legacy
+# context_json that still has flat `_loop_iteration` etc. so existing
+# in-flight suspended instances don't break when this code lands.
+
+# Legacy flat keys that get hoisted into `_runtime` on first resume.
+# Order matters: we hoist any of these we find, then drop the flat
+# version so subsequent reads come from the new location only.
+_LEGACY_RUNTIME_KEYS: tuple[tuple[str, str], ...] = (
+    # (legacy_flat_key, new_runtime_key)
+    ("_loop_item",      "loop_item"),
+    ("_loop_index",     "loop_index"),
+    ("_loop_iteration", "loop_iteration"),
+    ("_loop_item_var",  "loop_item_var"),
+    ("_cycle_iterations", "cycle_iterations"),
+    ("_parent_chain",   "parent_chain"),
+    ("hitl_pending_call", "hitl_pending_call"),  # NOT underscore-prefixed in legacy
+)
+
+
+def _get_runtime(context: dict[str, Any]) -> dict[str, Any]:
+    """Get-or-init the resume-safe runtime sub-dict on ``context``.
+
+    Always returns a real dict (creates an empty one if absent), so
+    callers can do ``_get_runtime(context)["loop_item"] = item``
+    without first checking presence.
+    """
+    runtime = context.get("_runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+        context["_runtime"] = runtime
+    return runtime
+
+
+def _hoist_legacy_runtime(context: dict[str, Any]) -> None:
+    """Backward-compat — move legacy flat runtime keys under ``_runtime``.
+
+    Called immediately after loading ``context`` from
+    ``instance.context_json`` (every resume + initial-execute entry
+    point in this module). Idempotent: if ``_runtime`` is already
+    present, the legacy keys are still drained (the legacy ones win
+    only if ``_runtime`` doesn't already carry the same key — that
+    way a hand-edited context_json that set both shapes doesn't lose
+    the canonical runtime data).
+    """
+    legacy_present = any(legacy in context for legacy, _ in _LEGACY_RUNTIME_KEYS)
+    if not legacy_present:
+        # Fast path — no migration to do. ``_runtime`` may or may not
+        # exist; ``_get_runtime`` handles either when called.
+        return
+    runtime = _get_runtime(context)
+    for legacy, new_key in _LEGACY_RUNTIME_KEYS:
+        if legacy not in context:
+            continue
+        if new_key not in runtime:
+            runtime[new_key] = context[legacy]
+        # Always drop the legacy flat key so subsequent reads route
+        # through `_runtime` only — single source of truth post-hoist.
+        context.pop(legacy, None)
 
 
 def _finalize_cancelled(
@@ -364,12 +449,14 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
     db.refresh(instance)
     if instance.cancel_requested:
         ctx_early: dict[str, Any] = dict(instance.context_json or {})
+        _hoist_legacy_runtime(ctx_early)
         if instance.trigger_payload:
             ctx_early["trigger"] = instance.trigger_payload
         _finalize_cancelled(db, instance, _get_clean_context(ctx_early))
         return
     if instance.pause_requested:
         ctx_pause: dict[str, Any] = dict(instance.context_json or {})
+        _hoist_legacy_runtime(ctx_pause)
         if instance.trigger_payload:
             ctx_pause["trigger"] = instance.trigger_payload
         _finalize_paused(db, instance, _get_clean_context(ctx_pause))
@@ -381,6 +468,7 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
     _detect_cycles(nodes_map, forward, in_degree)
 
     context: dict[str, Any] = dict(instance.context_json or {})
+    _hoist_legacy_runtime(context)
     if instance.trigger_payload:
         context["trigger"] = instance.trigger_payload
     # Expose instance_id so node handlers can route LLM tokens to the right Redis channel
@@ -388,8 +476,10 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
     context["_workflow_def_id"] = str(instance.workflow_def_id)
 
     # Sub-workflow recursion detection: build the parent chain if not already
-    # present (child instances have _parent_chain pre-set in their context_json).
-    if "_parent_chain" not in context:
+    # present (child instances have parent_chain pre-set under _runtime in
+    # their context_json — see _execute_sub_workflow).
+    runtime = _get_runtime(context)
+    if "parent_chain" not in runtime:
         parent_chain: list[str] = []
         ancestor = instance
         while ancestor.parent_instance_id:
@@ -397,7 +487,7 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
             if not ancestor:
                 break
             parent_chain.append(str(ancestor.workflow_def_id))
-        context["_parent_chain"] = parent_chain
+        runtime["parent_chain"] = parent_chain
 
     det_tag = ["deterministic"] if deterministic_mode else []
     with trace_workflow(
@@ -458,6 +548,7 @@ def resume_graph(
     forward, reverse, in_degree = _build_graph_structures(nodes_map, edges)
 
     context: dict[str, Any] = dict(instance.context_json or {})
+    _hoist_legacy_runtime(context)
     context["approval"] = approval_payload
 
     # Apply operator-supplied context overrides (HITL context patch)
@@ -521,6 +612,7 @@ def resume_paused_graph(
     forward, reverse, in_degree = _build_graph_structures(nodes_map, edges)
 
     context: dict[str, Any] = dict(instance.context_json or {})
+    _hoist_legacy_runtime(context)
     context.pop("_trace", None)
     context["_instance_id"] = str(instance.id)
     if context_patch:
@@ -587,6 +679,7 @@ def retry_graph(
 
     # Clean up the failed node from context and logs
     context: dict[str, Any] = dict(instance.context_json or {})
+    _hoist_legacy_runtime(context)
     context.pop(retry_node, None)
 
     # Delete the failed execution log entry so it can be re-created
@@ -978,10 +1071,10 @@ def _fire_loopbacks(
         if not _should_fire_loopback(edge, source_data, source_output):
             continue
 
-        # Per-cycle iteration counter lives in _cycle_iterations.
-        # Internal (underscore-prefixed) so _get_clean_context
-        # strips it before the instance row is written out.
-        counters = context.setdefault("_cycle_iterations", {})
+        # Per-cycle iteration counter — under _runtime so it survives
+        # suspend/resume (HITL inside a cyclic body must NOT reset
+        # the counter). CTX-MGMT.D.
+        counters = _get_runtime(context).setdefault("cycle_iterations", {})
         current = int(counters.get(edge.id, 0))
         cap = edge.max_iterations or LOOPBACK_DEFAULT_MAX_ITERATIONS
         cap = min(cap, LOOPBACK_HARD_CAP)  # defence-in-depth
@@ -1465,15 +1558,26 @@ def _run_forEach_iterations(
     # Collect all iteration results
     all_iteration_results: dict[str, list] = {nid: [] for nid in downstream_node_ids}
 
-    for idx, item in enumerate(items):
+    # CTX-MGMT.D — loop counters live under _runtime so they survive
+    # suspend/resume. If a downstream node suspends on HITL, the iteration
+    # index is preserved and the resumed run picks up at the same item.
+    runtime = _get_runtime(context)
+    # On resume, pick up where we left off — previous _execute_ran ForEach
+    # may have suspended part-way through the items list.
+    start_idx = int(runtime.get("loop_index", -1)) + 1 if runtime.get("loop_item_var") == item_var else 0
+    if start_idx < 0 or start_idx >= len(items):
+        start_idx = 0
+
+    for idx in range(start_idx, len(items)):
+        item = items[idx]
         if _abort_if_cancel_or_pause(db, instance, context):
             return
 
         # Inject current loop item into context
-        context["_loop_item"] = item
-        context["_loop_item_var"] = item_var
+        runtime["loop_item"] = item
+        runtime["loop_item_var"] = item_var
         context[item_var] = item
-        context["_loop_index"] = idx
+        runtime["loop_index"] = idx
 
         for downstream_nid in downstream_node_ids:
             # Clear any previous iteration output
@@ -1498,10 +1602,10 @@ def _run_forEach_iterations(
     for nid in downstream_node_ids:
         context[nid] = {"forEach_results": all_iteration_results[nid], "iterations": len(items)}
 
-    # Clean up loop context
-    context.pop("_loop_item", None)
-    context.pop("_loop_item_var", None)
-    context.pop("_loop_index", None)
+    # Clean up loop context (CTX-MGMT.D — under _runtime now).
+    runtime.pop("loop_item", None)
+    runtime.pop("loop_item_var", None)
+    runtime.pop("loop_index", None)
 
     # Propagate edges from the forEach node AND from downstream nodes
     _propagate_edges(forEach_node_id, forward, nodes_map, context, satisfied, pruned)
@@ -1562,6 +1666,10 @@ def _run_loop_iterations(
         if not continue_expr:
             return True  # No guard — run unconditionally up to max_iterations
         upstream = {k: v for k, v in context.items() if k.startswith("node_")}
+        # Expose the loop counter to the user-supplied expression. The
+        # underscore-prefixed names are the legacy public API surface;
+        # we keep them for back-compat with existing continueExpression
+        # strings even though the canonical storage is `_runtime`.
         eval_env: dict = {
             "output": upstream,
             "context": context,
@@ -1582,7 +1690,21 @@ def _run_loop_iterations(
     all_iteration_results: dict[str, list] = {nid: [] for nid in downstream_node_ids}
     actual_iterations = 0
 
-    for idx in range(max_iterations):
+    # CTX-MGMT.D — loop counters live under _runtime so they survive
+    # suspend/resume. On resume after HITL inside a Loop body, pick
+    # up at the iteration we left off. The marker `loop_node_id`
+    # disambiguates so a different loop's lingering counter doesn't
+    # bleed across loop nodes.
+    runtime = _get_runtime(context)
+    if runtime.get("loop_node_id") == loop_node_id:
+        start_idx = int(runtime.get("loop_index", -1)) + 1
+    else:
+        start_idx = 0
+    if start_idx < 0 or start_idx >= max_iterations:
+        start_idx = 0
+    runtime["loop_node_id"] = loop_node_id
+
+    for idx in range(start_idx, max_iterations):
         if _abort_if_cancel_or_pause(db, instance, context):
             return
 
@@ -1590,8 +1712,8 @@ def _run_loop_iterations(
         if not _eval_condition(idx):
             break
 
-        context["_loop_index"] = idx
-        context["_loop_iteration"] = idx + 1
+        runtime["loop_index"] = idx
+        runtime["loop_iteration"] = idx + 1
 
         # Clear previous iteration outputs so nodes re-execute cleanly
         for body_nid in downstream_node_ids:
@@ -1608,14 +1730,14 @@ def _run_loop_iterations(
                 failed = True
                 break  # Stop body execution for this iteration
             elif result == "suspended":
-                # Persist aggregated results so far before suspending
+                # Persist aggregated results so far before suspending —
+                # _runtime keeps loop_index so the resumed run resumes
+                # at the right iteration.
                 for nid in downstream_node_ids:
                     context[nid] = {
                         "loop_results": all_iteration_results[nid],
                         "iterations": idx,
                     }
-                context.pop("_loop_index", None)
-                context.pop("_loop_iteration", None)
                 return  # Suspend propagates via instance status
 
             if _abort_if_cancel_or_pause(db, instance, context):
@@ -1630,8 +1752,9 @@ def _run_loop_iterations(
                     "loop_results": all_iteration_results[nid],
                     "iterations": actual_iterations,
                 }
-            context.pop("_loop_index", None)
-            context.pop("_loop_iteration", None)
+            runtime.pop("loop_index", None)
+            runtime.pop("loop_iteration", None)
+            runtime.pop("loop_node_id", None)
             _propagate_edges(loop_node_id, forward, nodes_map, context, satisfied, pruned)
             for nid in downstream_node_ids:
                 satisfied[nid] = set()
@@ -1645,9 +1768,10 @@ def _run_loop_iterations(
             "iterations": actual_iterations,
         }
 
-    # Clean up loop-scoped context variables
-    context.pop("_loop_index", None)
-    context.pop("_loop_iteration", None)
+    # Clean up loop-scoped runtime markers — Loop is done.
+    runtime.pop("loop_index", None)
+    runtime.pop("loop_iteration", None)
+    runtime.pop("loop_node_id", None)
 
     # Propagate edges from Loop node and from body nodes so downstream proceeds
     _propagate_edges(loop_node_id, forward, nodes_map, context, satisfied, pruned)
@@ -1695,12 +1819,25 @@ def _build_node_input(node_data: dict, context: dict[str, Any]) -> dict:
         "trigger": context.get("trigger"),
     }
 
-    # Include loop item if inside a ForEach iteration
-    if "_loop_item" in context:
+    # Include loop item if inside a ForEach iteration. CTX-MGMT.D — loop
+    # counters live under `_runtime`; check there first, then fall back
+    # to the legacy flat keys for any in-flight context that hasn't been
+    # hoisted yet (defence in depth — the entry-point hoist normally
+    # handles this).
+    runtime = context.get("_runtime") or {}
+    if "loop_item" in runtime:
+        node_input["loop_item"] = runtime["loop_item"]
+        node_input["loop_index"] = runtime.get("loop_index", 0)
+        node_input["loop_variable"] = runtime.get("loop_item_var", "item")
+    elif "_loop_item" in context:
         node_input["loop_item"] = context["_loop_item"]
         node_input["loop_index"] = context.get("_loop_index", 0)
         node_input["loop_variable"] = context.get("_loop_item_var", "item")
-    # Include loop index/iteration if inside a Loop iteration (Loop sets _loop_iteration; ForEach does not)
+    # Include loop index/iteration if inside a Loop iteration (Loop sets
+    # loop_iteration; ForEach does not).
+    elif "loop_iteration" in runtime:
+        node_input["loop_index"] = runtime.get("loop_index", 0)
+        node_input["loop_iteration"] = runtime["loop_iteration"]
     elif "_loop_iteration" in context:
         node_input["loop_index"] = context["_loop_index"]
         node_input["loop_iteration"] = context["_loop_iteration"]

@@ -243,7 +243,8 @@ class TestAgentToolLoop:
         assert counts["check"] == 3
         assert counts["exit"] == 1
         # Iteration counter reflects two loopback fires (third check chose false).
-        assert context["_cycle_iterations"]["lb1"] == 2
+        # CTX-MGMT.D — cycle counters under _runtime.
+        assert context["_runtime"]["cycle_iterations"]["lb1"] == 2
 
     def test_false_on_first_check_does_not_loop(self, monkeypatch):
         # Condition says "false" immediately → planner/tool fire exactly once.
@@ -309,7 +310,8 @@ class TestReflectionPattern:
         assert counts["final"] == 1
         # Final draft is v3 (the accepted one).
         assert context["writer"] == {"draft": "v3"}
-        assert context["_cycle_iterations"]["lb1"] == 2
+        # CTX-MGMT.D — cycle counters under _runtime.
+        assert context["_runtime"]["cycle_iterations"]["lb1"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +396,8 @@ class TestCapHitGraceful:
         assert counts["planner"] == 3
         assert counts["check"] == 3
         # Iteration counter reached the cap.
-        assert context["_cycle_iterations"]["lb1"] == 2
+        # CTX-MGMT.D — cycle counters under _runtime.
+        assert context["_runtime"]["cycle_iterations"]["lb1"] == 2
         # A loopback_cap_reached ExecutionLog row was emitted.
         cap_logs = [r for r in db.added if getattr(r, "status", None) == "loopback_cap_reached"]
         assert len(cap_logs) == 1
@@ -475,8 +478,8 @@ class TestZeroLoopbackHotPath:
         script = {"a": {"ok": 1}, "b": {"ok": 2}, "c": {"ok": 3}}
         context, call_order, _ = _run(monkeypatch, graph, script)
         assert call_order == ["a", "b", "c"]
-        # No cycle iteration counter in zero-loopback graphs.
-        assert "_cycle_iterations" not in context
+        # No cycle iteration counter in zero-loopback graphs (CTX-MGMT.D).
+        assert "cycle_iterations" not in (context.get("_runtime") or {})
 
     def test_diamond_graph_calls_each_node_once(self, monkeypatch):
         graph = {

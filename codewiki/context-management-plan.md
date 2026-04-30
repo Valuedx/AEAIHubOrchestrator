@@ -20,7 +20,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 
 | # | Item | Priority | Status | Owner | Last touched |
 |---|---|---|---|---|---|
-| **D** | `_runtime` resume-safe namespace for runtime keys | **P0** | Not started | — | — |
+| **D** | `_runtime` resume-safe namespace for runtime keys | **P0** | **Shipped** (branch `ctx-mgmt-d-runtime`) | — | 2026-05-01 |
 | **A** | Per-node output budget + overflow artifacts | **P0** | Not started | — | — |
 | **L** | Reducer-per-channel state model (`outputReducer`) | **P0** | Not started | — | — |
 | **K** | Compaction pass within a single workflow run | **P0** | Not started | — | — |
@@ -59,20 +59,28 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 
 **Refs.** Anthropic — *"keep state lean and store large data externally with references"*. LangGraph 2026 — *"Extremely large state objects will slow down serialization and increase memory usage."*
 
-### D. `_runtime` resume-safe namespace
+### D. `_runtime` resume-safe namespace — **Shipped 2026-05-01**
 
-**Gap.** On suspend, `_get_clean_context` strips ALL `_*` keys. On resume, only some are repopulated (`_instance_id`, `_workflow_def_id`, `_trace`). Lost: `_loop_item`, `_loop_index`, `_loop_iteration`, `_cycle_iterations`. Result: HITL inside a loop or cycle restarts the iteration counter on resume.
+**Gap.** On suspend, `_get_clean_context` stripped ALL `_*` keys. On resume, only some were repopulated (`_instance_id`, `_workflow_def_id`, `_trace`). Lost: `_loop_item`, `_loop_index`, `_loop_iteration`, `_cycle_iterations`. Result: HITL inside a loop or cycle restarted the iteration counter on resume.
 
-**Edge cases.** HITL inside a ForEach iteration → resume re-enters the loop from index 0. Cycle counter reset → potential runaway loop. The HITL re-fire pattern (V10) survives by accident because `hitl_pending_call` lives at the root, not under `_`.
+**Edge cases.** HITL inside a ForEach iteration → resume re-entered the loop from index 0. Cycle counter reset → potential runaway loop. The HITL re-fire pattern (V10) survived by accident because `hitl_pending_call` lived at the root, not under `_`.
 
-**Plan.**
-- Single `_runtime: {...}` sub-dict that always survives the strip.
-- Move `_loop_*`, `_cycle_iterations`, `_parent_chain`, `hitl_pending_call` under `_runtime.*`. `_get_clean_context` strips top-level `_*` but preserves `_runtime`.
-- `_trace` stays top-level + ephemeral (rebuilt per request).
-- On resume in `dag_runner._resume_from_*`, `_runtime` is re-injected automatically.
-- Backward-compat read path: legacy context_jsons that have flat `_loop_iteration` etc. are migrated on first resume by an in-memory hoist.
+**What shipped (branch `ctx-mgmt-d-runtime`).**
+- `_get_clean_context` now preserves `_runtime` while stripping every other `_*` key.
+- `_get_runtime(context)` helper — get-or-init the resume-safe sub-dict idempotently.
+- `_hoist_legacy_runtime(context)` — backward-compat in-memory migration of any legacy flat keys (`_loop_*`, `_cycle_iterations`, `_parent_chain`, `hitl_pending_call`) into `_runtime.*`. Called at every `instance.context_json` load site in `dag_runner.py` (initial execute + resume paths). No DB migration; no in-flight instance breakage.
+- All producers migrated:
+  - `dag_runner._fire_loopbacks` writes `_runtime["cycle_iterations"][edge_id]`.
+  - ForEach runner writes `_runtime["loop_item"]` / `loop_item_var` / `loop_index` and resumes from the persisted index.
+  - Loop iteration runner writes `_runtime["loop_index"]` / `loop_iteration` / `loop_node_id` and resumes from the persisted index when re-entering the same loop node.
+  - `react_loop.py` HITL-04 stamps `_runtime["hitl_pending_call"]` at suspend (instead of the previous "happens to not start with `_`" accident).
+  - `_execute_sub_workflow` injects `child_instance.context_json["_runtime"]["parent_chain"]` (instead of flat `_parent_chain`).
+- All consumers updated to read `_runtime.*` first, fall back to legacy flat keys for in-flight context that hasn't been hoisted yet (defence in depth — `prompt_template.build_structured_context_block`, `node_handlers._handle_for_each`, `node_handlers._handle_save_conversation_state` for `loop_iteration`, `node_handlers._execute_sub_workflow` for `parent_chain`, `dag_runner._build_node_input` for log payload, `react_loop` for `hitl_pending_call`).
+- `_trace` stays top-level + ephemeral (rebuilt per invocation from the trace context) — explicitly excluded from the resume-safe namespace.
 
-**Tests.** HITL-inside-ForEach scenario: suspend mid-iteration on item 3 of 5; resume; assert iteration resumes at item 3 (not 0). HITL-inside-loopback-cycle: counter at 7 of 10 max; suspend; resume; assert next iteration is 8.
+**Tests (1029 passed, 1 skipped after this slice — was 1011).**
+- New `tests/test_runtime_namespace.py` (18 tests): `_get_runtime` create-vs-existing-vs-malformed, `_get_clean_context` strip + `_runtime` preservation, `_hoist_legacy_runtime` per-key + idempotency + canonical-wins-over-legacy, `_LEGACY_RUNTIME_KEYS` exhaustiveness guard, end-to-end clean→hoist round-trip preserves loop counters, legacy-context resume recovers `loop_index`, HITL-pending-call legacy→new round-trip.
+- Existing cyclic test suite (`test_cyclic_loopback_execution.py` + `test_cyclic_e2e_patterns.py`) updated to assert against `context["_runtime"]["cycle_iterations"]` instead of flat `_cycle_iterations` — 24 tests pass post-migration.
 
 **Refs.** Temporal — *"if your program restarts or the backend service goes down, your program will be in exactly the same state with all local variables and stack traces in exactly the same state"*.
 
@@ -266,3 +274,4 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | Date | Change |
 |---|---|
 | 2026-05-01 | Plan created. All items at `Not started`. Priority order set (D, A, L, K as P0). Walk-back recorded for original Issue E sub-workflow `outputContext: "all"` after Anthropic-multi-agent literature contradiction. |
+| 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |

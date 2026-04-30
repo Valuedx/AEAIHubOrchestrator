@@ -408,8 +408,12 @@ def _handle_forEach(
     eval_env = {"output": upstream, "context": context, "trigger": context.get("trigger", {})}
     eval_env.update(upstream)
 
-    # Add loop item from parent forEach if nested
-    if "_loop_item" in context:
+    # Add loop item from parent forEach if nested. CTX-MGMT.D — _runtime
+    # is canonical; fall back to legacy flat keys for in-flight context.
+    runtime = context.get("_runtime") or {}
+    if "loop_item" in runtime:
+        eval_env[runtime.get("loop_item_var", "item")] = runtime["loop_item"]
+    elif "_loop_item" in context:
         eval_env[context.get("_loop_item_var", "item")] = context["_loop_item"]
 
     try:
@@ -707,7 +711,12 @@ def _handle_save_conversation_state(
         instance_id = str(context.get("_instance_id", "") or "")
         current_node_id = str(context.get("_current_node_id", "") or "")
         workflow_def_id = str(context.get("_workflow_def_id", "") or "")
-        raw_loop_iteration = context.get("_loop_iteration")
+        # CTX-MGMT.D — loop_iteration is under _runtime now; fall back
+        # to the legacy flat key for any context still in the old shape.
+        runtime = context.get("_runtime") or {}
+        raw_loop_iteration = runtime.get("loop_iteration")
+        if raw_loop_iteration is None:
+            raw_loop_iteration = context.get("_loop_iteration")
         try:
             loop_iteration = int(raw_loop_iteration) if raw_loop_iteration is not None else None
         except (TypeError, ValueError):
@@ -1311,8 +1320,11 @@ def _execute_sub_workflow(
     else:
         graph_json = wf_def.graph_json
 
-    # 3. Recursion protection: walk the parent chain
-    parent_chain: list[str] = list(context.get("_parent_chain", []))
+    # 3. Recursion protection: walk the parent chain. CTX-MGMT.D —
+    # parent_chain lives under _runtime now; fall back to the legacy
+    # flat key for any context still in the old shape.
+    runtime = context.get("_runtime") or {}
+    parent_chain: list[str] = list(runtime.get("parent_chain") or context.get("_parent_chain") or [])
     current_wf_id = str(context.get("_workflow_def_id", ""))
     full_chain = check_subworkflow_recursion(
         parent_chain=parent_chain,
@@ -1332,7 +1344,10 @@ def _execute_sub_workflow(
             "trigger": context.get("trigger", {}),
         }
         eval_env.update(upstream)
-        if "_loop_item" in context:
+        # CTX-MGMT.D — _runtime canonical, legacy fall-through.
+        if "loop_item" in runtime:
+            eval_env[runtime.get("loop_item_var", "item")] = runtime["loop_item"]
+        elif "_loop_item" in context:
             eval_env[context.get("_loop_item_var", "item")] = context["_loop_item"]
 
         for child_key, expr in input_mapping.items():
@@ -1370,9 +1385,13 @@ def _execute_sub_workflow(
         child_id, wf_def.name, parent_instance_id, parent_node_id,
     )
 
-    # 6. Inject parent chain into the child's context for nested recursion checks
+    # 6. Inject parent chain into the child's context for nested
+    # recursion checks. CTX-MGMT.D — parent_chain lives under _runtime
+    # so it survives a HITL inside the child without losing the chain.
+    # `_workflow_def_id` stays top-level — it's repopulated each
+    # invocation by execute_graph from instance.workflow_def_id.
     child_instance.context_json = {
-        "_parent_chain": full_chain,
+        "_runtime": {"parent_chain": full_chain},
         "_workflow_def_id": str(workflow_id),
     }
     db.commit()

@@ -142,7 +142,7 @@ Engine + node-config improvements driven by the V8/V9/V10 lessons + an Anthropic
 
 | # | Feature | Status |
 |---|---------|--------|
-| CTX-MGMT.D | `_runtime: {...}` resume-safe namespace for `_loop_*`, `_cycle_iterations`, `_parent_chain`, `hitl_pending_call`. Fixes correctness bug where HITL-inside-ForEach restarts iterations on resume. **P0**. | **Planned** — see [context-management-plan.md §3](context-management-plan.md) |
+| CTX-MGMT.D | `_runtime: {...}` resume-safe namespace for `_loop_*`, `_cycle_iterations`, `_parent_chain`, `hitl_pending_call`. Fixes correctness bug where HITL-inside-ForEach restarts iterations on resume. Helpers `_get_runtime` + `_hoist_legacy_runtime` in `dag_runner.py` handle backward-compat for any in-flight legacy context_json. 18 new unit tests + 24 existing cyclic tests migrated; 1029 backend tests pass. **P0**. | **Done** — see [context-management-plan.md §3](context-management-plan.md) |
 | CTX-MGMT.A | Per-node output budget + overflow artifacts (`node_output_artifacts` table). Largest cost win; addresses #1 production-failure category. **P0**. | **Planned** |
 | CTX-MGMT.L | Reducer-per-channel state model (`outputReducer: overwrite \| append \| merge \| max \| counter`). LangGraph parity. **P0**. | **Planned** |
 | CTX-MGMT.K | Compaction pass within a single workflow run (Anthropic's "first lever"). **P0**. | **Planned** |
