@@ -24,7 +24,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **A** | Per-node output budget + overflow artifacts | **P0** | **Shipped** (branch `ctx-mgmt-a-overflow`) | — | 2026-05-01 |
 | **L** | Reducer-per-channel state model (`outputReducer`) | **P0** | **Shipped** (branch `ctx-mgmt-l-reducers`) | — | 2026-05-01 |
 | **K** | Compaction pass within a single workflow run | **P0** | **Shipped** (branch `ctx-mgmt-k-compaction`) | — | 2026-05-01 |
-| **B** | `lint_jinja_dangling_reference` static lint | P1 | Not started | — | — |
+| **B** | `lint_jinja_dangling_reference` static lint | P1 | **Shipped** (branch `ctx-mgmt-b-jinja-lint`) | — | 2026-05-01 |
 | **C** | Per-node `dependsOn` / `exposeAs` scope declaration | P1 | Not started | — | — |
 | **E** | Native `Coalesce` node + child-evidence promotion channel | P1 | Not started | — | — |
 | **G** | ReAct iterations summary vs full split | P1 | Not started | — | — |
@@ -155,20 +155,35 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 
 ## §4. P1 — second slice
 
-### B. `lint_jinja_dangling_reference`
+### B. `lint_jinja_dangling_reference` — **Shipped 2026-05-01**
 
-**Gap.** Jinja's `_PermissiveUndefined` renders missing variables to empty strings — typos and broken cross-references ship silently.
+**Gap.** Jinja's `_PermissiveUndefined` rendered missing variables to empty strings — typos and broken cross-references shipped silently.
 
-**Plan.**
-- New SMART-04 lint. Walk every templated string in every node config (systemPrompt, body, url, expression, headers, value).
-- Parse Jinja AST, collect `node_*.foo.bar` references.
-- Cross-check against:
-  - Does `node_*` exist in graph?
-  - Is it on a control-flow path that's pruned when the referencing node runs (Switch/Condition reachability)?
-  - Does its handler ever produce the field being read?
-- Warn for unreachable refs; error for non-existent ids.
+**What shipped (branch `ctx-mgmt-b-jinja-lint`).**
+- New module `app/copilot/jinja_refs.py`:
+  - `extract_node_refs(text)` — regex extracts `node_X` and `node_X.foo.bar` references from any string. Covers BOTH Jinja `{{ ... }}` and safe_eval expressions in one pass — the dotted-attribute syntax is identical.
+  - `walk_node_strings(obj)` — recursive iterator yielding every string value in a JSON-shaped object. Lets the lint sweep every templated field of a node config without maintaining a list of "fields that may contain templating" that drifts as new node types ship.
+  - `collect_refs_from_config(config)` — combines the two: returns a deduped sorted list of every `(node_id, attr_path)` reference in a node's config.
+- New SMART-04 lint `lint_jinja_dangling_reference` in `app/copilot/lints.py`:
+  - For each node, walks `data.config` and extracts every `node_X` reference.
+  - Cross-checks against the graph's actual node ids.
+  - Emits two lint codes:
+    - `jinja_dangling_node_ref` (**error**) — referenced node id doesn't exist; the permissive-undefined policy will render to empty string at runtime, silently broken. Fix-hint surfaces the existing node ids for the typo case.
+    - `jinja_node_self_ref` (**warn**) — node references its own slot; that slot is empty when the handler runs (the engine populates it AFTER the handler returns). Probably a typo or copy-paste bug.
+  - Wired into `run_lints` so `check_draft` surfaces it via the existing copilot lint pipeline.
 
-**Status note (2026-05-01).** This is the cheapest item in the plan — pure static analysis, no runtime change. Recommend shipping alongside D so the V10 lessons it codifies (especially the "Switch arm pruned → downstream `node_4r.json.id` empty" edge case) are in the lint vocabulary.
+**v2 deferral — what's NOT checked yet.**
+- **Reachability.** A node can legally reference a `node_X` that's pruned by an upstream Switch arm; that produces an empty rendering at runtime if the wrong arm fires (V9's `node_4r.json.id` issue, fixed via the always-runs upstream HTTP node). Catching this requires branch-aware control-flow analysis — deferred.
+- **Field existence.** Does `node_4r.json.id` actually produce `json.id`? Requires static knowledge of every node handler's output shape. The CTX-MGMT.I `outputSchema` field will enable this once authors declare schemas.
+
+**Tests (1174 passed, 1 skipped after this slice — was 1152).**
+- New `tests/test_jinja_refs_lint.py` (22 tests):
+  - `extract_node_refs` — Jinja shape, safe_eval shape, bare ref no attrs, multiple refs in one string, word-boundary handling (`not_a_node_X_thing` doesn't match; `(node_4r.id)` does), non-string input, fast-path empty when no `node_` substring, deep attribute path.
+  - `walk_node_strings` + `collect_refs_from_config` — recursive walk, list traversal, scalar skipping, dedup.
+  - `lint_jinja_dangling_reference` — no lint when ref exists, fires on missing id with correct severity/node_id/fix-hint, fires on self-ref, walks nested config fields (HTTP headers etc.), empty-graph no-op, multiple dangling refs in one node yield multiple lints, real V10 pattern (`node_router.intents[0]` square-bracket access) doesn't false-positive.
+  - `run_lints` integration — confirms the new lint is wired into the SMART-04 entrypoint and a well-formed V10-shape workflow produces zero lints.
+
+**Refs.** Anthropic — *"system prompts should be extremely clear and use simple, direct language"* — applies to authoring tools too: catch authoring-time errors at promote rather than letting them propagate as silent runtime degradation.
 
 ### C. Per-node `dependsOn` / `exposeAs` scope declaration
 
@@ -334,6 +349,7 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | Plan created. All items at `Not started`. Priority order set (D, A, L, K as P0). Walk-back recorded for original Issue E sub-workflow `outputContext: "all"` after Anthropic-multi-agent literature contradiction. |
 | 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |
 | 2026-05-01 | **CTX-MGMT.A shipped** on branch `ctx-mgmt-a-overflow` (stacked on `ctx-mgmt-d-runtime`). New `node_output_artifacts` table (migration 0035) + RLS + indexes. `app/engine/output_artifact.py` with pure helpers (`estimate_output_size`, `resolve_budget`, `should_overflow`, `materialize_overflow_stub`, `persist_artifact`, `maybe_overflow`). Wired into `dag_runner._execute_single_node` on both sequential and parallel-branch paths — on overflow the artifact is INSERTed and the in-context value becomes a small stub preserving canonical scalar keys (`id`, `status`, `error`, `branch`, etc.) so downstream Jinja still resolves. New copilot runner tool `inspect_node_artifact` (same ephemeral-only safety as `get_execution_logs`). 28 new unit tests + Jinja round-trip tests. Full backend suite 1057 passed (was 1029). Defaults: 64 kB per-node budget, 256 kB hard ceiling, per-node `contextOutputBudget` override. Deferred sub-task: `_save_checkpoint` delta writes — separate optimisation that can land independently. |
+| 2026-05-01 | **CTX-MGMT.B shipped** on branch `ctx-mgmt-b-jinja-lint` (off merged `core`). New `app/copilot/jinja_refs.py` with regex-based `extract_node_refs` covering Jinja + safe_eval in one pass. New SMART-04 lint `lint_jinja_dangling_reference` emits `jinja_dangling_node_ref` (error — ref to non-existent node id, would render to empty string silently at runtime) and `jinja_node_self_ref` (warn — node reads its own slot which is empty at handler-run time). Wired into `run_lints`. 22 new unit tests; 1174 backend tests pass (was 1152). Reachability + field-existence checks deferred to v2. |
 | 2026-05-01 | **CTX-MGMT.K shipped** on branch `ctx-mgmt-k-compaction` (stacked on `ctx-mgmt-h-context-trace`). All four P0 items now done. Migration 0037: `tenant_policies.context_compaction_enabled` (DEFAULT TRUE — opposite of trace flag's default-off). New `app/engine/compaction.py` with running-size approximation tracker, oldest-first candidate selection, and `maybe_compact` end-to-end pass that reuses CTX-MGMT.A's `node_output_artifacts` table for storage. Stub shape upgrade — `materialize_overflow_stub` accepts `kind: "overflow"|"compaction"` and now spreads canonical scalar keys to top level so `{{ node_X.id }}` renders the same pre/post-stub. Wired into `dag_runner._execute_single_node` on both paths. Selection signal is write-age (oldest-first) until CTX-MGMT.H v2 adds read-recency. 32 new unit tests; 1152 backend tests pass (was 1120). Per-tenant opt-out for strict audit-trail replay; full output remains in artifacts either way. |
 | 2026-05-01 | **CTX-MGMT.H shipped** (v1: writes only) on branch `ctx-mgmt-h-context-trace` (stacked on `ctx-mgmt-l-reducers`). New `instance_context_trace` table (migration 0036) + `tenant_policies.context_trace_enabled` flag. `app/engine/context_trace.py` with fast-path no-op helpers. Wired into `dag_runner._execute_single_node` on both paths so every context write records `{instance_id, node_id, op, key, size_bytes, reducer, overflowed, ts}` when tracing is on. Ephemeral (copilot-initiated) instances always trace; production opts in via the new tenant policy. New copilot runner tool `inspect_context_flow(instance_id, key?)` with exact-match + prefix (`node_*`) filtering. Per-instance cap of 500 events with batched 50-row trim. 19 new unit tests; 1120 backend tests pass (was 1101). Read-event + miss-event tracking deferred to v2 — volume is template-dependent and the missing-key story is better served by `lint_jinja_dangling_reference` (CTX-MGMT.B) at promote time. |
 | 2026-05-01 | **CTX-MGMT.L shipped** on branch `ctx-mgmt-l-reducers` (stacked on `ctx-mgmt-a-overflow`). New `app/engine/reducers.py` with `KNOWN_REDUCERS` registry (6 entries: `overwrite`/`append`/`merge`/`max`/`min`/`counter`) + pure helpers `resolve_reducer` and `apply_reducer`. Wired into `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel-branch) — fires AFTER the overflow check so the overflow stub composes correctly with reducers. `app/engine/config_validator.py` gains `_validate_output_reducer` (rejects unknown names) and `_validate_output_budget` (rejects non-positive budgets) at promote time. Default `overwrite` keeps every existing graph identical; new reducers unlock parallel-branch aggregation, audit trails, counters, max/min trackers without ad-hoc handler code. 44 new unit tests; full backend suite 1101 passed (was 1057). Deferred sub-task: refactoring ForEach + Loop body aggregation to use reducers — invasive, current semantics work, current reducers already add value for new patterns. |

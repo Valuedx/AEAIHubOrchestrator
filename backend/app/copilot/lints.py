@@ -460,6 +460,8 @@ def run_lints(
     # COPILOT-V2 — prompt-cache + react-role consistency.
     lints.extend(lint_prompt_cache_breakage(graph))
     lints.extend(lint_react_role_inconsistency(graph))
+    # CTX-MGMT.B — Jinja / safe_eval dangling node references.
+    lints.extend(lint_jinja_dangling_reference(graph))
     return lints
 
 
@@ -654,6 +656,110 @@ def lint_react_role_inconsistency(graph: dict[str, Any]) -> list[Lint]:
                         "Bump `maxIterations` to at least 3 (typical workers "
                         "use 5; verifiers use 2). For a single-shot LLM, use "
                         "`LLM Agent` instead of `ReAct Agent`."
+                    ),
+                    node_id=nid,
+                ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.B — Jinja / safe_eval dangling node-reference lint
+# ---------------------------------------------------------------------------
+
+
+def lint_jinja_dangling_reference(graph: dict[str, Any]) -> list[Lint]:
+    """Catch references to non-existent ``node_X`` ids in templated
+    fields at promote time, so typos don't ship as silent
+    empty-string renderings at runtime.
+
+    Background: the engine renders Jinja with ``_PermissiveUndefined``
+    — missing variables become empty strings, no warning. A typo
+    like ``node_4`` → ``node_4r`` ships fine, runs fine, and the
+    user sees ``case_id`` mysteriously empty in their HTTP body. This
+    lint catches it at authoring time.
+
+    What's checked
+      * Every string value in every node's ``data.config`` is
+        scanned (recursively walks dicts + lists).
+      * Each ``node_X`` reference (Jinja ``{{ node_X.foo }}`` or
+        safe_eval ``node_X.foo``) is cross-referenced against the
+        graph's actual node ids.
+      * Self-references (a node referencing its own slot — which is
+        empty when the handler runs) are flagged as a warn.
+
+    What's NOT checked (deferred to v2)
+      * **Reachability** — a node can legally reference a `node_X`
+        that's pruned by an upstream Switch arm; that produces an
+        empty rendering at runtime if the wrong arm fires. Catching
+        this requires branch-aware control-flow analysis.
+      * **Field existence** — does ``node_4r.json.id`` actually
+        produce ``json.id``? Requires static knowledge of every
+        node handler's output shape. The CTX-MGMT.I `outputSchema`
+        field will enable this once authors declare schemas.
+    """
+    from app.copilot.jinja_refs import collect_refs_from_config
+
+    nodes = _nodes(graph)
+    valid_ids = {n.get("id") for n in nodes if n.get("id")}
+    if not valid_ids:
+        return []
+
+    out: list[Lint] = []
+    for node in nodes:
+        nid = node.get("id")
+        if not nid:
+            continue
+        config = (node.get("data") or {}).get("config") or {}
+        for ref_node, ref_path in collect_refs_from_config(config):
+            if ref_node not in valid_ids:
+                # Dangling reference — the referenced node doesn't
+                # exist in the graph. This is an error: it WILL
+                # render to empty string at runtime, silently.
+                ref_str = (
+                    f"{ref_node}.{ref_path}" if ref_path else ref_node
+                )
+                out.append(Lint(
+                    code="jinja_dangling_node_ref",
+                    severity="error",
+                    message=(
+                        f"Node `{nid}` references `{ref_str}` in its "
+                        "config but no node with that id exists in "
+                        "the graph. The Jinja / safe_eval permissive-"
+                        "undefined policy will render this to an "
+                        "empty string at runtime — silently broken."
+                    ),
+                    fix_hint=(
+                        "Check for a typo in the node id, or update "
+                        "the reference to a node that actually "
+                        "exists. Existing node ids: "
+                        f"{sorted(valid_ids)[:10]}"
+                        + ("…" if len(valid_ids) > 10 else "")
+                    ),
+                    node_id=nid,
+                ))
+                continue
+            if ref_node == nid:
+                # Self-reference — node X reading from
+                # ``context[X]``. That slot is always empty when X's
+                # handler runs (the slot gets populated by the
+                # engine AFTER the handler returns). Probably a
+                # typo or a copy-paste bug.
+                ref_str = (
+                    f"{ref_node}.{ref_path}" if ref_path else ref_node
+                )
+                out.append(Lint(
+                    code="jinja_node_self_ref",
+                    severity="warn",
+                    message=(
+                        f"Node `{nid}` references its own slot "
+                        f"`{ref_str}` — that slot is empty when "
+                        "this node's handler runs. Probably a "
+                        "typo or copy-paste bug."
+                    ),
+                    fix_hint=(
+                        "Update the reference to point at an "
+                        "upstream node whose output you actually "
+                        "want to read."
                     ),
                     node_id=nid,
                 ))
