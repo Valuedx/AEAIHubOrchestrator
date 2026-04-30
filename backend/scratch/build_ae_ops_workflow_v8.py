@@ -270,9 +270,29 @@ Your turn MUST follow this 3-step state machine:
 
   STEP 2 — INVESTIGATE (at most 2 tool-call iterations): gather just enough data to formulate a reply or proposal. If the FIRST tool call already gave you what you need, skip the second.
 
-  STEP 3 — RESPOND (the LAST iteration): produce a plain-text user-facing reply. NO TOOL CALLS in this iteration. (You may bundle case.update_state / case.add_worknote with the text reply if the framework allows multi-tool + final-text in one iteration; if uncertain, do them as a tool-only iteration FIRST, then a text-only iteration LAST.)
+  STEP 3 — RESPOND (the LAST iteration): produce a plain-text user-facing reply. NO TOOL CALLS in this iteration.
 
 After step 2's 2nd tool call, your NEXT iteration MUST be plain text. This is non-negotiable. If you keep calling tools after step 2, you'll exhaust max_iterations and the user sees "Maximum iterations reached" — that is a SHIPPED BUG.
+
+=== EVERY TURN IS A FRESH ATTEMPT (CRITICAL) ===
+Each turn starts with the tools fully working. Prior turns' errors do NOT carry over — they're a different invocation, possibly under a now-fixed bug.
+
+NEVER say "I'm experiencing technical difficulties", "my tools are unavailable", "I can't access the system", or any equivalent BEFORE you've actually tried a tool call THIS TURN and seen it fail.
+
+If your FIRST iteration is `final_response` with phrasing like "still experiencing issues" or "still unable", that's a bug in your reasoning — you bailed without trying. The correct first iteration on an action request is a tool call.
+
+=== HANDLING USER PICKS (a/b/c CONFIRMATIONS) ===
+When the user replies with a choice on a previously-offered list — e.g. "(a) re-run its most recent execution", "re-run the last one", "yes, restart the agent", "trigger the schedule" — they are CONFIRMING the action. Your job is to PERFORM IT, not re-deliberate.
+
+Map the choice to the destructive tool and call it directly:
+  - "re-run latest" / "re-run most recent" / "(a)"  → `ae.request.rerun(request_id=<latest>)`
+                                                       (call `ae.request.list_recent(workflow=...)` ONCE first to get the request_id IF you don't already have it from this session's memory)
+  - "restart the system" / "restart the agent" / "(b)" → `ae.agent.restart_service(agent_id=<host>)`
+                                                          (call `ae.agent.get_status(...)` first IF needed to find the host agent_id)
+  - "trigger schedule" / "run now" / "(c)" → `ae.schedule.run_now(schedule_id=<sched>)`
+                                              (call `ae.schedule.list_for_workflow(...)` first IF needed)
+
+Destructive tools self-gate via HITL. The runtime parks the run for an approver — you don't need to ask "may I?". Just call the tool. After the tool returns, produce a 2–3 sentence reply summarising the outcome (the Verifier downstream will independently confirm).
 
 === HANDLING "RESTART X" / "RERUN Y" / "FIX Z" REQUESTS ===
 AutomationEdge has NO direct workflow-level restart primitive. The available destructive actions are:
@@ -322,13 +342,17 @@ WORKER_PROMPT_DYNAMIC = """
 user_role:           {{ trigger.user_role | default('business') }}
 router_intent:       {{ node_router.intents[0] | default('ops') }}
 router_confidence:   {{ node_router.confidence | default(0.0) }}
-case_id:             {{ node_3.json.id[:8] | default('') }}
+case_id:             {{ node_3.json.id | default('') }}
+case_id_short:       {{ node_3.json.id[:8] | default('') }}
 case_state:          {{ node_3.json.state | default('NEW') }}
 prior_evidence:      {{ node_3.json.evidence | length | default(0) }}
 prior_worknotes:     {{ node_3.json.worknotes | length | default(0) }}
 glossary_match:      {{ node_glossary.json.match.workflow_id | default('null') }}
 glossary_friendly:   {{ node_glossary.json.match.friendly_name | default('') }}
 glossary_clarify_q:  {{ node_glossary.json.clarifying_question | default('') }}
+
+NOTE: Pass `case_id` (full UUID) to case.* tools. Use `case_id_short`
+ONLY when displaying the case reference to the user in your reply.
 """
 
 WORKER_PROMPT = WORKER_PROMPT_STATIC + WORKER_PROMPT_DYNAMIC
