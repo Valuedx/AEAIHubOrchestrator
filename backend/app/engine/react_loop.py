@@ -54,6 +54,15 @@ def run_react_loop(
     temperature = float(config.get("temperature", 0.7))
     max_tokens = int(config.get("maxTokens", 4096))
 
+    # CTX-MGMT.G — by default, the node's output exposes only a
+    # SUMMARY of iterations (action + tool names, no args / no
+    # results / no full LLM content). Authors who need the full
+    # reasoning trace for debugging or for downstream Verifier-style
+    # introspection can opt in via exposeFullIterations: True; that
+    # surfaces the verbose form under `iterations_full` (separate key
+    # so the summary stays the canonical default).
+    expose_full_iterations = bool(config.get("exposeFullIterations", False))
+
     # CATEGORY-01 (V10) — optional read/case/remediation/glossary/web
     # allowlist; engine drops tools whose category is not present BEFORE
     # the model sees them. Used by the Verifier ReAct to enforce
@@ -204,7 +213,7 @@ def run_react_loop(
                 "provider": provider,
                 "model": model,
                 "usage": total_usage,
-                "iterations": iterations,
+                **_finalize_iterations_payload(iterations, expose_full=expose_full_iterations),
                 "total_iterations": i,
                 "memory_debug": memory_debug,
             }
@@ -225,7 +234,7 @@ def run_react_loop(
                 "provider": provider,
                 "model": model,
                 "usage": total_usage,
-                "iterations": iterations,
+                **_finalize_iterations_payload(iterations, expose_full=expose_full_iterations),
                 "total_iterations": i + 1,
                 "memory_debug": memory_debug,
             }
@@ -247,7 +256,7 @@ def run_react_loop(
                 "provider": provider,
                 "model": model,
                 "usage": total_usage,
-                "iterations": iterations,
+                **_finalize_iterations_payload(iterations, expose_full=expose_full_iterations),
                 "total_iterations": i + 1,
                 "memory_debug": memory_debug,
             }
@@ -334,7 +343,7 @@ def run_react_loop(
         "provider": provider,
         "model": model,
         "usage": total_usage,
-        "iterations": iterations,
+        **_finalize_iterations_payload(iterations, expose_full=expose_full_iterations),
         "total_iterations": max_iterations,
         "memory_debug": memory_debug,
     }
@@ -1034,3 +1043,93 @@ _PROVIDERS: dict[str, dict[str, Any]] = {
         "append_tool_results": _google_append,
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.G — iterations summary helper
+# ---------------------------------------------------------------------------
+
+
+def _summarize_iterations(iterations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the safe public summary of a ReAct loop's iterations.
+
+    The full iterations list contains the LLM's reasoning content,
+    tool call args (which may include user data / tokens), and tool
+    results. Downstream nodes — including downstream LLMs reading
+    via Jinja — should NOT see this state by default; the prompt is
+    private to the producing agent.
+
+    The summary preserves what's safely useful for inspection:
+
+      * ``iteration`` — the iteration index.
+      * ``action`` — one of ``tool_use`` / ``final_response`` /
+        ``timeout`` / ``llm_error`` / ``max_iterations_exceeded`` /
+        ``approved_tool_executed``.
+      * ``tool_calls`` (when ``action == "tool_use"``) — list of
+        ``{"name": str}``. Just the name. No args, no results.
+        That's enough for the predicate evaluator's "did X call Y?"
+        question without leaking what was passed.
+      * ``content_length`` (when ``action == "final_response"``) —
+        an integer for telemetry; the actual content is the agent's
+        ``response`` field at the top level (which IS exposed).
+      * ``error`` (when ``action`` is an error variant) — truncated
+        error string.
+
+    Authors who genuinely need the full trace (Verifier patterns,
+    debug nodes) can set ``exposeFullIterations: True`` on the
+    ReAct node config. The verbose form then appears under
+    ``iterations_full``; the safe summary remains under
+    ``iterations``.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in iterations:
+        if not isinstance(entry, dict):
+            continue
+        action = entry.get("action") or "unknown"
+        summary: dict[str, Any] = {
+            "iteration": entry.get("iteration"),
+            "action": action,
+        }
+        if action == "tool_use":
+            tool_calls_in = entry.get("tool_calls") or []
+            summary["tool_calls"] = [
+                {"name": (tc.get("name") if isinstance(tc, dict) else None) or "<unknown>"}
+                for tc in tool_calls_in
+                if tc is not None
+            ]
+        elif action == "final_response":
+            content = entry.get("content")
+            if isinstance(content, str):
+                summary["content_length"] = len(content)
+        elif action in ("llm_error", "timeout", "max_iterations_exceeded"):
+            err = entry.get("error")
+            if isinstance(err, str):
+                summary["error"] = err[:200]
+        elif action == "approved_tool_executed":
+            # HITL-04 re-fire — keep the tool name so the audit
+            # trail can show which approved tool was re-invoked.
+            tcs = entry.get("tool_calls") or []
+            if tcs and isinstance(tcs[0], dict):
+                summary["tool_name"] = tcs[0].get("name")
+        out.append(summary)
+    return out
+
+
+def _finalize_iterations_payload(
+    iterations: list[dict[str, Any]],
+    *,
+    expose_full: bool,
+) -> dict[str, Any]:
+    """Return the dict that gets merged into the ReAct loop's output.
+
+    Always includes ``iterations`` (the safe summary). Optionally
+    includes ``iterations_full`` (the verbose form, scrubbed for
+    sensitive keys via the engine's ``scrub_secrets``) when the
+    node config opted into ``exposeFullIterations``.
+    """
+    payload: dict[str, Any] = {"iterations": _summarize_iterations(iterations)}
+    if expose_full:
+        from app.engine.scrubber import scrub_secrets
+        # scrub_secrets is pure/functional — original list untouched.
+        payload["iterations_full"] = scrub_secrets(iterations)
+    return payload

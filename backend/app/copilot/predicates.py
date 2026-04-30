@@ -101,15 +101,32 @@ def _intent(output: dict[str, Any]) -> str | None:
 
 def _all_tool_calls(output: dict[str, Any]) -> list[dict[str, Any]]:
     """Collect tool-call records across every ReAct node in the run.
-    Each ReAct node stores ``iterations: [{action, tool_calls?, ...}]``
-    in the context."""
+
+    Each ReAct node stores its iteration trace in either:
+      * ``iterations_full`` — verbose form, only present when the
+        node opted in via ``exposeFullIterations: True`` (CTX-MGMT.G).
+      * ``iterations`` — safe summary, ALWAYS present. Each entry's
+        ``tool_calls`` field carries just the tool name (no args).
+
+    The predicate evaluator only needs tool names to answer
+    ``tool_called`` / ``no_tool_called`` / ``tool_call_count``
+    questions, so the summary suffices. Read ``iterations_full``
+    preferentially so callers that opted into the verbose form get
+    the full args (in case predicates evolve to inspect args), and
+    fall back to ``iterations`` otherwise.
+    """
     out: list[dict[str, Any]] = []
     if not isinstance(output, dict):
         return out
     for v in output.values():
         if not isinstance(v, dict):
             continue
-        iters = v.get("iterations")
+        # CTX-MGMT.G — prefer iterations_full when present (the
+        # verbose form has identical-or-richer tool_calls shape);
+        # fall back to iterations (the canonical summary).
+        iters = v.get("iterations_full")
+        if not isinstance(iters, list):
+            iters = v.get("iterations")
         if not isinstance(iters, list):
             continue
         for it in iters:
