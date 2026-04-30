@@ -319,6 +319,13 @@ def check_auth_mode() -> CheckResult:
             message="OIDC configured with all required fields.",
         )
 
+    if mode == "local":
+        return CheckResult(
+            name="auth_mode",
+            status="pass",
+            message="AUTH_MODE=local (username/password auth enabled).",
+        )
+
     # dev mode — fine for local; warn when it looks production-y.
     return CheckResult(
         name="auth_mode",
