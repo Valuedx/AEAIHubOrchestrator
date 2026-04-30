@@ -462,6 +462,8 @@ def run_lints(
     lints.extend(lint_react_role_inconsistency(graph))
     # CTX-MGMT.B — Jinja / safe_eval dangling node references.
     lints.extend(lint_jinja_dangling_reference(graph))
+    # CTX-MGMT.E — fan-in nodes blocked by Switch/Condition pruning.
+    lints.extend(lint_unreachable_node_after_switch(graph))
     return lints
 
 
@@ -763,4 +765,167 @@ def lint_jinja_dangling_reference(graph: dict[str, Any]) -> list[Lint]:
                     ),
                     node_id=nid,
                 ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.E — fan-in unreachability after Switch/Condition pruning
+# ---------------------------------------------------------------------------
+
+
+# Branch-style nodes whose handlers populate `output.branch` and whose
+# downstream edges have `sourceHandle` matching the chosen branch.
+# `_prune_subtree` walks all OTHER outgoing edges' subtrees and marks
+# them pruned — i.e. only one arm fires per execution.
+_BRANCH_NODE_LABELS = frozenset({"Switch", "Condition"})
+
+
+def _is_branch_node(node: dict[str, Any]) -> bool:
+    data = node.get("data") or {}
+    if (data.get("nodeCategory") or "") != "logic":
+        return False
+    return (data.get("label") or "") in _BRANCH_NODE_LABELS
+
+
+def _trace_to_branch_arm(
+    target_node_id: str,
+    *,
+    nodes_by_id: dict[str, dict[str, Any]],
+    edges_by_target: dict[str, list[dict[str, Any]]],
+    visited: set[str] | None = None,
+) -> tuple[str, str] | None:
+    """Walk back from ``target_node_id`` through reverse edges. If we
+    reach a Switch/Condition node, return ``(branch_node_id, source_handle)``
+    indicating which arm of which branch this node sits under.
+
+    Returns ``None`` when no branch ancestor is reachable. BFS-ish —
+    immediate predecessors first; cycles short-circuit via ``visited``
+    (safe on graphs with loopback edges from CYCLIC-01).
+    """
+    if visited is None:
+        visited = set()
+    if target_node_id in visited:
+        return None
+    visited.add(target_node_id)
+
+    incoming = edges_by_target.get(target_node_id, [])
+    for edge in incoming:
+        source_id = edge.get("source")
+        if not source_id:
+            continue
+        source_node = nodes_by_id.get(source_id)
+        if source_node is None:
+            continue
+        if _is_branch_node(source_node):
+            handle = edge.get("sourceHandle") or "default"
+            return (str(source_id), str(handle))
+
+    # Recurse through each predecessor's own ancestors.
+    for edge in incoming:
+        source_id = edge.get("source")
+        if not source_id:
+            continue
+        result = _trace_to_branch_arm(
+            str(source_id),
+            nodes_by_id=nodes_by_id,
+            edges_by_target=edges_by_target,
+            visited=visited,
+        )
+        if result is not None:
+            return result
+    return None
+
+
+def lint_unreachable_node_after_switch(graph: dict[str, Any]) -> list[Lint]:
+    """Catch fan-in nodes that will never satisfy their full in-degree
+    because their incoming edges originate from different arms of the
+    same Switch / Condition.
+
+    Background: when a Switch picks arm "yes", `_prune_subtree` marks
+    every node downstream of arm "no" as pruned. A fan-in node
+    expecting ALL upstream edges satisfied (engine default) will
+    forever wait on the pruned-arm edge — its in-degree is never met,
+    so it never fires. This is the bug V9's case-state workaround
+    was designed around.
+
+    Fix shape: use a Coalesce node (CTX-MGMT.E) whose ready-check is
+    "any one upstream satisfied" instead of "all upstream satisfied".
+
+    Coalesce-aware: nodes whose ``data.label == "Coalesce"`` are
+    skipped (they're the right answer, not the bug).
+    """
+    nodes = _nodes(graph)
+    edges = _edges(graph)
+    if not nodes or not edges:
+        return []
+
+    nodes_by_id: dict[str, dict[str, Any]] = {
+        n["id"]: n for n in nodes if n.get("id")
+    }
+    edges_by_target: dict[str, list[dict[str, Any]]] = {}
+    for e in edges:
+        target = e.get("target")
+        if not target:
+            continue
+        edges_by_target.setdefault(target, []).append(e)
+
+    out: list[Lint] = []
+    seen_warnings: set[tuple[str, str]] = set()
+    for node in nodes:
+        nid = node.get("id")
+        if not nid:
+            continue
+        label = (node.get("data") or {}).get("label") or ""
+        if label == "Coalesce":
+            continue
+        incoming = edges_by_target.get(nid, [])
+        if len(incoming) < 2:
+            continue
+
+        per_branch_handles: dict[str, set[str]] = {}
+        for edge in incoming:
+            source_id = edge.get("source")
+            if not source_id:
+                continue
+            source_node = nodes_by_id.get(str(source_id))
+            if source_node is not None and _is_branch_node(source_node):
+                handle = edge.get("sourceHandle") or "default"
+                ancestor: tuple[str, str] | None = (str(source_id), str(handle))
+            else:
+                ancestor = _trace_to_branch_arm(
+                    str(source_id),
+                    nodes_by_id=nodes_by_id,
+                    edges_by_target=edges_by_target,
+                )
+            if ancestor is None:
+                continue
+            branch_id, handle = ancestor
+            per_branch_handles.setdefault(branch_id, set()).add(handle)
+
+        for branch_id, handles in per_branch_handles.items():
+            if len(handles) <= 1:
+                continue
+            key = (nid, branch_id)
+            if key in seen_warnings:
+                continue
+            seen_warnings.add(key)
+            handles_list = sorted(handles)
+            out.append(Lint(
+                code="unreachable_node_after_switch",
+                severity="error",
+                message=(
+                    f"Node `{nid}` (“{label or 'unknown'}”) has incoming "
+                    f"edges from multiple arms of branch node "
+                    f"`{branch_id}` (arms: {handles_list}). Only one arm "
+                    "fires per execution — this node will never satisfy "
+                    "its full in-degree and will never run."
+                ),
+                fix_hint=(
+                    "Replace with a `Coalesce` node (fires when ANY "
+                    "upstream is satisfied, not ALL), or restructure "
+                    "the graph so the fan-in happens AFTER all branch "
+                    "arms have converged."
+                ),
+                node_id=nid,
+            ))
     return out

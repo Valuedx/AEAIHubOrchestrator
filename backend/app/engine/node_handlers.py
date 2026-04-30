@@ -380,7 +380,35 @@ def _handle_logic(
 
     if config.get("strategy") == "waitAll":
         upstream = {k: v for k, v in context.items() if k.startswith("node_")}
-        return {"merged": upstream}
+        return {"merged": upstream, "strategy": "waitAll"}
+
+    # CTX-MGMT.E — Merge with strategy=waitAny fires when ANY active
+    # upstream source is satisfied (the engine's ready-check honors
+    # this via `_is_waitany_merge` in dag_runner). The handler's
+    # output reports which source's data was available so downstream
+    # nodes can read it via Jinja `{{ node_merge.value }}` /
+    # `{{ node_merge.from }}`.
+    if config.get("strategy") == "waitAny":
+        # Find the first active upstream that has a value in context.
+        # The engine guarantees AT LEAST ONE is present by the time
+        # this handler fires (otherwise the ready-check wouldn't
+        # have admitted us).
+        upstream = {k: v for k, v in context.items() if k.startswith("node_")}
+        # Filter to nodes that are direct upstreams of this merge.
+        # We don't have edge info inside the handler, so we use the
+        # full upstream set; the user can disambiguate via `from`
+        # being any upstream that actually fired into us.
+        for key, value in upstream.items():
+            if value is not None:
+                return {
+                    "merged": value,
+                    "value": value,
+                    "from": key,
+                    "strategy": "waitAny",
+                }
+        # Fallback: nothing in upstream — shouldn't happen given the
+        # ready-check, but defensive.
+        return {"merged": None, "value": None, "from": None, "strategy": "waitAny"}
 
     logger.warning("Logic node '%s' has no handler", label)
     return {"output": None}
@@ -1440,6 +1468,28 @@ def _execute_sub_workflow(
             k: v for k, v in child_context.items()
             if k.startswith("node_") or k == "trigger"
         }
+
+    # CTX-MGMT.E — child-evidence promotion. If the child workflow
+    # appended findings to ``_runtime.shared_evidence`` during its
+    # run, propagate them up to the parent's ``_runtime.shared_evidence``
+    # via append-merge. Lets sub-workflows surface structured
+    # evidence to the parent without dumping their full context_json
+    # — preserves Anthropic's scoped-per-agent-context pattern.
+    child_runtime = (child_context.get("_runtime") or {}) if isinstance(child_context, dict) else {}
+    child_evidence = child_runtime.get("shared_evidence")
+    if isinstance(child_evidence, list) and child_evidence:
+        from app.engine.dag_runner import _get_runtime
+        parent_runtime = _get_runtime(context)
+        existing = parent_runtime.get("shared_evidence")
+        if isinstance(existing, list):
+            parent_runtime["shared_evidence"] = [*existing, *child_evidence]
+        else:
+            parent_runtime["shared_evidence"] = list(child_evidence)
+        logger.info(
+            "Sub-Workflow: promoted %d evidence entries from child "
+            "workflow '%s' to parent _runtime.shared_evidence",
+            len(child_evidence), wf_def.name,
+        )
 
     logger.info(
         "Sub-Workflow: child %s completed with %d output keys (workflow='%s')",

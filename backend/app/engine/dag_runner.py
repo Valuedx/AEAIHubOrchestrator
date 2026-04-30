@@ -1237,6 +1237,28 @@ def _log_loopback_cap_hit(
     db.add(log)
 
 
+def _is_waitany_merge(node: dict) -> bool:
+    """CTX-MGMT.E — Merge node with ``strategy: waitAny`` fires when
+    ANY active upstream source is satisfied (vs the default waitAll
+    where all must be satisfied). The right primitive for fan-in
+    after a Switch / Condition: only one branch arm fires, so a
+    fan-in node expecting ALL arms would otherwise wait forever.
+
+    Already-existing registry entry (`shared/node_registry.json`
+    line ~356, type=merge, label=Merge) had `strategy` enum
+    ``waitAll | waitAny`` but the waitAny path was never
+    implemented. CTX-MGMT.E wires it up.
+    """
+    data = node.get("data") or {}
+    if (data.get("nodeCategory") or "") != "logic":
+        return False
+    if (data.get("label") or "") != "Merge":
+        return False
+    config = data.get("config") or {}
+    strategy = (config.get("strategy") or "waitAll").lower()
+    return strategy == "waitany"
+
+
 def _find_ready_nodes(
     nodes_map: dict,
     reverse: dict[str, list[_Edge]],
@@ -1245,8 +1267,13 @@ def _find_ready_nodes(
     skipped: set[str],
     pruned: set[str],
 ) -> list[str]:
-    """Find nodes whose all incoming (non-pruned) edges are satisfied
-    and that haven't been executed yet."""
+    """Find nodes whose incoming edges are satisfied per the node's
+    ready-check policy and that haven't been executed yet.
+
+    Default policy (waitAll): every active (non-pruned) incoming
+    source must be satisfied. CTX-MGMT.E adds waitAny support for
+    Merge nodes — fires when ANY active source is satisfied.
+    """
     ready = []
     executed = set(context.keys())
 
@@ -1265,8 +1292,15 @@ def _find_ready_nodes(
             ready.append(nid)
             continue
 
-        if active_sources <= satisfied.get(nid, set()):
-            ready.append(nid)
+        sat = satisfied.get(nid, set())
+        if _is_waitany_merge(nodes_map.get(nid, {})):
+            # Any-of: fire on the first satisfied source.
+            if active_sources & sat:
+                ready.append(nid)
+        else:
+            # All-of: every active source must be satisfied.
+            if active_sources <= sat:
+                ready.append(nid)
 
     return ready
 
