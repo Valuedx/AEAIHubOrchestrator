@@ -579,6 +579,14 @@ class TenantPolicy(Base):
     context_trace_enabled = Column(
         Boolean, nullable=False, default=False, server_default=sa.text("FALSE"),
     )
+    # CTX-MGMT.K — opt-out of within-run context compaction. Default
+    # TRUE (compaction is a cost saver). Tenants with strict audit-
+    # trail requirements (regulated industries needing exact in-memory
+    # state replay) can disable; the full output stays available via
+    # node_output_artifacts either way.
+    context_compaction_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
     # MODEL-01.e — per-tenant model defaults + family allowlist.
     # Nullable so tenants that never open the model row in the policy
     # dialog keep the registry's global defaults untouched. See

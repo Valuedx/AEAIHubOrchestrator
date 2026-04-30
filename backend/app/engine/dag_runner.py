@@ -500,6 +500,14 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
         runtime["context_trace_enabled"] = resolve_trace_flag(
             db, tenant_id=instance.tenant_id, is_ephemeral=is_ephemeral,
         )
+    # CTX-MGMT.K — resolve compaction flag (default ON, opt out via
+    # tenant_policies.context_compaction_enabled). Same one-time
+    # resolution at run start so the per-node check is a dict lookup.
+    if "context_compaction_enabled" not in runtime:
+        from app.engine.compaction import resolve_compaction_flag
+        runtime["context_compaction_enabled"] = resolve_compaction_flag(
+            db, tenant_id=instance.tenant_id,
+        )
 
     det_tag = ["deterministic"] if deterministic_mode else []
     with trace_workflow(
@@ -1364,6 +1372,23 @@ def _execute_single_node(
                 reducer=reducer_name,
                 overflowed=bool(overflow_meta),
             )
+            # CTX-MGMT.K — track per-node size approximation + run
+            # compaction pass if cumulative context exceeds threshold.
+            # Both calls fast-no-op when compaction is disabled or
+            # we're under threshold.
+            from app.engine.compaction import (
+                estimate_output_size,
+                maybe_compact,
+                track_write_size,
+            )
+            written_size = estimate_output_size(context[node_id])
+            ctx_runtime = _get_runtime(context)
+            track_write_size(ctx_runtime, node_id, written_size)
+            maybe_compact(
+                db, context,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
+            )
             # _promote_orchestrator_user_reply still reads the full
             # output (not the stub or reduced value) — Bridge nodes
             # are designed to produce small replies, but if a Bridge
@@ -1564,6 +1589,19 @@ def _execute_parallel(
                 size_bytes=(overflow_meta.get("size_bytes") if overflow_meta else None),
                 reducer=reducer_name,
                 overflowed=bool(overflow_meta),
+            )
+            # CTX-MGMT.K — same compaction pass on the parallel path.
+            from app.engine.compaction import (
+                estimate_output_size,
+                maybe_compact,
+                track_write_size,
+            )
+            written_size_p = estimate_output_size(context[node_id])
+            track_write_size(_get_runtime(context), node_id, written_size_p)
+            maybe_compact(
+                db, context,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
             )
             _promote_orchestrator_user_reply(context, output)
             log_entry.status = "completed"

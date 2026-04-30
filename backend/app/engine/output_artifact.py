@@ -173,17 +173,22 @@ def materialize_overflow_stub(
     budget: int,
     size_bytes: int,
     artifact_id: str,
+    kind: str = "overflow",
 ) -> dict[str, Any]:
     """Build the in-context stub that replaces an oversized output.
 
-    Shape::
+    Shape (CTX-MGMT.K updated)::
 
         {
-          "_overflow": True,
+          "_overflow": True,           # or "_compacted": True for kind="compaction"
           "_artifact_id": "<uuid>",
           "size_bytes": N,
           "budget_bytes": M,
           "summary": "<one-line human-readable>",
+          # Canonical scalar keys hoisted to top level so common Jinja
+          # patterns ({{ node_X.id }}, {{ node_X.status }}) still
+          # resolve identically to a non-stub output.
+          "id": "...", "status": "...", "error": "...", ...
           "preview": {
               "top_level_keys": [...],
               "<scalar key>": <truncated value>,
@@ -191,21 +196,41 @@ def materialize_overflow_stub(
           }
         }
 
-    The ``preview`` dict carries the same top-level scalar keys the
-    original output had so common downstream Jinja patterns
-    (``{{ node_X.status }}``, ``{{ node_X.id }}``, ``{{ node_X.error }}``)
-    still resolve. The ``_artifact_id`` is the handle for
-    ``inspect_node_artifact`` to fetch the full payload.
+    Both top-level and preview carry the same canonical scalar values
+    (``id``, ``status``, ``state``, ``error``, ``branch``, ``result``,
+    ``code``, ``name``, ``session_id``, ``instance_id``,
+    ``request_id``, ``agent_id``, ``workflow_id``, ``case_id``) — top-
+    level for backward-compatible Jinja patterns; preview for explicit
+    "I know I'm reading a stub" code paths.
+
+    ``kind`` controls the marker: ``"overflow"`` stamps ``_overflow:
+    True`` (CTX-MGMT.A — output was too big when first written);
+    ``"compaction"`` stamps ``_compacted: True`` (CTX-MGMT.K — output
+    was inline initially and later compacted to free context space).
+    Both shapes share the artifact storage and the inspect tool
+    surfaces.
 
     For non-dict outputs (a node that returned a list or scalar),
     ``preview`` carries a ``__output_type`` field instead of
     top-level keys.
     """
-    summary = (
-        f"Output exceeded {budget:,} byte budget ({size_bytes:,} bytes); "
-        f"full payload in artifact {artifact_id}."
-    )
+    if kind == "compaction":
+        marker_key = "_compacted"
+        summary = (
+            f"Output ({size_bytes:,} bytes) compacted from context to "
+            f"free space; full payload in artifact {artifact_id}."
+        )
+    else:
+        marker_key = "_overflow"
+        summary = (
+            f"Output exceeded {budget:,} byte budget ({size_bytes:,} bytes); "
+            f"full payload in artifact {artifact_id}."
+        )
+
     preview: dict[str, Any] = {}
+    # Top-level canonical scalars — kept synchronised with `preview`
+    # so Jinja templates render the same value either way.
+    canonical: dict[str, Any] = {}
     if isinstance(output, dict):
         preview["top_level_keys"] = sorted(output.keys())[:30]
         for key in _PRESERVE_KEYS:
@@ -213,6 +238,7 @@ def materialize_overflow_stub(
                 scalar = _scalar_preview(output[key])
                 if scalar is not None:
                     preview[key] = scalar
+                    canonical[key] = scalar
         # Also include any OTHER top-level scalar fields that fit
         # the preserved-value cap and aren't in _PRESERVE_KEYS — for
         # node-specific fields the engine doesn't know about.
@@ -226,6 +252,7 @@ def materialize_overflow_stub(
             if isinstance(value, str) and len(value) > _MAX_PRESERVED_VALUE_CHARS:
                 continue
             preview[key] = value
+            canonical[key] = value
             extra_count += 1
             if extra_count >= 8:
                 break
@@ -235,14 +262,18 @@ def materialize_overflow_stub(
         preview["__output_type"] = type(output).__name__
         preview["__output_repr"] = _scalar_preview(output)
 
-    return {
-        "_overflow": True,
+    stub: dict[str, Any] = {
+        marker_key: True,
         "_artifact_id": artifact_id,
         "size_bytes": size_bytes,
         "budget_bytes": budget,
         "summary": summary,
         "preview": preview,
     }
+    # Top-level canonical scalars — added LAST so they don't collide
+    # with the engine-reserved meta keys above.
+    stub.update(canonical)
+    return stub
 
 
 def persist_artifact(
