@@ -54,6 +54,19 @@ def run_react_loop(
     temperature = float(config.get("temperature", 0.7))
     max_tokens = int(config.get("maxTokens", 4096))
 
+    # CATEGORY-01 (V10) — optional read/case/remediation/glossary/web
+    # allowlist; engine drops tools whose category is not present BEFORE
+    # the model sees them. Used by the Verifier ReAct to enforce
+    # read-only mechanically (its prompt has always claimed read-only
+    # but nothing previously prevented a destructive call). Empty / None
+    # = all categories allowed (default behavior).
+    raw_categories = config.get("allowedToolCategories") or config.get("allowed_tool_categories")
+    allowed_categories: set[str] | None = (
+        {str(c).strip().lower() for c in raw_categories if str(c).strip()}
+        if isinstance(raw_categories, list) and raw_categories
+        else None
+    )
+
     from app.engine.prompt_template import render_prompt
 
     system_prompt = render_prompt(raw_prompt, context)
@@ -82,6 +95,7 @@ def run_react_loop(
         tenant_id=tenant_id,
         server_label=mcp_server_label,
         context=context,
+        allowed_categories=allowed_categories,
     )
 
     # TOOL-NAME-NORMALIZATION — Gemini's function-calling spec disallows dots
@@ -362,22 +376,82 @@ def _execute_tool(
     )
 
 
+_REMEDIATION_FRAGMENTS = (
+    "restart", "rerun", "terminate", "rotate", "change_schedule",
+    "change_priority", "run_now", "resubmit", "kill", "cancel_",
+)
+
+
+def _categorize_tool(name: str) -> str:
+    """Classify an MCP tool into a coarse category from its name.
+
+    Matters for the optional `allowedToolCategories` ReAct config: the
+    Verifier sandbox filters by these categories so destructive tools
+    are mechanically not in scope, even if the LLM tries to call them.
+
+    Categories:
+      - "case"         — case.*           (case management)
+      - "glossary"     — glossary.*       (business → workflow_id)
+      - "web"          — google_search    (web search)
+      - "remediation"  — anything matching a destructive verb fragment
+                         (restart / rerun / terminate / rotate / kill /
+                          run_now / resubmit / cancel_ / change_*)
+      - "read"         — everything else (search / list / get_* /
+                         diagnose / status / summary)
+
+    Order matters — case/glossary/web are matched on prefix BEFORE the
+    destructive-fragment scan so e.g. case.close stays in 'case' rather
+    than being misclassified as remediation by 'close' substring.
+    """
+    if not name:
+        return "read"
+    lname = name.lower()
+    if lname.startswith("case."):
+        return "case"
+    if lname.startswith("glossary."):
+        return "glossary"
+    if lname.startswith(("google_search", "google.", "web.")):
+        return "web"
+    for frag in _REMEDIATION_FRAGMENTS:
+        if frag in lname:
+            return "remediation"
+    return "read"
+
+
 def _load_tool_definitions(
     tool_names: list[str] | None,
     *,
     tenant_id: str,
     server_label: str | None = None,
     context: dict[str, Any] | None = None,
+    allowed_categories: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Load tool definitions from the MCP server resolved for this tenant.
 
     If tool_names is None (empty config), auto-discovers all tools and
     filters them based on semantic relevance to the current query.
+
+    `allowed_categories` (V10) — when provided, drops any tool whose
+    category (per `_categorize_tool`) is not in the set. Applied to
+    BOTH the always-pinned set and the candidate pool BEFORE the
+    semantic top-K ranks them, so the Verifier's read-only sandbox
+    is enforced even on tools that would otherwise be pinned.
     """
     from app.engine.mcp_client import get_openai_style_tool_defs, list_tools
     
     if not tool_names:
         raw = list_tools(tenant_id=tenant_id, server_label=server_label)
+
+        # CATEGORY-01 (V10) — apply allowed-category allowlist BEFORE
+        # the pinned/candidate split. Tools whose category isn't in
+        # the allowlist are dropped here and never seen by the model.
+        if allowed_categories:
+            before = len(raw)
+            raw = [t for t in raw if _categorize_tool(t.get("name", "")) in allowed_categories]
+            logger.info(
+                "ReAct allowedToolCategories=%s — kept %d/%d tools",
+                sorted(allowed_categories), len(raw), before,
+            )
 
         # ALWAYS-AVAILABLE tools — pinned through whatever filter runs so the
         # Worker can always reach for case management + glossary translation
@@ -540,11 +614,22 @@ def _load_tool_definitions(
             for t in filtered_tools
         ]
         
-    return get_openai_style_tool_defs(
+    explicit_defs = get_openai_style_tool_defs(
         tool_names,
         tenant_id=tenant_id,
         server_label=server_label,
     )
+    if allowed_categories:
+        before = len(explicit_defs)
+        explicit_defs = [
+            d for d in explicit_defs
+            if _categorize_tool((d.get("function") or {}).get("name", "")) in allowed_categories
+        ]
+        logger.info(
+            "ReAct allowedToolCategories=%s — kept %d/%d explicit tools",
+            sorted(allowed_categories), len(explicit_defs), before,
+        )
+    return explicit_defs
 
 
 # ---------------------------------------------------------------------------

@@ -401,6 +401,30 @@ Vertex's prefix-cache TTL means the static section is amortised across a session
 
 After fixes: V8 redeployed at `029ecb53`. Re-running the eval is the next step before drawing a final cost-quality verdict.
 
+### V9 — smart HANDED_OFF
+
+V9 lifts a single targeted bug from V8: once a case was HANDED_OFF, every subsequent message in the session got the canned "logged on case" reply — even if the user asked something new like "restart timesheet workflow". V9 moves the case-state Switch AFTER the intent router and combines `(case_state, intent)` into the routing decision:
+
+  - HANDED_OFF + small_talk    → canned reply (covers "any update?", "any news?", "is it done yet?")
+  - HANDED_OFF + cancel        → normal cancel branch (close existing case)
+  - HANDED_OFF + ops/rca/handoff → archive old case + open fresh one, then continue to Worker
+
+Implemented via an always-running second `/api/cases` POST (`node_4r`) whose body conditionally sets `archive_existing_handed_off=true` based on the upstream intent. Same nodes count, same pattern, just smarter routing. Builder: `build_ae_ops_workflow_v9.py`.
+
+### V10 — sharper prompts + read-only critic
+
+V10 lifts three improvements from a scan of the legacy AE Ops codebase (memory: `feedback_v9_adoption_targets_from_legacy.md`). Topology unchanged from V9; only Worker prompt and Verifier sandbox change.
+
+  1. **RECENT TOOL FINDINGS prompt block** in `WORKER_PROMPT_DYNAMIC` — distils last few `case.worknotes` and `case.evidence` entries so the Worker stops re-asking for IDs already surfaced.
+  2. **Four sharper STATIC rules** added to `WORKER_PROMPT_STATIC`:
+     - MEANINGFUL FIRST-LINE (lead with answer, not filler)
+     - CHAT-NOT-SYSTEM (no raw JSON / field-name dumps in user replies)
+     - STRICT AGENT ENFORCEMENT (`ae.agent.list_running` first; never diagnose a STOPPED agent)
+     - PROACTIVE DIAGNOSTIC DISCOVERY (search before asking, when there's anything searchable)
+  3. **Engine-level `allowedToolCategories`** on the Verifier — the prompt has always claimed read-only, but nothing previously enforced it. V10 adds `_categorize_tool` to `react_loop.py` and threads an `allowed_categories` allowlist through `_load_tool_definitions`. Categories: `case` / `glossary` / `web` / `remediation` / `read`. Verifier gets `["read", "case"]`; tools in other categories are dropped before the model ever sees them. Worker keeps full access (HITL gate handles destructive consent — categories are not how that gate works).
+
+Builder: `build_ae_ops_workflow_v10.py`. Engine change requires an orchestrator restart (no `--reload`); prompt changes are live as soon as the workflow is POSTed. Comparison notes: `v9_vs_v10.md` at repo root.
+
 ### When to pick which
 
 | Scenario | Pick |
@@ -427,6 +451,10 @@ Both ship. Don't replace V7 yet — let the eval data decide as workloads evolve
 | Eval transcripts | — | `backend/scratch/ae_ops_eval_transcripts.json` (12 cases) |
 | Eval runner | — | `backend/scratch/run_ae_ops_evals.py` |
 | V8 design notes | — | `backend/scratch/V8_NOTES.md` |
+| V9 builder (smart HANDED_OFF) | — | `backend/scratch/build_ae_ops_workflow_v9.py` |
+| V10 builder (sharper prompts + read-only critic) | — | `backend/scratch/build_ae_ops_workflow_v10.py` |
+| V10 `allowedToolCategories` engine support | — | `app/engine/react_loop.py::_categorize_tool` |
+| V10 evolution notes | — | `v9_vs_v10.md` (repo root) |
 
 ---
 
