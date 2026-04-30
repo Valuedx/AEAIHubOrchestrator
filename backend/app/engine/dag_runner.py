@@ -1392,6 +1392,18 @@ def _execute_single_node(
             context[node_id] = apply_reducer(
                 reducer_name, context.get(node_id), in_context_value,
             )
+            # CTX-MGMT.C — exposeAs alias. When the node config
+            # specifies `data.config.exposeAs: "<alias>"`, also write
+            # the same value under that alias key so downstream Jinja
+            # can read it via a semantic name (`{{ case.id }}` rather
+            # than `{{ node_4r.id }}`). Default unset = no alias =
+            # current behavior. Engine intentionally writes BOTH the
+            # canonical node_id slot AND the alias — backward-
+            # compatible with templates that already reference the
+            # node id directly.
+            _expose_as = (node_data.get("config") or {}).get("exposeAs")
+            if isinstance(_expose_as, str) and _expose_as.strip():
+                context[_expose_as.strip()] = context[node_id]
             # CTX-MGMT.H — record the write into instance_context_trace
             # if tracing is on for this instance (ephemeral or tenant-
             # opted-in). Fast no-op when disabled. Failure is logged
@@ -1613,6 +1625,10 @@ def _execute_parallel(
             context[node_id] = apply_reducer(
                 reducer_name, context.get(node_id), in_context_value,
             )
+            # CTX-MGMT.C — exposeAs alias on the parallel path too.
+            _expose_as_p = (node_data_for_budget.get("config") or {}).get("exposeAs")
+            if isinstance(_expose_as_p, str) and _expose_as_p.strip():
+                context[_expose_as_p.strip()] = context[node_id]
             # CTX-MGMT.H — record the write on the parallel path too.
             from app.engine.context_trace import record_write
             record_write(

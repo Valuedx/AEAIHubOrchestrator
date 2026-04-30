@@ -706,14 +706,32 @@ def lint_jinja_dangling_reference(graph: dict[str, Any]) -> list[Lint]:
     if not valid_ids:
         return []
 
+    # CTX-MGMT.C — also accept exposeAs aliases as valid reference
+    # targets, so a node can reference `{{ case.id }}` when an
+    # upstream is configured `exposeAs: "case"`.
+    expose_aliases: set[str] = set()
+    for n in nodes:
+        cfg = (n.get("data") or {}).get("config") or {}
+        alias = cfg.get("exposeAs")
+        if isinstance(alias, str) and alias.strip():
+            expose_aliases.add(alias.strip())
+
     out: list[Lint] = []
     for node in nodes:
         nid = node.get("id")
         if not nid:
             continue
         config = (node.get("data") or {}).get("config") or {}
+        # CTX-MGMT.C — when this node declares `dependsOn`, its
+        # Jinja refs must target nodes in that list (or aliases of
+        # those nodes via exposeAs).
+        depends_on_raw = config.get("dependsOn")
+        depends_on: set[str] | None = None
+        if isinstance(depends_on_raw, list):
+            depends_on = {str(d) for d in depends_on_raw if isinstance(d, str)}
         for ref_node, ref_path in collect_refs_from_config(config):
-            if ref_node not in valid_ids:
+            # Existence check now includes exposeAs aliases.
+            if ref_node not in valid_ids and ref_node not in expose_aliases:
                 # Dangling reference — the referenced node doesn't
                 # exist in the graph. This is an error: it WILL
                 # render to empty string at runtime, silently.
@@ -765,6 +783,47 @@ def lint_jinja_dangling_reference(graph: dict[str, Any]) -> list[Lint]:
                     ),
                     node_id=nid,
                 ))
+                continue
+
+            # CTX-MGMT.C — when this node declares `dependsOn`, every
+            # Jinja reference must target either an id in that list
+            # OR an exposeAs alias of one of those ids. Catches the
+            # "I forgot to update dependsOn after adding a new
+            # template reference" class of bug.
+            if depends_on is not None and ref_node not in depends_on:
+                # Resolve aliases: dependsOn lists node ids; the ref
+                # might be using an exposeAs alias. Check whether
+                # any node in dependsOn has an exposeAs that matches.
+                # Simple lookup: walk nodes, find which ids declare
+                # this alias, see if any are in dependsOn.
+                resolved_via_alias = False
+                if ref_node in expose_aliases:
+                    for n2 in nodes:
+                        cfg2 = (n2.get("data") or {}).get("config") or {}
+                        if cfg2.get("exposeAs") == ref_node and n2.get("id") in depends_on:
+                            resolved_via_alias = True
+                            break
+                if not resolved_via_alias:
+                    ref_str2 = (
+                        f"{ref_node}.{ref_path}" if ref_path else ref_node
+                    )
+                    out.append(Lint(
+                        code="jinja_ref_outside_depends_on",
+                        severity="warn",
+                        message=(
+                            f"Node `{nid}` references `{ref_str2}` but "
+                            "that target isn't listed in this node's "
+                            f"`dependsOn` ({sorted(depends_on)}). The "
+                            "reference will still resolve at runtime, "
+                            "but `dependsOn` is now out of sync with "
+                            "the actual template."
+                        ),
+                        fix_hint=(
+                            f"Either add `{ref_node}` to dependsOn, or "
+                            "remove the reference if it's stale."
+                        ),
+                        node_id=nid,
+                    ))
     return out
 
 

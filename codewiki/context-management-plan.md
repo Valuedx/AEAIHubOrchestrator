@@ -25,7 +25,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **L** | Reducer-per-channel state model (`outputReducer`) | **P0** | **Shipped** (branch `ctx-mgmt-l-reducers`) | — | 2026-05-01 |
 | **K** | Compaction pass within a single workflow run | **P0** | **Shipped** (branch `ctx-mgmt-k-compaction`) | — | 2026-05-01 |
 | **B** | `lint_jinja_dangling_reference` static lint | P1 | **Shipped** (branch `ctx-mgmt-b-jinja-lint`) | — | 2026-05-01 |
-| **C** | Per-node `dependsOn` / `exposeAs` scope declaration | P1 | Not started | — | — |
+| **C** | Per-node `dependsOn` / `exposeAs` scope declaration | P1 | **Shipped (v1: aliasing + lint)** (branch `ctx-mgmt-c-scope`) | — | 2026-05-01 |
 | **E** | Native fan-in primitive (Merge waitAny) + child-evidence promotion + reachability lint | P1 | **Shipped** (branch `ctx-mgmt-e-coalesce`) | — | 2026-05-01 |
 | **G** | ReAct iterations summary vs full split | P1 | **Shipped** (branch `ctx-mgmt-g-iterations-split`) | — | 2026-05-01 |
 | **I** | `outputSchema` on every node (not just trigger) | P2 | Not started | — | — |
@@ -185,17 +185,36 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 
 **Refs.** Anthropic — *"system prompts should be extremely clear and use simple, direct language"* — applies to authoring tools too: catch authoring-time errors at promote rather than letting them propagate as silent runtime degradation.
 
-### C. Per-node `dependsOn` / `exposeAs` scope declaration
+### C. Per-node `dependsOn` / `exposeAs` scope declaration — **Shipped 2026-05-01 (v1: aliasing + lint)**
 
-**Gap.** A node 25 hops downstream sees every upstream node's output. Privacy concern (PII flows transitively) and cost concern (agents read outputs nobody references).
+**Gap.** A node 25 hops downstream saw every upstream node's output. Privacy concern (PII flows transitively) and cost concern (agents read outputs nobody references). Plus the readability concern — `{{ node_4r.json.id }}` is opaque; `{{ case.id }}` is self-documenting.
 
-**Plan.**
-- `data.config.dependsOn: list[str]`: explicit list of upstream node ids this node reads. Engine builds the read-context from listed deps + `trigger` + always-globals (`_runtime.*`, `approval`).
-- `data.config.exposeAs: str`: rename for downstream visibility (default = node_id). Lets a node be referenced as something semantic (`{{ case }}` vs `{{ node_4r }}`).
-- Default unset = current behavior (full read). Authors opt in.
-- Lint: warn when Jinja references a node not in `dependsOn`.
+**What shipped (branch `ctx-mgmt-c-scope`).**
 
-**Refs.** Anthropic — *"each agent operates with scoped instructions and context"*. The principle generalizes from sub-agents to nodes.
+**`exposeAs` aliasing** (`app/engine/dag_runner.py` + `app/engine/config_validator.py`):
+- After the engine writes `context[node_id] = output` (post-reducer, post-overflow stub), if the node's `data.config.exposeAs` is a non-empty string, the engine ALSO writes `context[<exposeAs_value>] = context[node_id]`. Backward-compatible — the canonical `node_id` slot is unchanged; the alias is additive.
+- Wired on BOTH the sequential and parallel-branch paths in `_execute_single_node` / `_apply_result`.
+- Validator (`_validate_expose_as_collisions`) catches three classes of authoring error: alias collides with another node's id (would silently overwrite that slot); two nodes share the same alias (only the last firing one's output is readable); alias matches the node's own id (pointless no-op).
+- Use case: V10's `node_4r.json.id` becomes `{{ case.id }}` when `node_4r` is configured `exposeAs: "case"`. Self-documenting, refactor-safe.
+
+**`dependsOn` config + extended lint** (`app/copilot/lints.py`):
+- Node config accepts `dependsOn: list[str]` — explicit list of upstream node ids this node reads from. **Runtime enforcement is deferred to v2** (it requires per-node context filtering at every render site — `render_prompt`, HTTP body/url/headers, safe_eval expressions, ReAct system prompts). For v1 the field is informational.
+- The `lint_jinja_dangling_reference` lint now honors `dependsOn`:
+  - When `dependsOn` is set on a node and a Jinja reference targets something NOT in that list (and not an alias of something in that list), warn `jinja_ref_outside_depends_on`. Catches drift — "I forgot to update dependsOn after adding a new template reference".
+  - The lint's existing existence check now also accepts `exposeAs` aliases as valid targets (so `{{ case.id }}` doesn't false-positive when `case` is an alias).
+
+**v2 deferral.**
+- **Runtime enforcement of `dependsOn`.** When implemented: `render_prompt(template, context)` would build a filtered context containing only `trigger`, the listed `dependsOn` ids (and their aliases), and always-globals (`_runtime.*`, `approval`). Same shape for HTTP/Switch/Loop expression evaluation. Bigger surgery — every render site needs the filter — and best done once authors are using `dependsOn` enough that the lint shows real drift.
+
+**Tests (1229 passed, 1 skipped after this slice — was 1213).**
+- New `tests/test_scope_c.py` (16 tests):
+  - `_validate_expose_as_collisions`: clean alias no-op, alias collides with another node id, alias collides with own id, two nodes share alias (Multiple-claim warning), non-string alias rejected, empty alias skipped.
+  - `lint_jinja_dangling_reference` with exposeAs: alias resolves dangling reference; alias doesn't help unrelated dangling references.
+  - `lint_jinja_dangling_reference` with dependsOn: no lint when unset, no lint when ref is in list, warns when ref outside list, accepts ref via alias of a dependsOn-listed node.
+  - `validate_graph_configs` integration confirms `exposeAs` collision check is wired.
+  - Engine alias smoke — direct simulation of the post-reducer write block confirms both `context[node_id]` and `context[alias]` are populated and reference the same value; no alias when `exposeAs` is unset.
+
+**Refs.** Anthropic — *"each agent operates with scoped instructions and context"*. The principle generalizes from sub-agents to nodes; v1 starts with aliasing (refactor-friendly readability) and lint-time scope drift detection. Runtime scope enforcement is the next step.
 
 ### E. Fan-in primitive + child-evidence promotion + reachability lint — **Shipped 2026-05-01**
 
@@ -382,6 +401,7 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | Plan created. All items at `Not started`. Priority order set (D, A, L, K as P0). Walk-back recorded for original Issue E sub-workflow `outputContext: "all"` after Anthropic-multi-agent literature contradiction. |
 | 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |
 | 2026-05-01 | **CTX-MGMT.A shipped** on branch `ctx-mgmt-a-overflow` (stacked on `ctx-mgmt-d-runtime`). New `node_output_artifacts` table (migration 0035) + RLS + indexes. `app/engine/output_artifact.py` with pure helpers (`estimate_output_size`, `resolve_budget`, `should_overflow`, `materialize_overflow_stub`, `persist_artifact`, `maybe_overflow`). Wired into `dag_runner._execute_single_node` on both sequential and parallel-branch paths — on overflow the artifact is INSERTed and the in-context value becomes a small stub preserving canonical scalar keys (`id`, `status`, `error`, `branch`, etc.) so downstream Jinja still resolves. New copilot runner tool `inspect_node_artifact` (same ephemeral-only safety as `get_execution_logs`). 28 new unit tests + Jinja round-trip tests. Full backend suite 1057 passed (was 1029). Defaults: 64 kB per-node budget, 256 kB hard ceiling, per-node `contextOutputBudget` override. Deferred sub-task: `_save_checkpoint` delta writes — separate optimisation that can land independently. |
+| 2026-05-01 | **CTX-MGMT.C v1 shipped** on branch `ctx-mgmt-c-scope` (stacked on `ctx-mgmt-e-coalesce`). All four P1 items now done. v1 ships exposeAs aliasing — the engine writes `context[<exposeAs_value>] = context[node_id]` after each write, so downstream Jinja can read `{{ case.id }}` instead of `{{ node_4r.json.id }}`. Validator `_validate_expose_as_collisions` catches three collision classes (alias matches another node id; two nodes share alias; alias matches own id). `lint_jinja_dangling_reference` extended to (a) accept exposeAs aliases as valid reference targets, (b) warn `jinja_ref_outside_depends_on` when a node has `dependsOn` set and a Jinja ref targets something outside that list. `dependsOn` is informational at runtime in v1 — runtime context-filtering (build per-node read-scope) deferred to v2 because it touches every render site (Jinja, safe_eval, ReAct system prompts, HTTP body / url / headers). 16 new unit tests; 1229 backend tests pass (was 1213). |
 | 2026-05-01 | **CTX-MGMT.E shipped** on branch `ctx-mgmt-e-coalesce` (stacked on `ctx-mgmt-g-iterations-split`). Implementation note: rather than adding a new `Coalesce` node, wired the missing `waitAny` semantics into the existing `Merge` node (registry entry has been there since 0001, but the engine ignored the strategy field). New `_is_waitany_merge` helper + `_find_ready_nodes` branch in `dag_runner.py` — fires when ANY active source is satisfied (vs default waitAll). `_handle_logic` Merge handler outputs `{merged, value, from, strategy}` for waitAny so downstream Jinja can read `{{ node_merge.value }}`. `_execute_sub_workflow` propagates `child._runtime.shared_evidence` to `parent._runtime.shared_evidence` via append-merge. New SMART-04 lint `lint_unreachable_node_after_switch` catches the V9-pre-fix bug shape — fan-in node where two incoming edges trace to different arms of the same Switch/Condition ancestor; Coalesce/non-Merge-style nodes flagged with fix-hint pointing at Merge waitAny. 23 new unit tests; 1213 backend tests pass (was 1190). |
 | 2026-05-01 | **CTX-MGMT.G shipped** on branch `ctx-mgmt-g-iterations-split` (stacked on `ctx-mgmt-b-jinja-lint`). New helpers `_summarize_iterations` + `_finalize_iterations_payload` in `react_loop.py` build a safe public summary (action + tool names only — no args, no results, no reasoning content) and emit `iterations_full` (scrubbed via `scrub_secrets`) only when `exposeFullIterations: True` on the node config. Updated 4 return-shape sites in the ReAct loop (timeout / llm_error / final_response / max_iterations_exceeded). `predicates._all_tool_calls` reads `iterations_full` first, falls back to `iterations` — backward-compat with legacy-shaped contexts AND forward-compat with future predicates that may inspect args. 16 new unit tests; 1190 backend tests pass (was 1174). Bridge / user-facing `response` field unchanged. |
 | 2026-05-01 | **CTX-MGMT.B shipped** on branch `ctx-mgmt-b-jinja-lint` (off merged `core`). New `app/copilot/jinja_refs.py` with regex-based `extract_node_refs` covering Jinja + safe_eval in one pass. New SMART-04 lint `lint_jinja_dangling_reference` emits `jinja_dangling_node_ref` (error — ref to non-existent node id, would render to empty string silently at runtime) and `jinja_node_self_ref` (warn — node reads its own slot which is empty at handler-run time). Wired into `run_lints`. 22 new unit tests; 1174 backend tests pass (was 1152). Reachability + field-existence checks deferred to v2. |

@@ -112,6 +112,11 @@ def validate_graph_configs(graph_json: dict) -> list[str]:
         # validation catches obviously-wrong values (negative, str).
         warnings.extend(_validate_output_budget(node_id, label, config))
 
+    # CTX-MGMT.C — exposeAs collisions need a graph-level pass
+    # (a single node's exposeAs collides with another node's id or
+    # exposeAs). Run once after the per-node loop.
+    warnings.extend(_validate_expose_as_collisions(graph_json))
+
     # CYCLIC-01.c — graph-level loopback edge checks. Run once per
     # graph (not per node) because the rules are about edges, not
     # about node configs.
@@ -453,3 +458,73 @@ def _validate_output_budget(node_id: str, label: str, config: dict) -> list[str]
             "overflow behavior, or omit the field for the engine default."
         ]
     return []
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.C — exposeAs alias collision check
+# ---------------------------------------------------------------------------
+
+
+def _validate_expose_as_collisions(graph_json: dict) -> list[str]:
+    """``exposeAs`` aliases must not collide with another node's id
+    or another node's exposeAs. The engine writes the alias key
+    directly into ``context``; a collision would silently overwrite
+    one node's output with another's, which the author almost
+    certainly didn't mean.
+
+    Three classes of collision:
+      1. ``exposeAs`` matches another node's id.
+      2. Two nodes have the same ``exposeAs`` value.
+      3. ``exposeAs`` matches the node's own id (no-op alias —
+         pointless).
+    """
+    warnings: list[str] = []
+    nodes = graph_json.get("nodes", []) or []
+
+    # Map of expose alias → list of node ids that produce it.
+    aliases: dict[str, list[str]] = {}
+    node_ids = {n.get("id") for n in nodes if n.get("id")}
+
+    for node in nodes:
+        nid = node.get("id")
+        if not nid:
+            continue
+        data = node.get("data") or {}
+        config = data.get("config") or {}
+        raw = config.get("exposeAs")
+        if raw is None or raw == "":
+            continue
+        if not isinstance(raw, str):
+            warnings.append(
+                f"Node {nid} ({data.get('label')}): 'exposeAs' must be a "
+                f"non-empty string, got {type(raw).__name__}"
+            )
+            continue
+        alias = raw.strip()
+        if not alias:
+            continue
+        if alias == nid:
+            warnings.append(
+                f"Node {nid} ({data.get('label')}): 'exposeAs' is the "
+                f"same as the node id — pointless alias. Either remove "
+                "exposeAs or pick a semantic name."
+            )
+            continue
+        if alias in node_ids:
+            warnings.append(
+                f"Node {nid} ({data.get('label')}): 'exposeAs={alias!r}' "
+                f"collides with another node's id; the engine would "
+                "silently overwrite that node's slot. Pick a different alias."
+            )
+            continue
+        aliases.setdefault(alias, []).append(nid)
+
+    for alias, owners in aliases.items():
+        if len(owners) > 1:
+            warnings.append(
+                f"Multiple nodes claim 'exposeAs={alias!r}': {sorted(owners)}. "
+                "Only the last-firing one's output will be readable; pick "
+                "distinct aliases or use a Merge waitAny / append reducer."
+            )
+
+    return warnings
