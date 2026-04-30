@@ -1214,7 +1214,16 @@ def _execute_single_node(
             log_entry.completed_at = _utcnow()
 
             instance.status = "suspended"
-            instance.suspended_reason = "async_external"
+            # HITL-tool gate: when a tool returns AWAITING_APPROVAL the
+            # ReAct loop raises NodeSuspendedAsync(system="human_approval").
+            # Treat that the same as a Human Approval node suspension —
+            # leave suspended_reason NULL so it shows up in the pending-
+            # approvals dashboard. Only true async-external suspensions
+            # (webhook-driven, AE callback, etc.) get the
+            # async_external tag.
+            instance.suspended_reason = (
+                None if sus.system == "human_approval" else "async_external"
+            )
             # HITL-01.b — same age-stamping as the HITL path so
             # the pending-approvals dashboard + 01.c timeout sweep
             # treat async suspensions the same way.
