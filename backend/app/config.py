@@ -164,6 +164,23 @@ class Settings(BaseSettings):
     # "open AE Copilot in your AE environment" without a deep link.
     ae_copilot_url: str = ""
 
+    # COPILOT-V2 — GitHub issue deep-link suggestion (suggest_issue_filing).
+    # When the copilot hits a defect (engine error, broken behavior) or a
+    # documented capability gap (PENDING / NOT_IMPLEMENTED), it can offer
+    # the user a pre-filled GitHub issue link with redacted draft + tool
+    # trace. THIS IS GATED — disabled by default so enterprise tenants
+    # don't surface a "file an issue" path their security team didn't
+    # approve. Set to true to enable, then point the two repo vars at
+    # the project's bug + feature trackers (or set the shared
+    # ``copilot_issue_repo`` if both go to the same place). The repo is
+    # in ``owner/name`` form, e.g. ``valuedx/aeai-hub-orchestrator``.
+    # Per-tenant policy override (future) — for now this is a process-
+    # wide flag.
+    copilot_issue_link_enabled: bool = False
+    copilot_issue_repo: str = ""           # shared bug + feature tracker
+    copilot_issue_repo_bug: str = ""       # bug-specific tracker (optional)
+    copilot_issue_repo_feature: str = ""   # feature-specific tracker (optional)
+
     # When False, tasks run in-process via background threads (no Redis/Celery needed)
     use_celery: bool = False
 

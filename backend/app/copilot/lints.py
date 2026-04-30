@@ -457,4 +457,204 @@ def run_lints(
     lints.extend(lint_loopback_no_exit(graph))
     lints.extend(lint_loopback_no_cap(graph))
     lints.extend(lint_loopback_nested_deep(graph))
+    # COPILOT-V2 — prompt-cache + react-role consistency.
+    lints.extend(lint_prompt_cache_breakage(graph))
+    lints.extend(lint_react_role_inconsistency(graph))
     return lints
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-V2 — prompt-cache + ReAct role consistency lints
+# ---------------------------------------------------------------------------
+
+
+# LLM-family node labels carry a `systemPrompt` that goes through Vertex /
+# Anthropic prefix caching. Keep in sync with `_LLM_LABELS` above (which is
+# scoped to credential checks). We deliberately reuse the same set so a
+# new LLM-family node type only needs to be added in one place.
+_PROMPT_CACHEABLE_LABELS = _LLM_LABELS
+
+# A prompt is "long enough that prefix caching matters". Below this
+# threshold the cache miss is a non-event (~$0); above it, breaking the
+# cache costs the user real money. 800 chars ≈ 200 tokens — Anthropic's
+# minimum cache breakpoint at the time of writing.
+_PROMPT_CACHE_MIN_LENGTH = 800
+
+# When the FIRST Jinja interpolation appears, what fraction of the prompt
+# qualifies as "early"? An early interpolation breaks caching for the
+# entire prompt — the cache is prefix-only, so any byte change before the
+# breakpoint invalidates the cache. The V8/V9/V10 pattern of static rules
+# upfront + dynamic per-turn block at the tail keeps the prefix stable.
+_PROMPT_CACHE_EARLY_FRACTION = 0.5
+
+
+def lint_prompt_cache_breakage(graph: dict[str, Any]) -> list[Lint]:
+    """Warn when an LLM-family node's ``systemPrompt`` is long enough
+    that prefix caching matters AND a Jinja interpolation appears in
+    the cacheable prefix region.
+
+    Why this matters: Vertex AI and Anthropic prompt caches require a
+    byte-stable prefix. A `{{ trigger.user_role }}` near the top of a
+    long system prompt breaks the cache on every turn — for a 5k-token
+    prompt that's a real cost. The V8/V9/V10 pattern (memory:
+    feedback_agent_design_principles.md) is to put rules + AE
+    architecture context in a STATIC block and isolate per-turn
+    variables in a single bounded "current turn context" suffix. This
+    lint catches the inverse — a long prompt with interpolations
+    sprinkled throughout instead of pinned to the tail.
+
+    The warn is graded by where the FIRST interpolation appears: if
+    it's in the first 50% of the prompt, the prefix cache is
+    near-useless. If it's only in the last 50%, this lint stays quiet
+    (the user has already structured the prompt correctly, even if
+    they didn't explicitly mark the boundary).
+    """
+    out: list[Lint] = []
+    for node in _nodes(graph):
+        data = node.get("data") or {}
+        label = data.get("label") or ""
+        if label not in _PROMPT_CACHEABLE_LABELS:
+            continue
+        config = data.get("config") or {}
+        prompt = config.get("systemPrompt") or ""
+        if not isinstance(prompt, str) or len(prompt) < _PROMPT_CACHE_MIN_LENGTH:
+            continue
+
+        # Look for Jinja-style interpolations.
+        jinja_idx = -1
+        for marker in ("{{", "{%"):
+            idx = prompt.find(marker)
+            if idx >= 0 and (jinja_idx < 0 or idx < jinja_idx):
+                jinja_idx = idx
+        if jinja_idx < 0:
+            continue  # No interpolation at all — fully static, fine.
+
+        cutoff = int(len(prompt) * _PROMPT_CACHE_EARLY_FRACTION)
+        if jinja_idx >= cutoff:
+            continue  # Interpolation only in the tail — prefix is stable.
+
+        nid = node.get("id") or ""
+        out.append(Lint(
+            code="prompt_cache_breakage",
+            severity="warn",
+            message=(
+                f"Node `{nid}` (“{label}”) has Jinja interpolation "
+                f"`{prompt[jinja_idx:jinja_idx+20]}…` near the top of a "
+                f"{len(prompt)}-char `systemPrompt` — Vertex/Anthropic "
+                "prefix cache will miss on every turn."
+            ),
+            fix_hint=(
+                "Move per-turn variables ({{ trigger.x }}, {{ node_y.json.z }}) "
+                "into a `=== CURRENT TURN CONTEXT ===` block at the END of the "
+                "prompt; keep all rules and static context BEFORE that block "
+                "byte-stable across turns. Pattern reference: "
+                "build_ae_ops_workflow_v10.py::WORKER_PROMPT_STATIC + "
+                "WORKER_PROMPT_DYNAMIC."
+            ),
+            node_id=nid,
+        ))
+    return out
+
+
+# Display-name patterns that imply read-only / observation-only roles.
+# When a ReAct Agent's display name matches these, an unset
+# `allowedToolCategories` is suspicious — the prompt likely claims
+# read-only but nothing enforces it. (V10 Verifier ships
+# `allowedToolCategories: ["read", "case"]`.)
+_READ_ONLY_ROLE_PATTERNS = (
+    "verifier", "verify", "critic", "reviewer", "review",
+    "validator", "validate", "checker", "check",
+    "auditor", "audit", "evaluator", "evaluate", "judge",
+    "observer", "observe", "watcher", "watch",
+    "monitor", "inspector", "inspect",
+)
+
+# Display-name patterns that imply primary action role. A worker with
+# maxIterations < 2 is almost certainly mis-configured — one iteration
+# means a single LLM call with no chance to chain a tool result back
+# in. Maps to roles that DO call tools, not the read-only ones above.
+_WORKER_ROLE_PATTERNS = (
+    "worker", "investigator", "investigate", "diagnose", "diagnos",
+    "remediator", "remediate", "executor", "execute", "operator",
+    "agent", "orchestrator",
+)
+
+
+def lint_react_role_inconsistency(graph: dict[str, Any]) -> list[Lint]:
+    """Warn when a ReAct Agent's role (per displayName) doesn't match
+    its config.
+
+    Two patterns flagged:
+
+      1. Read-only role + no `allowedToolCategories` — the prompt may
+         claim "you have only read-only tools" but the engine doesn't
+         enforce that without the allowlist. A poorly-prompted Verifier
+         could still call `restart_service` if SMART-06 ranked it high.
+         V10 closed this gap; this lint nudges other ReAct nodes to
+         follow suit.
+
+      2. Worker / executor role with `maxIterations < 2` — only one
+         iteration means no tool chaining possible. Almost always a
+         configuration mistake.
+
+    Both warn-severity (the workflow will still run; it just won't do
+    what the author probably wants).
+    """
+    out: list[Lint] = []
+    for node in _nodes(graph):
+        data = node.get("data") or {}
+        if (data.get("label") or "") != "ReAct Agent":
+            continue
+        nid = node.get("id") or ""
+        config = data.get("config") or {}
+        display = (data.get("displayName") or "").lower()
+        if not display:
+            continue
+
+        is_read_only_role = any(p in display for p in _READ_ONLY_ROLE_PATTERNS)
+        is_worker_role = any(p in display for p in _WORKER_ROLE_PATTERNS) and not is_read_only_role
+        allowed_categories = config.get("allowedToolCategories") or config.get(
+            "allowed_tool_categories"
+        )
+
+        if is_read_only_role and not allowed_categories:
+            out.append(Lint(
+                code="react_role_no_category_restriction",
+                severity="warn",
+                message=(
+                    f"ReAct Agent `{nid}` (“{data.get('displayName')}”) looks "
+                    "like a read-only role but has no `allowedToolCategories` — "
+                    "the prompt's read-only claim is not enforced by the engine."
+                ),
+                fix_hint=(
+                    "Set `allowedToolCategories: [\"read\", \"case\"]` on the "
+                    "node config so the engine's tool filter drops "
+                    "remediation tools before the model sees them. "
+                    "Categories: case / glossary / web / remediation / read."
+                ),
+                node_id=nid,
+            ))
+
+        if is_worker_role:
+            try:
+                max_iter = int(config.get("maxIterations", 0) or 0)
+            except (TypeError, ValueError):
+                max_iter = 0
+            if 0 < max_iter < 2:
+                out.append(Lint(
+                    code="react_worker_iterations_too_low",
+                    severity="warn",
+                    message=(
+                        f"ReAct Agent `{nid}` (“{data.get('displayName')}”) "
+                        f"has maxIterations={max_iter} — one iteration can't "
+                        "chain a tool result back into the loop, so this is "
+                        "effectively a single-shot LLM call."
+                    ),
+                    fix_hint=(
+                        "Bump `maxIterations` to at least 3 (typical workers "
+                        "use 5; verifiers use 2). For a single-shot LLM, use "
+                        "`LLM Agent` instead of `ReAct Agent`."
+                    ),
+                    node_id=nid,
+                ))
+    return out

@@ -82,6 +82,13 @@ the user has to redo.
 - **Prefer a tool call over prose when a tool does the job.** "I would
   add an LLM Agent node here" without calling add_node is a waste of
   a turn — the user wanted the work done, not described.
+- **Search before asking.** When the user's request hints at something
+  searchable (a node type, an MCP tool, a published workflow), reach
+  for `list_node_types` / `discover_mcp_tools` / `recall_patterns` /
+  `search_docs` BEFORE asking a clarifying question. Asking is the
+  fallback after a quick discovery comes up empty, not the default.
+  Zero tool calls is correct only when there's literally nothing to
+  search on (purely subjective preference, conversational greeting).
 - **Call list_node_types / get_node_schema before add_node** unless
   you've already done so this turn for the node type in question.
   Training-data recall of schemas is unreliable; the registry is
@@ -158,6 +165,66 @@ them take over. "I tried X, Y, and Z without success — here's what
 the node is complaining about. Can you take it from here?" is the
 right hand-off shape.
 
+## Debug power tools (COPILOT-V2)
+
+These four tools handle failure modes the basic auto-heal loop doesn't:
+
+- **`replay_node_with_overrides`** — re-run ONE node from a prior
+  `execute_draft` instance with config overrides applied just for the
+  replay. Use this for tight prompt-iteration loops: edit a Worker's
+  systemPrompt → replay the Worker against the captured run → see the
+  new output in seconds without re-running the whole graph. Costs
+  tokens but skips the unrelated upstream nodes. The draft is NOT
+  modified by the replay — apply with `update_node_config` once you're
+  happy with the result.
+
+- **`evaluate_run`** — LLM-as-judge over a run's user-facing reply,
+  given a free-form rubric. Use when the run COMPLETED but the OUTPUT
+  is questionable: "leads with the answer not filler", "tone is
+  appropriate for a business user", "correctly handled the corrected
+  identifier from prior turn". The rubric should be specific —
+  "good UX" doesn't help; "reply leads with the answer not a greeting"
+  does. Pairs with predicate-based scenarios for the
+  rubric-as-code path.
+
+- **`diff_drafts`** — show what changed between the current draft and
+  either the published workflow it forked from (default) or another
+  draft. Use this when the user asks "what did I just change?" or
+  before promote, so the narration is grounded in the diff rather
+  than your memory of the chat.
+
+- **`suggest_issue_filing`** — when you hit an engine error you can't
+  work around (a real bug, not "the agent didn't do what I wanted"),
+  OR the user explicitly asks for a feature you can't deliver
+  (documented PENDING / NOT_IMPLEMENTED), call this with `category:
+  "bug"` or `"feature"`. It builds a tenant-gated GitHub issue
+  deep-link with the draft snapshot (shape only) + recent tool trace
+  pre-filled and redacted. Surface the link to the user — NEVER claim
+  you opened the issue. When `enabled: false` the deployment hasn't
+  configured a tracker; don't mention the link.
+
+## Predicate-based scenario assertions
+
+`save_test_scenario` accepts an optional `expected_output_predicates`
+list — `[{type, args}]` pairs evaluated after `run_scenario`. Use
+these for behavior-quality assertions the dict-match
+`expected_output_contains` can't express:
+
+  - `{type: "ends_with_question"}` — reply ends with "?"
+  - `{type: "contains_any", args: {terms: ["recon", "report"]}}`
+  - `{type: "lacks_terms", args: {terms: ["system prompt"]}}` (anti-leak)
+  - `{type: "intent_in", args: {allowed: ["ops"]}}` (router check)
+  - `{type: "no_max_iterations_marker"}` — guards against the silent
+    "Maximum iterations reached" failure mode
+  - `{type: "tool_called", args: {name_prefix: "ae.workflow"}}` (tool-trace check)
+  - `{type: "no_tool_called", args: {name_prefix: "ae.agent.restart"}}`
+  - `{type: "tool_call_count", args: {min: 1, max: 3}}`
+  - `{type: "regex_match", args: {pattern: "case [a-f0-9]{8}", flags: "i"}}`
+
+Mix predicates with the dict-match `expected_output_contains` freely
+— a scenario can have both. `run_scenario` reports
+`predicate_results` per-entry so a mixed pass/fail is easy to read.
+
 ## Deterministic automation → fork to AutomationEdge
 
 When a request (or any sub-step inside it) is a DETERMINISTIC RPA
@@ -197,14 +264,45 @@ user is already here.
 """
 
 
+# COPILOT-V2 — alias the rules-only block under a public name so the
+# split-system-prompt callers can reach the byte-stable prefix without
+# rebuilding the dict snapshot. SYSTEM_PROMPT itself is preserved for
+# back-compat (older callers expected one big string).
+STATIC_SYSTEM_PROMPT = SYSTEM_PROMPT
+
+
 def build_system_prompt(*, draft_snapshot: dict[str, Any]) -> str:
     """Assemble the full system prompt with a snapshot of the current
     draft appended as context.
 
-    The snapshot lets the agent see what's on the canvas without having
-    to call get_draft every turn. We truncate edges/nodes lists if they
-    get huge (large workflows > ~50 nodes can blow the prompt budget);
-    the agent can always call get_draft for a fresh full copy.
+    Kept for back-compat — newer callers should prefer
+    ``build_system_prompt_split`` so the static prefix can be sent as a
+    separately-cacheable block. This concatenates both halves into one
+    string, which still works but disables prefix caching in providers
+    that need per-block cache_control hints (Anthropic).
+    """
+    static, dynamic = build_system_prompt_split(draft_snapshot=draft_snapshot)
+    return static + "\n\n" + dynamic
+
+
+def build_system_prompt_split(
+    *, draft_snapshot: dict[str, Any],
+) -> tuple[str, str]:
+    """Return the system prompt as (static_prefix, dynamic_suffix).
+
+    COPILOT-V2 — sized for prompt-cache fit:
+
+      * **static**: rules + tool-use discipline. Byte-stable across
+        every turn for a given codebase commit. Vertex / Anthropic
+        prefix caches hit on this block.
+      * **dynamic**: current draft snapshot (node + edge summaries).
+        Changes after every mutation; not cacheable.
+
+    Anthropic adapter sends these as two ``system`` blocks with
+    ``cache_control: {type: "ephemeral"}`` on the static one. Google /
+    Vertex implicit caching kicks in automatically when the prefix is
+    stable across requests; sending both halves concatenated in order
+    is enough.
     """
     nodes = draft_snapshot.get("nodes", []) or []
     edges = draft_snapshot.get("edges", []) or []
@@ -226,14 +324,14 @@ def build_system_prompt(*, draft_snapshot: dict[str, Any]) -> str:
         for e in edges
     ]
 
-    context_block = (
+    dynamic = (
         "## Current draft graph\n\n"
         f"Nodes ({len(compact_nodes)}):\n"
         f"{_dumps(compact_nodes)}\n\n"
         f"Edges ({len(compact_edges)}):\n"
         f"{_dumps(compact_edges)}\n"
     )
-    return SYSTEM_PROMPT + "\n\n" + context_block
+    return STATIC_SYSTEM_PROMPT, dynamic
 
 
 def _dumps(obj: Any) -> str:

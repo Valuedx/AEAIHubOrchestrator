@@ -191,6 +191,10 @@ class CopilotTestScenario(Base):
     payload_json = Column(JSONB, nullable=False, default=dict)
     pins_json = Column(JSONB, nullable=False, default=dict)
     expected_output_contains_json = Column(JSONB, nullable=True)
+    # COPILOT-V2 (migration 0034) — list of {type, args} predicate assertions
+    # evaluated by app.copilot.predicates after run_scenario. Complements
+    # the partial-match dict above; richer for behavior-quality checks.
+    expected_predicates_json = Column(JSONB, nullable=True)
     created_by = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 

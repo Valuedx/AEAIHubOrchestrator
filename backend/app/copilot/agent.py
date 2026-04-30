@@ -70,7 +70,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.copilot import tool_layer
-from app.copilot.prompts import build_system_prompt
+from app.copilot.prompts import build_system_prompt, build_system_prompt_split
 from app.copilot.tool_definitions import (
     COPILOT_TOOL_DEFINITIONS,
     to_anthropic_tools,
@@ -191,10 +191,16 @@ def _persist_turn(
 @dataclass
 class _BuiltMessages:
     """The shape the Anthropic SDK wants. Each provider will have its
-    own materialiser; today we only ship Anthropic."""
+    own materialiser; today we only ship Anthropic.
+
+    COPILOT-V2 — ``system_static`` / ``system_dynamic`` carry the split
+    system prompt for prefix caching. ``system`` (concatenation) stays
+    populated for any caller that doesn't care about caching."""
 
     system: str
     messages: list[dict[str, Any]]
+    system_static: str = ""
+    system_dynamic: str = ""
 
 
 def _build_anthropic_messages(
@@ -212,7 +218,10 @@ def _build_anthropic_messages(
     in-memory across requests — a fresh agent runner per HTTP call
     lets horizontal scaling work without sticky sessions.
     """
-    system = build_system_prompt(draft_snapshot=draft.graph_json or {})
+    system_static, system_dynamic = build_system_prompt_split(
+        draft_snapshot=draft.graph_json or {},
+    )
+    system = system_static + "\n\n" + system_dynamic
 
     # Load turns in chronological order.
     prior_turns = (
@@ -272,7 +281,12 @@ def _build_anthropic_messages(
     # Finally, the new user message that just arrived.
     messages.append({"role": "user", "content": new_user_text})
 
-    return _BuiltMessages(system=system, messages=messages)
+    return _BuiltMessages(
+        system=system,
+        messages=messages,
+        system_static=system_static,
+        system_dynamic=system_dynamic,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,9 +319,31 @@ def _call_anthropic(
     from app.engine.llm_credentials_resolver import get_anthropic_api_key
 
     client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
+
+    # COPILOT-V2 — when split system blocks are available, send them
+    # as two text blocks so we can mark the static prefix cacheable
+    # via cache_control. Anthropic's prompt cache hits when the
+    # prefix is byte-stable across requests; the dynamic draft
+    # snapshot stays uncached because it changes after every
+    # mutation.
+    if built.system_static and built.system_dynamic:
+        system_param: Any = [
+            {
+                "type": "text",
+                "text": built.system_static,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": built.system_dynamic,
+            },
+        ]
+    else:
+        system_param = built.system
+
     resp = client.messages.create(
         model=model,
-        system=built.system,
+        system=system_param,
         messages=built.messages,
         tools=to_anthropic_tools(),
         max_tokens=max_tokens,
@@ -443,7 +479,15 @@ def _build_google_state(
     """
     from google.genai import types
 
-    system = build_system_prompt(draft_snapshot=draft.graph_json or {})
+    # COPILOT-V2 — split + concat. Google's SDK takes one
+    # system_instruction string; implicit caching kicks in when the
+    # prefix is byte-stable. Building from the split helper is
+    # functionally identical to build_system_prompt() but keeps the
+    # caching hint shape (static first, dynamic second) explicit.
+    system_static, system_dynamic = build_system_prompt_split(
+        draft_snapshot=draft.graph_json or {},
+    )
+    system = system_static + "\n\n" + system_dynamic
 
     prior_turns = (
         db.query(CopilotTurn)

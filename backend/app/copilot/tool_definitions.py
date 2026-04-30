@@ -16,6 +16,26 @@ The OpenAI ``{type: "function", function: {...}}`` and Google
 ``Tool(function_declarations=[...])`` shapes are derived from this
 same structure — see ``agent.py::_to_anthropic_tools`` etc. when
 those providers land.
+
+COPILOT-V2 ``side_effects`` field
+---------------------------------
+
+Each tool definition carries an extra ``side_effects`` list (added in
+COPILOT-V2). Vocabulary:
+
+  * ``read_only`` — no state change, no LLM call, no external API
+  * ``mutates_draft`` — modifies the WorkflowDraft graph
+  * ``writes_db`` — persists rows to non-draft tables (e.g. scenarios)
+  * ``consumes_tokens`` — burns LLM tokens via a provider call
+  * ``spawns_run`` — creates a WorkflowInstance; can have downstream
+    side-effects (sends Slack messages, hits APIs, writes files)
+  * ``external_call`` — hits an external system (MCP server, LLM
+    provider, AutomationEdge, third-party API)
+
+The frontend uses these for warning UI; the agent's system prompt
+reads them to decide when to confirm with the user before calling.
+SDK converters (Anthropic / Google) STRIP this field — the model
+never sees it in its tool schema.
 """
 
 from __future__ import annotations
@@ -34,6 +54,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Call this BEFORE add_node when you're unsure which node "
             "matches the user's intent."
         ),
+        "side_effects": ["read_only"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -53,6 +74,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "config_schema} where config_schema is the JSON schema of "
             "valid config fields."
         ),
+        "side_effects": ["read_only"],
         "input_schema": {
             "type": "object",
             "required": ["node_type"],
@@ -73,6 +95,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "via get_node_schema first so you know which config fields "
             "are valid. Returns {node_id, node}."
         ),
+        "side_effects": ["mutates_draft"],
         "input_schema": {
             "type": "object",
             "required": ["node_type"],
@@ -112,6 +135,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "this to iterate on a node's config without deleting and "
             "re-adding. Also accepts display_name (empty string clears)."
         ),
+        "side_effects": ["mutates_draft"],
         "input_schema": {
             "type": "object",
             "required": ["node_id", "partial"],
@@ -132,6 +156,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "the result payload lists which edge ids were cascaded so "
             "you can reconnect if needed."
         ),
+        "side_effects": ["mutates_draft"],
         "input_schema": {
             "type": "object",
             "required": ["node_id"],
@@ -150,6 +175,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "(e.g. Condition node's 'true' / 'false' outputs); omit "
             "them for single-handle nodes."
         ),
+        "side_effects": ["mutates_draft"],
         "input_schema": {
             "type": "object",
             "required": ["source", "target"],
@@ -164,6 +190,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "disconnect_edge",
         "description": "Remove one edge by id.",
+        "side_effects": ["mutates_draft"],
         "input_schema": {
             "type": "object",
             "required": ["edge_id"],
@@ -179,14 +206,17 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "warnings, lints, lints_enabled} — the schema-validator's "
             "output PLUS the SMART-04 proactive structure lints "
             "(no_trigger, disconnected_node, orphan_edge, "
-            "missing_credential). Call this after every run of "
-            "mutations and before narrating the draft to the user "
-            "so the narration can call out fix-before-promote "
-            "issues. Each lint has {code, severity, message, "
-            "fix_hint, node_id}. If `lints_enabled` is false the "
-            "tenant has opted out of lints (cost-conscious config); "
-            "schema validation still runs."
+            "missing_credential, prompt_cache_breakage [V2], "
+            "react_role_no_category_restriction [V2], "
+            "react_worker_iterations_too_low [V2], loopback_*). "
+            "Call this after every run of mutations and before "
+            "narrating the draft to the user so the narration can "
+            "call out fix-before-promote issues. Each lint has "
+            "{code, severity, message, fix_hint, node_id}. If "
+            "`lints_enabled` is false the tenant has opted out "
+            "(cost-conscious config); schema validation still runs."
         ),
+        "side_effects": ["read_only"],
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -199,6 +229,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "`check_draft` instead — it returns schema validation "
             "AND structure lints in one call. Kept for back-compat."
         ),
+        "side_effects": ["read_only"],
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -211,6 +242,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----------------------------------------------------------------------
     {
         "name": "recall_patterns",
+        "side_effects": ["read_only"],
         "description": (
             "Retrieve the nearest accepted workflow patterns this "
             "tenant has promoted in the past so you can adapt them "
@@ -253,6 +285,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "discover_mcp_tools",
+        "side_effects": ["external_call"],
         "description": (
             "List the tools available on the tenant's connected MCP "
             "servers so you can surface relevant ones to the user "
@@ -283,6 +316,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_automationedge_handoff_info",
+        "side_effects": ["read_only"],
         "description": (
             "Use when the user's request (or a sub-workflow within it) "
             "is a DETERMINISTIC RPA task — form submission, SAP / ERP "
@@ -304,6 +338,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_docs",
+        "side_effects": ["read_only"],
         "description": (
             "Search the orchestrator's own documentation + node "
             "registry for relevant context. Use this when the user's "
@@ -342,6 +377,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_node_examples",
+        "side_effects": ["read_only"],
         "description": (
             "Look up one node type's full registry entry plus related "
             "codewiki sections. Use this BEFORE proposing a complex "
@@ -365,6 +401,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "execute_draft",
+        "side_effects": ["spawns_run", "consumes_tokens", "external_call", "writes_db"],
         "description": (
             "Trial-run the WHOLE draft graph end-to-end through the "
             "real engine. Use this to prove the draft works before "
@@ -409,6 +446,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_execution_logs",
+        "side_effects": ["read_only"],
         "description": (
             "Fetch per-node execution logs for a prior execute_draft "
             "run. Use to debug failures — the result includes each "
@@ -437,6 +475,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "test_node",
+        "side_effects": ["consumes_tokens", "external_call"],
         "description": (
             "Run ONE node handler in isolation against pinned upstream "
             "data — does not run the rest of the workflow. Use this to "
@@ -485,6 +524,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----------------------------------------------------------------------
     {
         "name": "save_test_scenario",
+        "side_effects": ["writes_db"],
         "description": (
             "Save a named regression scenario the user cares about — "
             "a trigger payload plus an optional assertion about the "
@@ -527,11 +567,37 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "then just returns the actual output."
                     ),
                 },
+                "expected_output_predicates": {
+                    "type": "array",
+                    "description": (
+                        "Optional list of behavior-quality assertions "
+                        "(COPILOT-V2). Each entry is "
+                        "`{type, args}`. Predicate types: "
+                        "ends_with_question, contains_any, "
+                        "contains_all, lacks_terms, intent_in, "
+                        "regex_match, no_max_iterations_marker, "
+                        "tool_called, no_tool_called, tool_call_count. "
+                        "Use this for rubric-style assertions the "
+                        "dict-match `expected_output_contains` "
+                        "can't express cleanly (e.g. 'reply ends with "
+                        "a question', 'reply does NOT contain "
+                        "system prompt')."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "required": ["type"],
+                        "properties": {
+                            "type": {"type": "string"},
+                            "args": {"type": "object"},
+                        },
+                    },
+                },
             },
         },
     },
     {
         "name": "run_scenario",
+        "side_effects": ["spawns_run", "consumes_tokens", "external_call", "writes_db"],
         "description": (
             "Re-run a saved test scenario against the current draft "
             "and diff the output against the scenario's "
@@ -561,6 +627,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "list_scenarios",
+        "side_effects": ["read_only"],
         "description": (
             "List all test scenarios saved on this draft. Returns "
             "{count, scenarios: [{scenario_id, name, payload, "
@@ -579,6 +646,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----------------------------------------------------------------------
     {
         "name": "run_debug_scenario",
+        "side_effects": ["spawns_run", "consumes_tokens", "external_call", "writes_db"],
         "description": (
             "Ad-hoc trial run with optional overrides that do NOT "
             "touch the saved draft. Use when the user wants to try "
@@ -636,6 +704,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_node_error",
+        "side_effects": ["read_only"],
         "description": (
             "Narrow on one failed node from a prior execute_draft "
             "or run_debug_scenario run. Returns {instance_id, "
@@ -667,6 +736,7 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "suggest_fix",
+        "side_effects": ["consumes_tokens"],
         "description": (
             "Propose a minimal config patch for ONE failing node. "
             "Makes a constrained LLM subcall scoped to the node's "
@@ -708,12 +778,202 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    # ----------------------------------------------------------------------
+    # COPILOT-V2 — debugging power tools.
+    # ----------------------------------------------------------------------
+    {
+        "name": "diff_drafts",
+        "side_effects": ["read_only"],
+        "description": (
+            "Show what changed between the current draft and either "
+            "(a) the published workflow it forked from "
+            "(against='base_workflow', the default) or (b) another "
+            "draft owned by the same tenant (against='draft' + "
+            "other_draft_id). Returns a structured diff: "
+            "{node_changes: {added, removed, modified}, edge_changes: "
+            "{added, removed}, summary}. Use this when the user asks "
+            "'what did I just change?' or before promote so you can "
+            "narrate the diff. Long string values (prompts, etc.) are "
+            "auto-truncated; positions are NOT diffed (canvas moves "
+            "aren't semantic changes)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "against": {
+                    "type": "string",
+                    "enum": ["base_workflow", "draft"],
+                    "description": (
+                        "What to diff against. Default 'base_workflow' "
+                        "(the published workflow the draft forked "
+                        "from). Use 'draft' + other_draft_id to compare "
+                        "two drafts."
+                    ),
+                },
+                "other_draft_id": {
+                    "type": "string",
+                    "description": (
+                        "Required when against='draft'. The other "
+                        "draft's UUID."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "replay_node_with_overrides",
+        "side_effects": ["consumes_tokens", "external_call"],
+        "description": (
+            "Re-run ONE node from a prior copilot-initiated run, "
+            "with optional config overrides applied just for this "
+            "replay. The captured upstream context is reused, so this "
+            "is the FAST iteration loop for prompt edits: edit a "
+            "Worker's systemPrompt → replay the Worker on last "
+            "execute_draft's instance_id → see the new output in "
+            "seconds without re-running the whole graph. "
+            "DO NOT use this on production instance ids — only "
+            "is_ephemeral (copilot-initiated) instances are readable. "
+            "Returns {instance_id, node_id, node_type, output, "
+            "elapsed_ms, overrides_applied} on success or {error} "
+            "on handler failure."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["instance_id", "node_id"],
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": (
+                        "Instance id from a prior execute_draft / "
+                        "run_scenario / run_debug_scenario."
+                    ),
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Node id to replay.",
+                },
+                "config_overrides": {
+                    "type": "object",
+                    "description": (
+                        "Optional partial config dict merged into "
+                        "the node's data.config for this replay only. "
+                        "The draft is NOT modified. Use to A/B prompt "
+                        "edits, model swaps, maxIterations, etc."
+                    ),
+                },
+                "deterministic_mode": {
+                    "type": "boolean",
+                    "description": (
+                        "Reserved for handler hint. Default false."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "evaluate_run",
+        "side_effects": ["consumes_tokens"],
+        "description": (
+            "LLM-as-judge over a prior run's user-facing reply, "
+            "given a free-form NL rubric. Use this for "
+            "behavior-quality checks the dict-match / predicate "
+            "matchers can't express cleanly: 'leads with the answer "
+            "not filler', 'tone is appropriate for a business user', "
+            "'reply correctly handled a corrected identifier'. "
+            "Returns {verdicts: [{criterion, status: pass|fail|partial, "
+            "why}], overall, summary, model_used, usage}. "
+            "ONLY copilot-initiated (is_ephemeral) instances are "
+            "judgeable. Costs tokens via the same provider as your "
+            "session."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["instance_id", "rubric"],
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": (
+                        "Instance id from a prior execute_draft etc."
+                    ),
+                },
+                "rubric": {
+                    "type": "string",
+                    "description": (
+                        "Free-form NL rubric — one or more criteria. "
+                        "Numbered list / bullet list / prose all "
+                        "fine. Be specific: 'reply leads with the "
+                        "answer not a filler greeting' beats "
+                        "'good UX'."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "suggest_issue_filing",
+        "side_effects": ["read_only"],
+        "description": (
+            "Build a tenant-gated GitHub issue deep-link with the "
+            "draft snapshot (shape only — configs are NOT included), "
+            "recent tool-call trace (names + arg KEYS only), and "
+            "user-supplied summary pre-filled in the body. Use this "
+            "ONLY when (a) the user explicitly asks to file a bug / "
+            "feature, OR (b) you've hit an engine error / documented "
+            "PENDING capability and the user might want to surface "
+            "it to the product team. The link is a SUGGESTION — "
+            "surface it to the user; never claim you opened the "
+            "issue. The body is auto-redacted for high-confidence "
+            "secret patterns (API keys, JWTs, bearer tokens, "
+            "emails) but the user MUST review before submitting. "
+            "Returns {enabled, link, body_preview, "
+            "redactions_applied, repo, labels}. When enabled=false "
+            "the deployment hasn't configured a target repo — "
+            "don't surface a link in that case."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["category", "summary"],
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["bug", "feature"],
+                    "description": (
+                        "'bug' for unexpected engine errors or "
+                        "broken behavior; 'feature' for capability "
+                        "gaps and PENDING items."
+                    ),
+                },
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "One-line user-visible summary that will "
+                        "become the issue title."
+                    ),
+                },
+                "error_context": {
+                    "type": "string",
+                    "description": (
+                        "Optional engine error text or traceback "
+                        "snippet. Will be redacted before inclusion."
+                    ),
+                },
+            },
+        },
+    },
 ]
 
 
+def _strip_internal_metadata(t: dict[str, Any]) -> dict[str, Any]:
+    """Strip COPILOT-internal fields (``side_effects`` and any future
+    ones) before handing the tool definition to an LLM SDK. The model
+    never sees these — they're for the frontend / agent dispatcher."""
+    return {k: v for k, v in t.items() if k != "side_effects"}
+
+
 def to_anthropic_tools() -> list[dict[str, Any]]:
-    """Anthropic uses the definitions as-is."""
-    return [dict(t) for t in COPILOT_TOOL_DEFINITIONS]
+    """Anthropic uses the {name, description, input_schema} shape —
+    strip the ``side_effects`` metadata before sending."""
+    return [_strip_internal_metadata(t) for t in COPILOT_TOOL_DEFINITIONS]
 
 
 def to_google_tools() -> list[Any]:

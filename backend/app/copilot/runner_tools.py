@@ -38,6 +38,7 @@ discipline as ``tool_layer.dispatch``.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -719,6 +720,11 @@ RUNNER_TOOL_NAMES = {
     "get_node_error",
     # COPILOT-03.c
     "suggest_fix",
+    # COPILOT-V2 — debugging power tools
+    "diff_drafts",
+    "replay_node_with_overrides",
+    "evaluate_run",
+    "suggest_issue_filing",
 }
 
 
@@ -981,6 +987,23 @@ def dispatch(
         return suggest_fix(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
+    # COPILOT-V2 — debugging power tools.
+    if tool_name == "diff_drafts":
+        return diff_drafts(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "replay_node_with_overrides":
+        return replay_node_with_overrides(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "evaluate_run":
+        return evaluate_run(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "suggest_issue_filing":
+        return suggest_issue_filing(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
     raise KeyError(tool_name)
 
 
@@ -1048,6 +1071,16 @@ def save_test_scenario(
             "error": "save_test_scenario 'expected_output_contains' must be an object",
         }
 
+    # COPILOT-V2 — optional predicate-based assertions. List of
+    # {type, args} entries evaluated by app.copilot.predicates after
+    # run_scenario produces an output. Shape-validated up-front so the
+    # user sees a typo immediately, not on the first run.
+    expected_predicates = args.get("expected_output_predicates")
+    from app.copilot import predicates as _pred_mod
+    pred_err = _pred_mod.validate_predicates(expected_predicates)
+    if pred_err:
+        return {"error": f"save_test_scenario: {pred_err}"}
+
     # Unique-per-draft check. The DB has a partial unique index
     # (0027 migration) but we short-circuit with a friendly error
     # instead of surfacing IntegrityError.
@@ -1087,6 +1120,7 @@ def save_test_scenario(
         payload_json=payload,
         pins_json={},
         expected_output_contains_json=expected,
+        expected_predicates_json=expected_predicates,
     )
     db.add(scenario)
     db.commit()
@@ -1200,21 +1234,38 @@ def run_scenario(
         }
 
     expected = scenario.expected_output_contains_json
-    if not expected:
-        return {
-            "scenario_id": str(scenario.id),
-            "name": scenario.name,
-            "status": "pass",
-            "actual_output": actual_output,
-            "execution": execution,
-        }
+    expected_predicates = getattr(scenario, "expected_predicates_json", None)
 
-    mismatches = _diff_contains(expected, actual_output, path="$")
+    # Run dict-shape assertion (legacy) AND predicate assertions
+    # (COPILOT-V2). Both are optional. A scenario with neither just
+    # records the actual output and returns "pass".
+    mismatches: list[dict[str, Any]] = []
+    if expected:
+        mismatches = _diff_contains(expected, actual_output, path="$")
+
+    from app.copilot import predicates as _pred_mod
+    predicate_eval = _pred_mod.evaluate_predicates(actual_output, expected_predicates)
+
+    contains_pass = not mismatches  # True if dict-match passed OR no expected
+    predicate_pass = predicate_eval["overall"] in ("pass", "noop")
+    has_expectations = bool(expected) or bool(expected_predicates)
+
+    if not has_expectations:
+        status = "pass"
+    else:
+        status = "pass" if (contains_pass and predicate_pass) else "fail"
+
     return {
         "scenario_id": str(scenario.id),
         "name": scenario.name,
-        "status": "pass" if not mismatches else "fail",
+        "status": status,
         "mismatches": mismatches,
+        "predicate_results": predicate_eval["results"],
+        "predicate_summary": {
+            "pass_count": predicate_eval["pass_count"],
+            "fail_count": predicate_eval["fail_count"],
+            "overall": predicate_eval["overall"],
+        },
         "actual_output": actual_output,
         "execution": execution,
     }
@@ -1246,6 +1297,7 @@ def list_scenarios(
                 "name": r.name,
                 "payload": r.payload_json or {},
                 "has_expected": r.expected_output_contains_json is not None,
+                "predicate_count": len(getattr(r, "expected_predicates_json", None) or []),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows
@@ -2110,4 +2162,865 @@ def suggest_fix(
         "model": model,
         "prior_calls": prior_calls,
         "cap": MAX_SUGGEST_FIX_PER_DRAFT,
+    }
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-V2 — diff_drafts
+# ---------------------------------------------------------------------------
+
+
+def diff_drafts(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Diff the current draft against another draft OR the published
+    workflow it forked from.
+
+    Args
+    ----
+    ::
+
+        {
+          "against": "draft" | "base_workflow",   # default base_workflow
+          "other_draft_id": "<uuid>",             # required when against=draft
+        }
+
+    Result
+    ------
+    The structured diff from ``diff_layer.diff_graphs`` plus
+    ``left_label`` / ``right_label`` describing which side is which.
+    """
+    from app.copilot.diff_layer import diff_graphs
+    from app.models.workflow import WorkflowDefinition
+
+    against = (args.get("against") or "base_workflow").strip().lower()
+    if against not in ("base_workflow", "draft"):
+        return {"error": "diff_drafts 'against' must be 'base_workflow' or 'draft'"}
+
+    left_graph = draft.graph_json or {"nodes": [], "edges": []}
+    left_label = f"current draft (v{draft.version})"
+
+    if against == "draft":
+        other_id = args.get("other_draft_id")
+        if not other_id:
+            return {"error": "diff_drafts against='draft' requires 'other_draft_id'"}
+        try:
+            other_uuid = uuid.UUID(str(other_id))
+        except ValueError:
+            return {"error": f"diff_drafts: invalid other_draft_id {other_id!r}"}
+        if other_uuid == draft.id:
+            return {"error": "diff_drafts: other_draft_id is the current draft — nothing to diff"}
+        other = (
+            db.query(WorkflowDraft)
+            .filter_by(id=other_uuid, tenant_id=tenant_id)
+            .first()
+        )
+        if other is None:
+            return {"error": f"diff_drafts: draft {other_id!r} not found for this tenant"}
+        right_graph = other.graph_json or {"nodes": [], "edges": []}
+        right_label = f"draft {str(other.id).split('-')[0]} (v{other.version})"
+    else:
+        if not draft.base_workflow_id:
+            return {
+                "error": (
+                    "diff_drafts: this draft has no base_workflow_id "
+                    "(it was created from scratch, not forked from a "
+                    "published workflow). Pass against='draft' with "
+                    "other_draft_id instead."
+                ),
+            }
+        base = (
+            db.query(WorkflowDefinition)
+            .filter_by(id=draft.base_workflow_id, tenant_id=tenant_id)
+            .first()
+        )
+        if base is None:
+            return {
+                "error": (
+                    f"diff_drafts: base workflow {draft.base_workflow_id!r} "
+                    "not found (may have been deleted since fork)."
+                ),
+            }
+        right_graph = base.graph_json or {"nodes": [], "edges": []}
+        right_label = f"base workflow “{base.name}” (v{base.version})"
+
+    return diff_graphs(
+        left_graph,
+        right_graph,
+        left_label=left_label,
+        right_label=right_label,
+    )
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-V2 — replay_node_with_overrides
+# ---------------------------------------------------------------------------
+
+
+def replay_node_with_overrides(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-run ONE node from a prior copilot-initiated instance with
+    config overrides, using the captured upstream context as inputs.
+
+    Use this for tight prompt-iteration loops: edit a Worker's
+    systemPrompt, replay just the Worker against a captured run, see
+    the new output in seconds instead of re-executing the whole graph.
+
+    Args
+    ----
+    ::
+
+        {
+          "instance_id": "<uuid>",          # required — copilot-ephemeral instance
+          "node_id": "<id>",                # required — node to replay
+          "config_overrides": {...},        # optional — partial config merged
+                                            #   into the node's data.config
+          "deterministic_mode": false,      # optional — passthrough to handler
+        }
+
+    Returns
+    -------
+    ::
+
+        {
+          "instance_id": "<orig>",
+          "node_id": "<id>",
+          "node_type": "<label>",
+          "elapsed_ms": N,
+          "overrides_applied": {...},
+          "output": <handler output>,
+          "error": "<error string if handler raised>",
+        }
+
+    Same safety as ``get_execution_logs``: only ``is_ephemeral=True``
+    instances are readable so the agent can't probe production.
+    """
+    from app.engine.exceptions import NodeSuspendedAsync
+    from app.engine.node_handlers import dispatch_node
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance
+
+    instance_id = args.get("instance_id")
+    node_id = args.get("node_id")
+    if not instance_id or not node_id:
+        return {"error": "replay_node_with_overrides requires 'instance_id' and 'node_id'"}
+    try:
+        instance_uuid = uuid.UUID(str(instance_id))
+    except ValueError:
+        return {"error": f"replay_node_with_overrides: invalid instance_id {instance_id!r}"}
+
+    overrides = args.get("config_overrides") or {}
+    if not isinstance(overrides, dict):
+        return {"error": "replay_node_with_overrides 'config_overrides' must be an object"}
+
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_uuid, tenant_id=tenant_id)
+        .first()
+    )
+    if instance is None:
+        return {"error": f"Instance {instance_id!r} not found for this tenant"}
+
+    wd = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=instance.workflow_def_id, tenant_id=tenant_id)
+        .first()
+    )
+    if wd is None or not wd.is_ephemeral:
+        return {
+            "error": (
+                "replay_node_with_overrides only supports copilot-initiated "
+                "(ephemeral) instances. Run execute_draft first to get a "
+                "replay-able instance_id."
+            ),
+        }
+
+    # Use the GRAPH from the instance (matches the captured run) but
+    # source the node config from the CURRENT draft so override edits
+    # made via update_node_config are picked up automatically. If the
+    # node id only exists in the captured graph (someone deleted it on
+    # the draft), fall back to the captured config.
+    captured_graph = wd.graph_json or {"nodes": [], "edges": []}
+    captured_node = next(
+        (n for n in captured_graph.get("nodes") or [] if n.get("id") == node_id),
+        None,
+    )
+    if captured_node is None:
+        return {"error": f"Node {node_id!r} not in captured graph for instance {instance_id!r}"}
+
+    draft_graph = draft.graph_json or {"nodes": [], "edges": []}
+    draft_node = next(
+        (n for n in draft_graph.get("nodes") or [] if n.get("id") == node_id),
+        None,
+    )
+    base_node = draft_node or captured_node
+    base_data = (base_node.get("data") or {}).copy()
+    base_config = dict(base_data.get("config") or {})
+    base_config.update(overrides)
+    base_data["config"] = base_config
+
+    # Build context from the captured run's context_json — that's
+    # what the node would have seen at runtime, including upstream
+    # outputs the node depends on.
+    ctx_source = dict(instance.context_json or {})
+    # Strip internal keys + the target node's own prior output so the
+    # handler doesn't see its own answer as input.
+    ctx_source.pop(node_id, None)
+    context: dict[str, Any] = {
+        k: v for k, v in ctx_source.items()
+        if not k.startswith("_") and k not in {"orchestrator_user_reply"}
+    }
+    # Re-seed the engine internals the handler needs.
+    context["_instance_id"] = str(instance_uuid)
+    context["_current_node_id"] = node_id
+    context["_workflow_def_id"] = str(wd.id)
+    if "trigger" not in context:
+        context["trigger"] = (instance.trigger_payload or {}) if hasattr(instance, "trigger_payload") else {}
+
+    started = time.monotonic()
+    try:
+        output = dispatch_node(base_data, context, tenant_id, db=db)
+    except NodeSuspendedAsync as sus:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "instance_id": str(instance_uuid),
+            "node_id": node_id,
+            "node_type": base_data.get("label"),
+            "elapsed_ms": elapsed_ms,
+            "overrides_applied": overrides,
+            "error": (
+                f"Node suspended on external system '{sus.system}' "
+                f"(external_job_id={sus.external_job_id})."
+            ),
+        }
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "copilot replay_node_with_overrides handler raised: node=%s err=%s",
+            node_id, exc,
+        )
+        return {
+            "instance_id": str(instance_uuid),
+            "node_id": node_id,
+            "node_type": base_data.get("label"),
+            "elapsed_ms": elapsed_ms,
+            "overrides_applied": overrides,
+            "error": str(exc),
+        }
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    return {
+        "instance_id": str(instance_uuid),
+        "node_id": node_id,
+        "node_type": base_data.get("label"),
+        "elapsed_ms": elapsed_ms,
+        "overrides_applied": overrides,
+        "output": output,
+    }
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-V2 — evaluate_run (LLM-as-judge)
+# ---------------------------------------------------------------------------
+
+
+_EVALUATE_RUN_SYSTEM_PROMPT = (
+    "You are an evaluation judge for an agentic workflow output. Given:\n"
+    "  - the workflow's final user-facing reply\n"
+    "  - a free-form rubric (one or more criteria, NL or numbered list)\n"
+    "  - optional metadata about the run (intent, tool calls)\n\n"
+    "Return a STRICT JSON object with this shape — no prose, no markdown:\n"
+    "{\n"
+    "  \"verdicts\": [\n"
+    "    {\"criterion\": \"<copy of the criterion>\", \"status\": \"pass|fail|partial\", \"why\": \"<one sentence>\"}\n"
+    "  ],\n"
+    "  \"overall\": \"pass|partial|fail\",\n"
+    "  \"summary\": \"<one sentence summary of the verdict>\"\n"
+    "}\n\n"
+    "Rules:\n"
+    "  - Treat each rubric criterion independently.\n"
+    "  - Be strict on 'pass' — if the reply only partially satisfies a "
+    "criterion, use 'partial'.\n"
+    "  - 'overall' is 'pass' iff every verdict is 'pass'; 'fail' iff any "
+    "is 'fail'; otherwise 'partial'.\n"
+    "  - Do NOT critique style. Judge ONLY the rubric.\n"
+    "  - If the rubric is empty / non-actionable, return overall='partial' "
+    "with a single verdict explaining why."
+)
+
+
+def evaluate_run(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Use an LLM to judge a prior run's output against a free-form
+    rubric. Designed for behavior-quality checks the
+    ``expected_output_contains`` / predicate matchers can't express
+    cleanly ("the reply leads with the answer, not filler").
+
+    Args
+    ----
+    ::
+
+        {
+          "instance_id": "<uuid>",       # required — copilot-ephemeral
+          "rubric": "<NL string>",       # required — one or more criteria
+        }
+
+    Returns
+    -------
+    ::
+
+        {
+          "instance_id": "...",
+          "rubric": "...",
+          "verdicts": [{criterion, status, why}, ...],
+          "overall": "pass|partial|fail",
+          "summary": "...",
+          "model_used": "...",
+          "usage": {input_tokens, output_tokens},
+        }
+
+    Same ephemeral-only safety as ``get_execution_logs``.
+    """
+    import json as _json
+    import re as _re
+    from app.models.workflow import WorkflowDefinition, WorkflowInstance
+
+    instance_id = args.get("instance_id")
+    rubric = args.get("rubric")
+    if not instance_id:
+        return {"error": "evaluate_run requires 'instance_id'"}
+    if not isinstance(rubric, str) or not rubric.strip():
+        return {"error": "evaluate_run requires a non-empty 'rubric' string"}
+
+    try:
+        instance_uuid = uuid.UUID(str(instance_id))
+    except ValueError:
+        return {"error": f"evaluate_run: invalid instance_id {instance_id!r}"}
+
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_uuid, tenant_id=tenant_id)
+        .first()
+    )
+    if instance is None:
+        return {"error": f"Instance {instance_id!r} not found for this tenant"}
+
+    wd = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=instance.workflow_def_id, tenant_id=tenant_id)
+        .first()
+    )
+    if wd is None or not wd.is_ephemeral:
+        return {
+            "error": (
+                "evaluate_run only supports copilot-initiated (ephemeral) "
+                "instances."
+            ),
+        }
+
+    ctx = instance.context_json or {}
+    user_reply = ctx.get("orchestrator_user_reply") or ""
+    if not user_reply:
+        # Best-effort fallback — sometimes the reply lives on a
+        # specific bridge node's text.
+        for v in ctx.values():
+            if isinstance(v, dict) and v.get("source") == "messageExpression":
+                user_reply = v.get("text", "")
+                if user_reply:
+                    break
+    intent = None
+    router = ctx.get("node_router")
+    if isinstance(router, dict):
+        intents = router.get("intents") or []
+        if intents:
+            intent = intents[0]
+
+    payload = _json.dumps({
+        "user_reply": user_reply or "(no user-facing reply found in context)",
+        "rubric": rubric.strip(),
+        "metadata": {
+            "intent": intent,
+            "instance_status": instance.status,
+        },
+    }, default=str)
+
+    provider, model = _resolve_suggest_fix_provider(
+        db, tenant_id=tenant_id, draft=draft,
+    )
+    try:
+        if provider == "anthropic":
+            llm_result = _call_evaluate_run_anthropic(
+                tenant_id=tenant_id, model=model, user_payload=payload,
+            )
+        elif provider in {"google", "vertex"}:
+            llm_result = _call_evaluate_run_google(
+                tenant_id=tenant_id, model=model, user_payload=payload,
+                backend="vertex" if provider == "vertex" else "genai",
+            )
+        else:
+            return {"error": f"evaluate_run: unsupported provider {provider!r}"}
+    except Exception as exc:
+        logger.warning("evaluate_run LLM subcall failed: %s", exc)
+        return {"error": f"evaluate_run LLM call failed: {exc}"}
+
+    raw_text = (llm_result.get("raw_text") or "").strip()
+    parsed = _parse_evaluate_run_response(raw_text)
+    if parsed is None:
+        return {
+            "error": (
+                "evaluate_run: judge returned non-JSON output. "
+                "Raw response prefix: " + raw_text[:300]
+            ),
+            "raw_text": raw_text,
+        }
+
+    return {
+        "instance_id": str(instance_uuid),
+        "rubric": rubric.strip(),
+        "verdicts": parsed.get("verdicts") or [],
+        "overall": parsed.get("overall") or "partial",
+        "summary": parsed.get("summary") or "",
+        # Mirror suggest_fix's result shape so callers can rely on
+        # `result["provider"]` + `result["model"]` for both subcall
+        # tools — important for the UI surfacing "this verdict came
+        # from Vertex / Gemini 3.x" attribution.
+        "provider": provider,
+        "model": model,
+        "usage": llm_result.get("usage") or {},
+    }
+
+
+def _call_evaluate_run_anthropic(
+    *, tenant_id: str, model: str, user_payload: str,
+) -> dict[str, Any]:
+    from anthropic import Anthropic
+
+    from app.engine.llm_credentials_resolver import get_anthropic_api_key
+
+    client = Anthropic(api_key=get_anthropic_api_key(tenant_id))
+    resp = client.messages.create(
+        model=model,
+        system=_EVALUATE_RUN_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_payload}],
+        max_tokens=1024,
+        temperature=0.1,
+    )
+    raw_text = ""
+    for block in resp.content:
+        as_dict = _block_to_dict_safe(block)
+        if as_dict.get("type") == "text":
+            raw_text += as_dict.get("text", "")
+    return {
+        "raw_text": raw_text.strip(),
+        "usage": {
+            "input_tokens": getattr(resp.usage, "input_tokens", 0),
+            "output_tokens": getattr(resp.usage, "output_tokens", 0),
+        },
+    }
+
+
+def _call_evaluate_run_google(
+    *, tenant_id: str, model: str, user_payload: str, backend: str,
+) -> dict[str, Any]:
+    from google.genai import types
+
+    from app.engine.llm_providers import _google_client
+
+    client = _google_client(backend, tenant_id=tenant_id)
+    contents = [types.Content(
+        role="user",
+        parts=[types.Part.from_text(text=user_payload)],
+    )]
+    config = types.GenerateContentConfig(
+        system_instruction=_EVALUATE_RUN_SYSTEM_PROMPT,
+        temperature=0.1,
+        max_output_tokens=1024,
+    )
+    resp = client.models.generate_content(
+        model=model, contents=contents, config=config,
+    )
+    text_blocks: list[str] = []
+    if resp.candidates and resp.candidates[0].content:
+        for part in resp.candidates[0].content.parts:
+            if getattr(part, "text", None):
+                text_blocks.append(part.text)
+    usage = getattr(resp, "usage_metadata", None)
+    return {
+        "raw_text": "".join(text_blocks).strip(),
+        "usage": {
+            "input_tokens": getattr(usage, "prompt_token_count", 0) if usage else 0,
+            "output_tokens": getattr(usage, "candidates_token_count", 0) if usage else 0,
+        },
+    }
+
+
+def _parse_evaluate_run_response(raw_text: str) -> dict[str, Any] | None:
+    """Tolerant JSON parse that strips code fences."""
+    import json as _json
+    import re as _re
+
+    if not raw_text:
+        return None
+    cleaned = raw_text.strip()
+    cleaned = _re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = _re.sub(r"\s*```\s*$", "", cleaned)
+    cleaned = cleaned.strip()
+    try:
+        parsed = _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# COPILOT-V2 — suggest_issue_filing (GitHub deep-link with redaction)
+# ---------------------------------------------------------------------------
+
+
+# Patterns that look like secrets / sensitive identifiers. These
+# regexes are heuristic — false negatives are possible. The ones we
+# DO have are the high-confidence shapes; the lint never claims to be
+# a full DLP pass. The `redactions_applied` field tells the user what
+# we did so they can review the body before submitting.
+#
+# Vertex-shaped secrets (service-account private keys, GCS signed URLs)
+# are first-class — service-account JSON keys are the most common
+# secret-leak shape in a Vertex tenant's logs / configs.
+_SECRET_PATTERNS = (
+    # Anthropic API keys
+    (re.compile(r"sk-ant-api\w+", re.IGNORECASE), "anthropic_api_key"),
+    # OpenAI API keys
+    (re.compile(r"sk-[A-Za-z0-9]{32,}", re.IGNORECASE), "openai_api_key"),
+    # Google API keys (AIza...)
+    (re.compile(r"AIza[0-9A-Za-z_\-]{30,}"), "google_api_key"),
+    # GitHub PATs
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"), "github_token"),
+    # Generic Bearer tokens in HTTP headers
+    (re.compile(r"Bearer\s+[A-Za-z0-9._\-]{20,}", re.IGNORECASE), "bearer_token"),
+    # JSON Web Tokens
+    (re.compile(r"eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "jwt"),
+    # PEM-encoded private keys (Vertex service-account JSON, RSA, ECDSA,
+    # OpenSSH). DOTALL because the body spans newlines. Match the entire
+    # block so the redaction doesn't leave one half of the key visible.
+    (
+        re.compile(
+            r"-----BEGIN[^-]*PRIVATE KEY-----[\s\S]+?-----END[^-]*PRIVATE KEY-----",
+            re.IGNORECASE,
+        ),
+        "private_key",
+    ),
+    # GCP service-account JSON has a stable shape — even when the
+    # private_key field is already redacted (above), the surrounding
+    # JSON often carries the project_id + client_email. Mark the
+    # whole `"type": "service_account"` block so a copy-pasted creds
+    # JSON gets surfaced as a redaction instead of leaking quietly.
+    (
+        re.compile(r'"type"\s*:\s*"service_account"'),
+        "gcp_service_account_marker",
+    ),
+    # GCS V4 signed URLs include the access token in query params.
+    (
+        re.compile(r"https?://storage\.googleapis\.com/[^\s\"']+X-Goog-Signature=[^\s&\"']+"),
+        "gcs_signed_url",
+    ),
+    # OAuth refresh tokens (Google) — opaque high-entropy `1//` prefix.
+    (re.compile(r"\b1//[0-9A-Za-z_\-]{40,}"), "google_oauth_refresh_token"),
+    # Email addresses (not always secret but commonly customer PII)
+    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "email"),
+)
+
+def _redact_text(text: str) -> tuple[str, dict[str, int]]:
+    """Apply the redaction regex set; return (text, counts_per_kind)."""
+    if not isinstance(text, str):
+        return text, {}
+    counts: dict[str, int] = {}
+    for pattern, kind in _SECRET_PATTERNS:
+        new_text, n = pattern.subn(f"<redacted:{kind}>", text)
+        if n:
+            counts[kind] = counts.get(kind, 0) + n
+            text = new_text
+    return text, counts
+
+
+def _redact_obj(obj: Any, counts: dict[str, int]) -> Any:
+    """Recursively redact strings inside a JSON-shaped dict/list."""
+    if isinstance(obj, str):
+        new_text, sub_counts = _redact_text(obj)
+        for k, v in sub_counts.items():
+            counts[k] = counts.get(k, 0) + v
+        return new_text
+    if isinstance(obj, dict):
+        return {k: _redact_obj(v, counts) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_obj(x, counts) for x in obj]
+    return obj
+
+
+_ISSUE_BODY_TEMPLATE = """\
+> _This issue was drafted by the AE AI Hub workflow copilot. The
+> body has been auto-redacted (see "Redactions applied" below); please
+> double-check before submitting. Tenant identifiers and full graphs
+> are NOT included._
+
+## What happened
+
+{summary}
+
+{error_section}
+
+## Repro / context
+
+- **Copilot session:** provider=`{session_provider}` · model=`{session_model}`
+- **Draft id (last 8):** `{draft_short}`
+- **Draft version:** {draft_version}
+- **Node count / edge count:** {node_count} / {edge_count}
+- **Recent tool calls (last {tool_count}):**
+{tool_call_block}
+
+## Draft snapshot (shape only)
+
+```
+{shape_block}
+```
+
+## Redactions applied
+
+{redactions_block}
+
+---
+
+_If you'd like the full draft graph, please attach it manually after
+reviewing for sensitive content._
+"""
+
+
+def _shape_only_snapshot(graph: dict[str, Any]) -> str:
+    """One-line-per-node shape summary so a maintainer can see the
+    structure without seeing prompts / URLs / IDs that might leak."""
+    lines: list[str] = []
+    for n in (graph.get("nodes") or [])[:30]:
+        data = n.get("data") or {}
+        label = data.get("label") or "?"
+        config = data.get("config") or {}
+        config_summary = ", ".join(sorted(config.keys())[:5])
+        if len(config) > 5:
+            config_summary += f", … (+{len(config) - 5} more)"
+        lines.append(f"  {n.get('id', '?')}  {label}  config[{config_summary}]")
+    if len(graph.get("nodes") or []) > 30:
+        lines.append(f"  … (+{len(graph['nodes']) - 30} more nodes elided)")
+    return "\n".join(lines) or "  (empty graph)"
+
+
+def _build_repo_url(repo: str, *, title: str, body: str, labels: list[str]) -> str:
+    """Build the GitHub /issues/new deep-link with everything URL-encoded."""
+    from urllib.parse import quote_plus
+
+    base = f"https://github.com/{repo}/issues/new"
+    qs_parts = [
+        f"title={quote_plus(title)}",
+        f"body={quote_plus(body)}",
+    ]
+    if labels:
+        qs_parts.append(f"labels={quote_plus(','.join(labels))}")
+    return base + "?" + "&".join(qs_parts)
+
+
+def _resolve_issue_filing_settings(category: str) -> dict[str, Any]:
+    """Pull config from app.config.settings. The two repo paths come
+    from settings (env vars); ``copilot_issue_link_enabled`` is the
+    master gate."""
+    from app.config import settings
+
+    enabled = bool(getattr(settings, "copilot_issue_link_enabled", False))
+    if category == "bug":
+        repo = getattr(settings, "copilot_issue_repo_bug", "") or getattr(
+            settings, "copilot_issue_repo", "",
+        )
+        labels = ["bug", "from-copilot"]
+    else:  # feature
+        repo = getattr(settings, "copilot_issue_repo_feature", "") or getattr(
+            settings, "copilot_issue_repo", "",
+        )
+        labels = ["enhancement", "from-copilot"]
+    return {"enabled": enabled, "repo": str(repo or ""), "labels": labels}
+
+
+def suggest_issue_filing(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a tenant-gated GitHub issue deep-link with redacted draft
+    + recent tool-call trace pre-filled.
+
+    Args
+    ----
+    ::
+
+        {
+          "category": "bug" | "feature",   # required
+          "summary": "<one-line user-visible summary>",   # required
+          "error_context": "<optional engine error / traceback>",
+        }
+
+    Returns
+    -------
+    ::
+
+        {
+          "enabled": true|false,
+          "link": "<github URL>",
+          "body_preview": "<full markdown body, redacted>",
+          "redactions_applied": [{kind, count}, ...],
+          "repo": "owner/name",
+          "category": "bug|feature",
+        }
+
+    When ``enabled=false`` the tenant has opted out via env config
+    (``COPILOT_ISSUE_LINK_ENABLED=false``). The agent should NOT
+    surface a link in that case.
+    """
+    from app.models.copilot import CopilotSession, CopilotTurn
+
+    category = (args.get("category") or "").strip().lower()
+    if category not in ("bug", "feature"):
+        return {"error": "suggest_issue_filing 'category' must be 'bug' or 'feature'"}
+
+    summary = args.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return {"error": "suggest_issue_filing requires a non-empty 'summary'"}
+    summary = summary.strip()
+    if len(summary) > 200:
+        summary = summary[:197] + "…"
+
+    error_context = args.get("error_context")
+    if error_context is not None and not isinstance(error_context, str):
+        return {"error": "suggest_issue_filing 'error_context' must be a string"}
+
+    cfg = _resolve_issue_filing_settings(category)
+    if not cfg["enabled"] or not cfg["repo"]:
+        return {
+            "enabled": False,
+            "category": category,
+            "reason": (
+                "Issue filing is not configured for this deployment. "
+                "Set COPILOT_ISSUE_LINK_ENABLED=true and "
+                "COPILOT_ISSUE_REPO_BUG / COPILOT_ISSUE_REPO_FEATURE "
+                "(or the shared COPILOT_ISSUE_REPO) to enable."
+            ),
+        }
+
+    redaction_counts: dict[str, int] = {}
+    redacted_summary, summary_counts = _redact_text(summary)
+    for k, v in summary_counts.items():
+        redaction_counts[k] = redaction_counts.get(k, 0) + v
+    redacted_error: str | None = None
+    if error_context:
+        redacted_error, err_counts = _redact_text(error_context)
+        for k, v in err_counts.items():
+            redaction_counts[k] = redaction_counts.get(k, 0) + v
+
+    # Recent tool-call trace from the most recent active session on
+    # this draft. We surface tool NAMES + arg KEYS only — not arg
+    # values — to keep the body focused on shape, not data.
+    # Session provider + model are included so a maintainer triaging
+    # the issue knows whether the user was on Anthropic / Google AI
+    # Studio / Vertex AI — different LLM stacks have very different
+    # failure modes, and "couldn't reproduce on Anthropic" vs
+    # "couldn't reproduce on Vertex" is the very first triage question.
+    session = (
+        db.query(CopilotSession)
+        .filter_by(tenant_id=tenant_id, draft_id=draft.id)
+        .order_by(CopilotSession.created_at.desc())
+        .first()
+    )
+    session_provider = (session.provider if session else "unknown") or "unknown"
+    session_model = (session.model if session else "unknown") or "unknown"
+    recent_tool_calls: list[dict[str, Any]] = []
+    if session is not None:
+        rows = (
+            db.query(CopilotTurn)
+            .filter_by(tenant_id=tenant_id, session_id=session.id, role="tool")
+            .order_by(CopilotTurn.turn_index.desc())
+            .limit(8)
+            .all()
+        )
+        for row in reversed(rows):  # chronological
+            content = row.content_json or {}
+            recent_tool_calls.append({
+                "name": content.get("name"),
+                "arg_keys": sorted((content.get("args") or {}).keys()),
+                "had_error": bool(content.get("error")),
+            })
+
+    if recent_tool_calls:
+        tool_call_block = "\n".join(
+            f"  - `{tc['name']}` args=[{', '.join(tc['arg_keys'])}]"
+            + (" (errored)" if tc["had_error"] else "")
+            for tc in recent_tool_calls
+        )
+    else:
+        tool_call_block = "  (no recent tool calls)"
+
+    error_section = ""
+    if redacted_error:
+        error_section = (
+            f"### Error / engine output\n\n```\n{redacted_error[:3000]}\n```\n"
+        )
+
+    redactions_block = (
+        "\n".join(f"  - `{k}`: {v} occurrence(s)" for k, v in sorted(redaction_counts.items()))
+        if redaction_counts
+        else "  (no redactions applied — no high-confidence secret patterns found)"
+    )
+
+    graph = draft.graph_json or {}
+    body = _ISSUE_BODY_TEMPLATE.format(
+        summary=redacted_summary,
+        error_section=error_section,
+        session_provider=session_provider,
+        session_model=session_model,
+        draft_short=str(draft.id).split("-")[0],
+        draft_version=draft.version,
+        node_count=len(graph.get("nodes") or []),
+        edge_count=len(graph.get("edges") or []),
+        tool_count=len(recent_tool_calls),
+        tool_call_block=tool_call_block,
+        shape_block=_shape_only_snapshot(graph),
+        redactions_block=redactions_block,
+    )
+
+    title_prefix = "[copilot bug]" if category == "bug" else "[copilot feature]"
+    title = f"{title_prefix} {redacted_summary[:120]}"
+    link = _build_repo_url(
+        cfg["repo"], title=title, body=body, labels=cfg["labels"],
+    )
+
+    return {
+        "enabled": True,
+        "category": category,
+        "link": link,
+        "body_preview": body,
+        "redactions_applied": [
+            {"kind": k, "count": v} for k, v in sorted(redaction_counts.items())
+        ],
+        "repo": cfg["repo"],
+        "labels": cfg["labels"],
     }
