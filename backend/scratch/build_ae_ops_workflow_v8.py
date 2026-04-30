@@ -573,10 +573,12 @@ def build_graph() -> dict:
                 },
                 {
                     "name": "cancel",
-                    "description": "User retracts their previous request entirely.",
+                    "description": "User explicitly retracts their previous request — NOT a request to retry/redo. Must contain a clear withdrawal cue (never mind, scrap, forget).",
                     "examples": [
                         "never mind", "ignore that", "cancel that", "scrap that",
                         "ignore my last message", "forget what I said",
+                        "actually don't bother", "skip it",
+                        "no don't do it", "cancel my request",
                     ],
                     "priority": 175,
                 },
@@ -612,6 +614,12 @@ def build_graph() -> dict:
                         # mid-thread updates (lower-priority intents win when their cues are present)
                         "actually I just got it", "no I meant the OCR one",
                         "the workflow is broken",
+                        # repeat/redo of a prior action — user wants the agent to
+                        # re-trigger what it just did. NOT a cancel intent.
+                        "do once again", "do that again", "do it again",
+                        "redo that", "redo it", "repeat that",
+                        "try again", "rerun that one", "one more time",
+                        "again please", "yes do it again",
                     ],
                     "priority": 130,  # bumped above small_talk's 100 so missing-report phrasings win over greetings.
                 },
