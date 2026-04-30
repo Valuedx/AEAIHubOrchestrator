@@ -31,6 +31,9 @@ Thumbs.db
 # Root-level screenshots (Playwright MCP captures land here; not tracked)
 /*.png
 
+# Root-level scratch dumps from interactive debugging (curl -o _*.json etc.)
+/_*.json
+
 # Virtual environments
 backend/aevenv/
 
