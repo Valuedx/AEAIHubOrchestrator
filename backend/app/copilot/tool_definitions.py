@@ -910,6 +910,41 @@ COPILOT_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "inspect_node_artifact",
+        "side_effects": ["read_only"],
+        "description": (
+            "Fetch the full output payload for a node whose in-context "
+            "value is an overflow stub (CTX-MGMT.A). When a node's "
+            "output exceeded its `contextOutputBudget` (default 64 kB), "
+            "the engine replaced `context[node_id]` with a small stub "
+            "`{_overflow: True, _artifact_id: <uuid>, summary, "
+            "preview, ...}` and persisted the full payload to "
+            "`node_output_artifacts`. This tool reads that table when "
+            "the user asks 'show me what node X actually produced'. "
+            "Same ephemeral-only safety as get_execution_logs — "
+            "production instances are NOT readable. If the node "
+            "didn't overflow (output fits inline), this returns an "
+            "error pointing at get_execution_logs instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["instance_id", "node_id"],
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": (
+                        "Instance id from a prior execute_draft / "
+                        "run_scenario / run_debug_scenario."
+                    ),
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Node id whose overflow artifact to fetch.",
+                },
+            },
+        },
+    },
+    {
         "name": "suggest_issue_filing",
         "side_effects": ["read_only"],
         "description": (

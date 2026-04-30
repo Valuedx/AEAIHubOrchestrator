@@ -1310,17 +1310,43 @@ def _execute_single_node(
     ) as span:
         try:
             output = dispatch_node(node_data, context, instance.tenant_id, db=db)
-            context[node_id] = output
+
+            # CTX-MGMT.A — per-node output budget. If the handler's
+            # output exceeds the configured budget, persist the full
+            # payload to node_output_artifacts and replace the in-
+            # context value with a small stub. Downstream Jinja can
+            # still read top-level scalar keys via the stub's preview;
+            # the copilot can fetch the full output via the
+            # inspect_node_artifact runner tool.
+            from app.engine.output_artifact import maybe_overflow
+            in_context_value, overflow_meta = maybe_overflow(
+                db,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
+                node_id=node_id,
+                node_data=node_data,
+                output=output,
+            )
+            context[node_id] = in_context_value
+            # _promote_orchestrator_user_reply still reads the full
+            # output (not the stub) — Bridge nodes are designed to
+            # produce small replies, but if a Bridge somehow exceeded
+            # budget the user still sees the original reply text in
+            # the promoted root key.
             _promote_orchestrator_user_reply(context, output)
 
             log_entry.status = "completed"
-            log_entry.output_json = scrub_secrets(output)
+            # ExecutionLog records what's IN context (the stub on
+            # overflow) — the artifact is the canonical full record.
+            log_entry.output_json = scrub_secrets(in_context_value)
             log_entry.completed_at = _utcnow()
             db.commit()
             checkpoint_id = _save_checkpoint(db, instance.id, node_id, context)
             span_meta: dict = {"status": "completed", "has_output": output is not None}
             if checkpoint_id:
                 span_meta["checkpoint_id"] = checkpoint_id
+            if overflow_meta:
+                span_meta.update(overflow_meta)
             span.update(output=span_meta)
             return "completed"
 
@@ -1469,19 +1495,35 @@ def _execute_parallel(
         results[node_id] = status
         log_entry = log_entries[node_id]
         if status == "completed" and output is not None:
-            context[node_id] = output
+            # CTX-MGMT.A — overflow check on the parallel-branch path
+            # too. Same shape as the sequential path; the artifact
+            # write happens on the main session because the worker
+            # thread's session has already closed.
+            from app.engine.output_artifact import maybe_overflow
+            node_lookup = nodes_map.get(node_id) or {}
+            node_data_for_budget = node_lookup.get("data") or {}
+            in_context_value, overflow_meta = maybe_overflow(
+                db,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
+                node_id=node_id,
+                node_data=node_data_for_budget,
+                output=output,
+            )
+            context[node_id] = in_context_value
             _promote_orchestrator_user_reply(context, output)
             log_entry.status = "completed"
             log_entry.completed_at = _utcnow()
             checkpoint_id = _save_checkpoint(db, instance.id, node_id, context)
             # Embed checkpoint_id in the log output so it is queryable via the
             # execution log API even though the Langfuse span has already closed.
-            scrubbed = scrub_secrets(output)
-            log_entry.output_json = (
-                {**(scrubbed or {}), "_checkpoint_id": checkpoint_id}
-                if checkpoint_id
-                else scrubbed
-            )
+            scrubbed = scrub_secrets(in_context_value)
+            log_payload: dict[str, Any] = scrubbed if isinstance(scrubbed, dict) else {"value": scrubbed}
+            if checkpoint_id:
+                log_payload = {**log_payload, "_checkpoint_id": checkpoint_id}
+            if overflow_meta:
+                log_payload = {**log_payload, **overflow_meta}
+            log_entry.output_json = log_payload
         elif status == "suspended":
             log_entry.status = "suspended"
             instance.status = "suspended"

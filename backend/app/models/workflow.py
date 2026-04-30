@@ -207,6 +207,45 @@ class InstanceCheckpoint(Base):
     )
 
 
+class NodeOutputArtifact(Base):
+    """CTX-MGMT.A — durable side-channel for node outputs that exceed
+    the per-node ``contextOutputBudget`` (default 64 kB).
+
+    When a node's output is too large to safely keep inline in
+    ``context[node_id]`` (where it would be persisted to
+    ``instance.context_json``, written to every checkpoint, and
+    serialized into every downstream Jinja rendering), the engine
+    persists the full output here and replaces the in-context value
+    with a small stub — ``{"_overflow": True, "summary": "...",
+    "_artifact_id": "<uuid>", "size_bytes": N, "preview": {...}}``.
+
+    The copilot's ``inspect_node_artifact`` runner tool reads this
+    table to surface the full payload when the user asks for details.
+    Cascade-deleted with the parent WorkflowInstance, RLS tenant-
+    scoped via the standard ``app.tenant_id`` GUC policy.
+    """
+
+    __tablename__ = "node_output_artifacts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(64), nullable=False, index=True)
+    instance_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_instances.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id = Column(String(128), nullable=False)
+    output_json = Column(JSONB, nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    budget_bytes = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_artifact_instance_node", "instance_id", "node_id"),
+        Index("ix_artifact_tenant_created", "tenant_id", "created_at"),
+    )
+
+
 class ApprovalAuditLog(Base):
     """HITL-01.a — one row per human-in-the-loop approval event.
 

@@ -725,6 +725,8 @@ RUNNER_TOOL_NAMES = {
     "replay_node_with_overrides",
     "evaluate_run",
     "suggest_issue_filing",
+    # CTX-MGMT.A — overflow artifact inspection
+    "inspect_node_artifact",
 }
 
 
@@ -1002,6 +1004,10 @@ def dispatch(
         )
     if tool_name == "suggest_issue_filing":
         return suggest_issue_filing(
+            db, tenant_id=tenant_id, draft=draft, args=args,
+        )
+    if tool_name == "inspect_node_artifact":
+        return inspect_node_artifact(
             db, tenant_id=tenant_id, draft=draft, args=args,
         )
     raise KeyError(tool_name)
@@ -3023,4 +3029,120 @@ def suggest_issue_filing(
         ],
         "repo": cfg["repo"],
         "labels": cfg["labels"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.A — inspect_node_artifact
+# ---------------------------------------------------------------------------
+
+
+def inspect_node_artifact(
+    db: Session,
+    *,
+    tenant_id: str,
+    draft: WorkflowDraft,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch the full output payload for a node whose in-context value
+    is an overflow stub (CTX-MGMT.A).
+
+    When a node's output exceeded the per-node ``contextOutputBudget``,
+    the engine replaced ``context[node_id]`` with a small stub
+    ``{"_overflow": True, "_artifact_id": "<uuid>", ...}`` and persisted
+    the full output to ``node_output_artifacts``. This tool reads that
+    table and returns the original output so the agent can answer
+    "show me what node X actually produced" questions.
+
+    Args
+    ----
+    ::
+
+        {
+          "instance_id": "<uuid>",   # required — copilot-ephemeral instance
+          "node_id": "<id>",         # required — the overflowed node
+        }
+
+    Same ephemeral-only safety as ``get_execution_logs`` —
+    production instances are not readable from the copilot tool surface.
+
+    Returns
+    -------
+    ::
+
+        {
+          "instance_id": "...",
+          "node_id": "...",
+          "size_bytes": N,
+          "budget_bytes": M,
+          "output_json": <full payload>,
+          "created_at": "..."
+        }
+
+    Or ``{"error": "..."}`` if the artifact doesn't exist (the node
+    didn't overflow, or the instance was production).
+    """
+    from app.models.workflow import (
+        NodeOutputArtifact,
+        WorkflowDefinition,
+        WorkflowInstance,
+    )
+
+    instance_id = args.get("instance_id")
+    node_id = args.get("node_id")
+    if not instance_id or not node_id:
+        return {"error": "inspect_node_artifact requires 'instance_id' and 'node_id'"}
+    try:
+        instance_uuid = uuid.UUID(str(instance_id))
+    except ValueError:
+        return {"error": f"inspect_node_artifact: invalid instance_id {instance_id!r}"}
+
+    instance = (
+        db.query(WorkflowInstance)
+        .filter_by(id=instance_uuid, tenant_id=tenant_id)
+        .first()
+    )
+    if instance is None:
+        return {"error": f"Instance {instance_id!r} not found for this tenant"}
+
+    wd = (
+        db.query(WorkflowDefinition)
+        .filter_by(id=instance.workflow_def_id, tenant_id=tenant_id)
+        .first()
+    )
+    if wd is None or not wd.is_ephemeral:
+        return {
+            "error": (
+                "inspect_node_artifact only supports copilot-initiated "
+                "(ephemeral) instances."
+            ),
+        }
+
+    artifact = (
+        db.query(NodeOutputArtifact)
+        .filter_by(
+            tenant_id=tenant_id,
+            instance_id=instance_uuid,
+            node_id=str(node_id),
+        )
+        .order_by(NodeOutputArtifact.created_at.desc())
+        .first()
+    )
+    if artifact is None:
+        return {
+            "error": (
+                f"No overflow artifact for node {node_id!r} on instance "
+                f"{instance_id!r}. The node may not have exceeded its "
+                "contextOutputBudget — its output is fully inline in "
+                "context_json. Use get_execution_logs to see it."
+            ),
+        }
+
+    return {
+        "instance_id": str(instance_uuid),
+        "node_id": artifact.node_id,
+        "size_bytes": artifact.size_bytes,
+        "budget_bytes": artifact.budget_bytes,
+        "output_json": artifact.output_json,
+        "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
     }
