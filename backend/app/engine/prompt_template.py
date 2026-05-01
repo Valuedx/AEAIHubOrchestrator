@@ -219,11 +219,54 @@ def build_structured_context_block(
     *,
     exclude_node_ids: set[str] | None = None,
     max_tokens: int = _DEFAULT_CONTEXT_TOKEN_BUDGET,
+    node_data: dict | None = None,
+    nodes_map: dict | None = None,
 ) -> str:
-    """Assemble non-conversation context into a token-budgeted block."""
+    """Assemble non-conversation context into a token-budgeted block.
+
+    CTX-MGMT.C v2.c — when the dispatching node declares
+    ``dependsOn``, the per-turn user message bundle only emits the
+    JSON dump for declared deps (and their ``exposeAs`` aliases).
+    ``trigger`` and ``_loop_item`` are always emitted regardless of
+    scope — they're infrastructure inputs to the turn, not node
+    outputs. ``node_data`` and ``nodes_map`` may be passed
+    explicitly; otherwise fall through to the runner's per-thread
+    stash + ``context['_engine_nodes_map']`` (same convention as
+    ``render_prompt``).
+    """
     parts: list[str] = []
     remaining = max_tokens
     excluded = exclude_node_ids or set()
+
+    # CTX-MGMT.C v2.c — resolve scope. Falls through to engine
+    # stashes set by the runner around each ``dispatch_node`` call.
+    if node_data is None:
+        from app.engine.scope import get_current_node_data
+        node_data = get_current_node_data()
+    if nodes_map is None:
+        nodes_map = context.get("_engine_nodes_map")
+
+    from app.engine.scope import (
+        collect_alias_index,
+        get_depends_on,
+    )
+    deps = get_depends_on(node_data)
+    if deps is None:
+        # No filter — emit every node_* slot (current behavior).
+        visible_node_ids: set[str] | None = None
+    else:
+        # Visible node ids = declared deps + (transitively) the
+        # node ids resolved from declared aliases. Aliases here
+        # don't add new emissions because the loop only emits
+        # node_* keys, but resolving deps via alias keeps the
+        # filter symmetric with build_scoped_safe_context.
+        alias_index = collect_alias_index(nodes_map)
+        visible_node_ids = set(deps)
+        # If an alias was somehow declared in deps (rare), resolve
+        # back to its source node id.
+        for d in list(deps):
+            if d in alias_index:
+                visible_node_ids.add(alias_index[d])
 
     trigger = context.get("trigger")
     if trigger and remaining > 0:
@@ -246,6 +289,10 @@ def build_structured_context_block(
 
     for key, value in context.items():
         if not key.startswith("node_") or key in excluded or remaining <= 0:
+            continue
+        # CTX-MGMT.C v2.c — when scope is enforced, drop slots that
+        # aren't in the declared dependsOn list.
+        if visible_node_ids is not None and key not in visible_node_ids:
             continue
         summary = json.dumps(value, indent=2, default=str)
         block = f"**Output of {key}:**\n```json\n{summary}\n```"
