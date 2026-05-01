@@ -35,6 +35,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | **Shipped** (branch `ctx-mgmt-m-forgetting`) | — | 2026-05-01 |
 | **M2** | Beat-task wiring for `prune_aged_checkpoints` (daily sweep) | P3 | **Shipped** (branch `ctx-mgmt-m2-beat-prune`) | — | 2026-05-01 |
 | **J v2** | distillBlocks ride per-turn user message (cache-stable system prompt) | P2 | **Shipped** (branch `ctx-mgmt-j2-distill-cache`) | — | 2026-05-01 |
+| **H v2** | Context-trace reads + misses (sampled reads, every miss recorded) | P2 | **Shipped** (branch `ctx-mgmt-h2-context-trace-reads`) | — | 2026-05-01 |
 
 **Status vocabulary.** `Not started` → `In design` → `In progress` → `Shipped` → `Verified` (when post-merge eval / soak confirms the fix). A `Walked back` state exists for items the literature contradicts; we removed one (E.original — see §6).
 
@@ -418,7 +419,7 @@ Renders as a labelled section appended to the system prompt::
 - `dag_runner._execute_single_node` calls `record_write(...)` after each context assignment on BOTH the sequential and parallel-branch paths. Each event records the configured reducer (CTX-MGMT.L) and whether the write overflowed (CTX-MGMT.A).
 - New copilot runner tool `inspect_context_flow(instance_id, key?)` — same ephemeral-only safety as `get_execution_logs`. Returns `{instance_id, key_filter, event_count, events: [...]}`. Supports exact match and `key_prefix*` filtering.
 
-**v2 (deferred).** Read-event tracking and miss-event tracking. Reads were intentionally skipped — one Jinja prompt can hit hundreds of attribute reads, and the volume blows the 500-cap easily. Misses need Jinja AST work (track template variable resolution failures); the missing-key story is better served by `lint_jinja_dangling_reference` (CTX-MGMT.B) at promote time, complementary to runtime tracing. v2 will add read-event tracking with sampling + the lint at promote time.
+**v2 (deferred — now shipped, see H v2 below).** Read-event tracking and miss-event tracking. v2 ships these with sampling for reads (1-in-10 by default) and no sampling for misses.
 
 **Tests (1120 passed, 1 skipped after this slice — was 1101).**
 - New `tests/test_context_trace.py` (19 tests):
@@ -430,6 +431,32 @@ Renders as a labelled section appended to the system prompt::
   - `fetch_events_for_instance` (serialised event shape, ts isoformat, prefix filter applies LIKE match).
 
 **Refs.** Anthropic — *"context engineering is the set of strategies for curating and maintaining the optimal set of tokens"*. Observability is what enables that curation in practice.
+
+### H v2. Read + miss event tracing — **Shipped 2026-05-01**
+
+**Gap.** v1 only knew where each slot was *written*. The questions "is this slot ever read by anything?" and "which Jinja refs are silently rendering to empty string at runtime?" had no instrumented answer — only static lints. Static lints (CTX-MGMT.B) catch authoring-time typos but miss runtime drift (e.g. a node renamed in a sub-workflow whose templates still ref the old id, when the static lint can't see across sub-workflow boundaries).
+
+**What shipped (branch `ctx-mgmt-h2-context-trace-reads`).**
+- `app/engine/context_trace.py` gains three new public helpers: `record_read`, `record_miss`, `flush_render_events`. Same fast-no-op-when-disabled contract as `record_write`. New `_record_event` internal coalesces row construction with cap-check + trim shared between op types.
+- `app/engine/prompt_template.py` gains a thread-local `_render_state.pending` capture buffer. `render_prompt` initialises the buffer at entry (only when `_runtime["context_trace_enabled"]` is true), accumulates `(op, key)` tuples during render, then merges them into `_runtime["_pending_render_events"]` in a `finally` block. Thread-local state is cleared after every render — no leakage outside the render scope.
+- `_DotDict.__getattr__` records `("read", name)` on success, `("miss", name)` on KeyError. Skips dunder / sentinel names (`_*`) to avoid noise from Jinja's internal probing.
+- `_PermissiveUndefined.__init__(name=...)` records `("miss", name)` for top-level undefined name lookups (Jinja constructs `_PermissiveUndefined("unknown_var")` when `{{ unknown_var }}` is rendered against a namespace that doesn't have it).
+- `_PermissiveUndefined.__getattr__` and `__getitem__` record the chained-access miss key.
+- `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel) call `flush_render_events(...)` immediately after `record_write(...)`. The flush applies sampling (1-in-N reads, every miss) and dedupe (consecutive identical events from one render → one row).
+
+**Sampling.** `DEFAULT_READ_SAMPLE_N = 10`. Configurable via `_runtime["context_trace_read_sample_n"]` (operator can stamp a different value; future tenant policy hook is straightforward). The sample counter persists across flushes within a run, so we don't double-count when the same key shows up in multiple renders. Explicit 0 or negative is treated as "no sampling, emit every read"; missing / non-numeric falls through to the default. Misses are NEVER sampled — they're high-signal and low-volume by construction.
+
+**Volume.** A typical 28-node V10-shape graph does ~5 renders/node × 28 nodes = 140 attribute reads per turn. At 1/10 sampling that's ~14 read events per turn. The 500-cap stays comfortable across multi-turn conversations even with full read tracing on.
+
+**Tests (1369 passed, 1 skipped after this slice — was 1345).**
+- New `tests/test_context_trace_reads.py` (24 tests):
+  - Disabled fast-path — `record_read` / `record_miss` touch zero DB when `_runtime` is missing or flag is off.
+  - Enabled path — both helpers emit rows with correct `op`. Neither raises on DB error.
+  - `flush_render_events` — no-op without runtime, no-op without pending events, drains buffer when disabled, every miss emitted, reads sampled 1-in-N, dedupe collapses consecutive identical events, invalid event shapes skipped, sample counter persists across flushes.
+  - `render_prompt` capture — no capture when tracing disabled, no capture when runtime missing, top-level read captured, top-level miss captured, attr miss on existing dict captured, chained miss on undefined captured, multiple renders accumulate, thread-local cleared after render (verified via direct state inspection).
+  - Sample-N edge cases — default constant is positive, explicit 0/negative falls through to "emit every read".
+
+**Refs.** Anthropic — *"observability is the prerequisite for ongoing context curation"*. The runtime trace + the static lint together form a closed-loop authoring story (lint catches obvious bugs at promote time; trace surfaces drift bugs that the lint can't see).
 
 ### M. Forgetting / decay — **Shipped 2026-05-01**
 
@@ -559,3 +586,4 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | **CTX-MGMT.L shipped** on branch `ctx-mgmt-l-reducers` (stacked on `ctx-mgmt-a-overflow`). New `app/engine/reducers.py` with `KNOWN_REDUCERS` registry (6 entries: `overwrite`/`append`/`merge`/`max`/`min`/`counter`) + pure helpers `resolve_reducer` and `apply_reducer`. Wired into `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel-branch) — fires AFTER the overflow check so the overflow stub composes correctly with reducers. `app/engine/config_validator.py` gains `_validate_output_reducer` (rejects unknown names) and `_validate_output_budget` (rejects non-positive budgets) at promote time. Default `overwrite` keeps every existing graph identical; new reducers unlock parallel-branch aggregation, audit trails, counters, max/min trackers without ad-hoc handler code. 44 new unit tests; full backend suite 1101 passed (was 1057). Deferred sub-task: refactoring ForEach + Loop body aggregation to use reducers — invasive, current semantics work, current reducers already add value for new patterns. |
 | 2026-05-01 | **CTX-MGMT.M2 shipped** on branch `ctx-mgmt-m2-beat-prune` (off merged core). Beat schedule entry `prune-aged-checkpoints` registered in `app/workers/scheduler.py` at `crontab(hour=4, minute=0)` (avoids the 03:00/03:30 prune slots). New Celery task `orchestrator.prune_aged_checkpoints` enumerates every tenant with checkpoints via `distinct(WorkflowInstance.tenant_id) JOIN InstanceCheckpoint`, calls `forgetting.prune_aged_checkpoints(db, tenant_id=…)` per tenant so each honors its own `checkpoint_retention_days` policy. Per-tenant exception → log+rollback+continue (one bad tenant never breaks the daily sweep); top-level enumeration failure → log+rollback+exit cleanly (Beat retries next tick). 5 new unit tests; 1337 backend tests pass (was 1332). Closes the v2 follow-up flagged in the M section. |
 | 2026-05-01 | **CTX-MGMT.J v2 shipped** on branch `ctx-mgmt-j2-distill-cache` (off merged core). `assemble_agent_messages` gains `distill_text: str = ""` kwarg. `_handle_agent` and `run_react_loop` stop appending rendered distill into the system prompt — they now pass it through to the assembler where it lands on the per-turn user message (memory-disabled path: alongside the structured workflow block; memory-enabled path: as a `final_sections` entry alongside facts / semantic hits / latest user message). System message becomes byte-stable across turns regardless of distill content drift, so provider prefix caches (Anthropic / Vertex / OpenAI) actually hit. Source-inspection regression test guards both handler wires against future regressions. 8 new unit tests including a direct cache-stability proof; 1345 backend tests pass (was 1337). Closes the v2 follow-up flagged in J's "what's NOT in v1" list. |
+| 2026-05-01 | **CTX-MGMT.H v2 shipped** on branch `ctx-mgmt-h2-context-trace-reads` (off merged core). `context_trace.py` gains `record_read`, `record_miss`, `flush_render_events` helpers (same fast-no-op contract as v1's `record_write`). `prompt_template.py` adds a thread-local capture buffer wired into `_DotDict.__getattr__` (read/miss on dict lookup), `_PermissiveUndefined.__init__` (top-level undefined name miss), and `_PermissiveUndefined.__getattr__`/`__getitem__` (chained miss); `render_prompt` accumulates events on `_runtime["_pending_render_events"]` only when tracing is on. `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel) call `flush_render_events` after `record_write`, applying 1-in-N read sampling (DEFAULT_READ_SAMPLE_N=10, tunable via `_runtime["context_trace_read_sample_n"]`) and consecutive-event dedupe. Misses are never sampled. Sample counter persists across flushes within a run. 24 new unit tests; 1369 backend tests pass (was 1345). Closes the v2 follow-up flagged in H v1's "what's NOT in v1" note. |

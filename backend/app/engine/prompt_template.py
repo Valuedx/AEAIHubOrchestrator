@@ -15,12 +15,30 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any
 
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, Undefined
 
 logger = logging.getLogger(__name__)
 _DEFAULT_CONTEXT_TOKEN_BUDGET = 1200
+
+# CTX-MGMT.H v2 — per-render thread-local capture of read/miss events.
+# Set by ``render_prompt`` for the duration of a single render (only
+# when tracing is enabled for the instance), consumed by the
+# ``_DotDict`` and ``_PermissiveUndefined`` __getattr__/__getitem__
+# hooks. Events are then stashed on ``_runtime['_pending_render_events']``
+# for the runner to flush via ``context_trace.flush_render_events``.
+_render_state = threading.local()
+
+
+def _capture(op: str, key: str) -> None:
+    """Append one (op, key) tuple to the active render's capture list,
+    if any. No-op when no render is active or capture is off."""
+    pending = getattr(_render_state, "pending", None)
+    if pending is None or not isinstance(key, str) or not key:
+        return
+    pending.append((op, key))
 
 
 def count_prompt_tokens(text: str) -> int:
@@ -58,6 +76,17 @@ def truncate_to_tokens(text: str, max_tokens: int) -> str:
 class _PermissiveUndefined(Undefined):
     """Returns empty string for missing variables instead of raising."""
 
+    def __init__(self, hint=None, obj=None, name=None, exc=None):
+        # Jinja constructs this with a name when a top-level lookup
+        # fails. CTX-MGMT.H v2 — that's a miss; capture it.
+        try:
+            super().__init__(hint=hint, obj=obj, name=name, exc=exc)  # type: ignore[arg-type]
+        except TypeError:
+            # Older Jinja signature compatibility.
+            super().__init__()
+        if name:
+            _capture("miss", str(name))
+
     def __str__(self) -> str:
         return ""
 
@@ -68,9 +97,14 @@ class _PermissiveUndefined(Undefined):
         return False
 
     def __getattr__(self, name: str) -> "_PermissiveUndefined":
+        # CTX-MGMT.H v2 — chained access on an undefined: still a miss.
+        if not name.startswith("_"):
+            _capture("miss", name)
         return _PermissiveUndefined()
 
-    def __getitem__(self, name: str) -> "_PermissiveUndefined":
+    def __getitem__(self, name: Any) -> "_PermissiveUndefined":
+        # CTX-MGMT.H v2 — bracket-access on an undefined: still a miss.
+        _capture("miss", str(name))
         return _PermissiveUndefined()
 
 
@@ -86,11 +120,18 @@ class _DotDict(dict):
     """Dict subclass that allows attribute-style access for Jinja2 templates."""
 
     def __getattr__(self, name: str) -> Any:
+        # CTX-MGMT.H v2 — capture reads + misses against the dict's
+        # immediate key. Skip dunder / sentinel names to avoid noise
+        # from Jinja's internal probing.
         try:
             val = self[name]
-            return _wrap(val)
         except KeyError:
+            if not name.startswith("_"):
+                _capture("miss", name)
             return _PermissiveUndefined()
+        if not name.startswith("_"):
+            _capture("read", name)
+        return _wrap(val)
 
 
 def _wrap(value: Any) -> Any:
@@ -107,11 +148,24 @@ def render_prompt(template_str: str, context: dict[str, Any]) -> str:
 
     Wraps dict values so they're dot-accessible in templates:
         {{ node_1.response }} instead of {{ node_1["response"] }}
+
+    CTX-MGMT.H v2 — when context tracing is enabled for this
+    instance (``_runtime['context_trace_enabled']``), reads and
+    misses encountered during render are appended to
+    ``_runtime['_pending_render_events']`` for the runner to flush
+    after the per-node post-handler pipeline. Disabled by default;
+    fast no-op when off.
     """
     if not template_str or ("{{" not in template_str and "{%" not in template_str):
         return template_str
 
     safe_context = {k: _wrap(v) for k, v in context.items()}
+
+    runtime = context.get("_runtime") if isinstance(context.get("_runtime"), dict) else None
+    capture_on = bool(runtime and runtime.get("context_trace_enabled"))
+    prior_pending = getattr(_render_state, "pending", None)
+    if capture_on:
+        _render_state.pending = []
 
     try:
         tmpl = _env.from_string(template_str)
@@ -119,6 +173,14 @@ def render_prompt(template_str: str, context: dict[str, Any]) -> str:
     except (TemplateSyntaxError, Exception) as exc:
         logger.warning("Prompt template rendering failed: %s", exc)
         return template_str
+    finally:
+        if capture_on:
+            captured = getattr(_render_state, "pending", []) or []
+            existing = runtime.get("_pending_render_events") or []
+            existing.extend(captured)
+            runtime["_pending_render_events"] = existing
+        # Restore prior thread-local state (handles nested renders).
+        _render_state.pending = prior_pending
 
 
 def build_structured_context_block(

@@ -6,10 +6,22 @@ runner tool to answer "where did node_X come from?" /
 "which node wrote to slot Y?" without forcing the user to scrape
 ``instance.context_json`` by hand.
 
-v1 tracks WRITES only. Reads + misses are deferred to v2 — the
-volume is template-dependent (one Jinja prompt can hit hundreds of
-attribute reads), and the missing-key story is better served by a
-static lint at promote time (CTX-MGMT.B).
+v1 tracked WRITES only.
+
+v2 (2026-05-01) adds READ and MISS events. Reads tell you which
+slots a node's prompts actually consumed (so dead-slot writes
+become observable at runtime, not just statically). Misses tell
+you about Jinja refs that resolved to empty string at runtime —
+the runtime augment to CTX-MGMT.B's static lint.
+
+Read volume is template-dependent — one Jinja prompt can hit
+dozens of attribute reads — so reads are SAMPLED 1-in-N
+(``DEFAULT_READ_SAMPLE_N`` per render-event flush; tunable via
+``_runtime["context_trace_read_sample_n"]``). Misses are NEVER
+sampled — they're rare and high-signal. ``prompt_template.py``
+buffers per-render events on ``_runtime["_pending_render_events"]``
+and the runner calls ``flush_render_events`` after the per-node
+post-handler pipeline.
 
 Gating
 ------
@@ -57,6 +69,13 @@ PER_INSTANCE_TRACE_CAP = 500
 # than deleting one-at-a-time on every overflow write. Reduces DB
 # round-trips for chatty instances.
 TRACE_TRIM_BATCH = 50
+
+# CTX-MGMT.H v2 — read sampling default. One in N reads is recorded
+# (per-instance counter, not per-template). Misses are NOT sampled.
+# Tuned to keep a typical 28-node V10-shape graph at < ~50 read
+# events per turn (roughly 5 renders per node × 28 nodes = 140
+# attribute reads; sample at 1/10 = ~14 events).
+DEFAULT_READ_SAMPLE_N = 10
 
 
 def is_trace_enabled(context: dict[str, Any]) -> bool:
@@ -162,6 +181,180 @@ def record_write(
             "context_trace.record_write failed (node=%s, instance=%s): %s",
             node_id, instance_id, exc,
         )
+
+
+def _record_event(
+    db: Session,
+    context: dict[str, Any],
+    *,
+    op: str,
+    tenant_id: str,
+    instance_id: Any,
+    node_id: str,
+    key: str,
+) -> None:
+    """Internal — write one trace row. No flag check (caller's job)."""
+    try:
+        from app.models.workflow import InstanceContextTrace
+
+        runtime = context.setdefault("_runtime", {})
+        last_trimmed_at = int(runtime.get("ctxtrace_count_since_trim", 0))
+        runtime["ctxtrace_count_since_trim"] = last_trimmed_at + 1
+        if last_trimmed_at >= TRACE_TRIM_BATCH:
+            current_count = (
+                db.query(InstanceContextTrace)
+                .filter_by(instance_id=instance_id)
+                .count()
+            )
+            if current_count >= PER_INSTANCE_TRACE_CAP:
+                _trim_oldest(db, instance_id=instance_id)
+            runtime["ctxtrace_count_since_trim"] = 0
+
+        row = InstanceContextTrace(
+            id=_uuid.uuid4(),
+            tenant_id=tenant_id,
+            instance_id=instance_id,
+            node_id=node_id,
+            op=op,
+            key=key,
+            size_bytes=None,
+            reducer=None,
+            overflowed=False,
+        )
+        db.add(row)
+        db.flush()
+    except Exception as exc:
+        logger.warning(
+            "context_trace._record_event failed (op=%s, key=%s, instance=%s): %s",
+            op, key, instance_id, exc,
+        )
+
+
+def record_read(
+    db: Session,
+    context: dict[str, Any],
+    *,
+    tenant_id: str,
+    instance_id: Any,
+    node_id: str,
+    key: str,
+) -> None:
+    """Record a read event. Fast no-op when tracing disabled.
+
+    The caller is responsible for sampling — this records every call
+    it gets. ``flush_render_events`` is the high-volume entrypoint
+    that applies the 1-in-N sample.
+    """
+    if not is_trace_enabled(context):
+        return
+    _record_event(
+        db, context,
+        op="read",
+        tenant_id=tenant_id,
+        instance_id=instance_id,
+        node_id=node_id,
+        key=key,
+    )
+
+
+def record_miss(
+    db: Session,
+    context: dict[str, Any],
+    *,
+    tenant_id: str,
+    instance_id: Any,
+    node_id: str,
+    key: str,
+) -> None:
+    """Record a miss event (a Jinja ref that resolved to empty
+    string). Fast no-op when tracing disabled. NEVER sampled —
+    misses are rare and high-signal.
+    """
+    if not is_trace_enabled(context):
+        return
+    _record_event(
+        db, context,
+        op="miss",
+        tenant_id=tenant_id,
+        instance_id=instance_id,
+        node_id=node_id,
+        key=key,
+    )
+
+
+def flush_render_events(
+    db: Session,
+    context: dict[str, Any],
+    *,
+    tenant_id: str,
+    instance_id: Any,
+    node_id: str,
+) -> None:
+    """Pop ``_runtime['_pending_render_events']`` (set by
+    ``prompt_template.render_prompt`` during render) and emit them
+    with sampling applied to reads.
+
+    Misses are always emitted; reads are sampled 1-in-N where N is
+    ``_runtime['context_trace_read_sample_n']`` (default
+    ``DEFAULT_READ_SAMPLE_N``). The sample counter persists across
+    flushes within a run so we don't double-count the same key
+    (consecutive identical events from one render are deduped before
+    sampling).
+
+    Fast no-op when tracing disabled OR no events queued — but we
+    still pop the pending list so it doesn't grow unbounded across
+    nodes when the runner forgets to flush.
+    """
+    runtime = context.get("_runtime") if isinstance(context, dict) else None
+    if not isinstance(runtime, dict):
+        return
+    events = runtime.pop("_pending_render_events", None) or []
+    if not is_trace_enabled(context):
+        # Drop without emitting — we already cleared the buffer above.
+        return
+    if not events:
+        return
+
+    # Dedupe consecutive identical (op, key) pairs from one render —
+    # nothing is gained by recording the same miss 5× because Jinja
+    # iterated a list 5×.
+    deduped: list[tuple[str, str]] = []
+    for ev in events:
+        if not isinstance(ev, tuple) or len(ev) != 2:
+            continue
+        if deduped and deduped[-1] == ev:
+            continue
+        deduped.append(ev)
+
+    raw_sample = runtime.get("context_trace_read_sample_n")
+    try:
+        sample_n = int(raw_sample) if raw_sample is not None else DEFAULT_READ_SAMPLE_N
+    except (TypeError, ValueError):
+        sample_n = DEFAULT_READ_SAMPLE_N
+    if sample_n < 1:
+        # Explicit 0 / negative = "no sampling, emit every read".
+        sample_n = 1
+    read_counter = int(runtime.get("_read_sample_counter", 0))
+
+    for op, key in deduped:
+        if not isinstance(key, str) or not key:
+            continue
+        if op == "read":
+            read_counter += 1
+            if read_counter % sample_n != 0:
+                continue
+        elif op != "miss":
+            continue
+        _record_event(
+            db, context,
+            op=op,
+            tenant_id=tenant_id,
+            instance_id=instance_id,
+            node_id=node_id,
+            key=key,
+        )
+
+    runtime["_read_sample_counter"] = read_counter
 
 
 def _trim_oldest(db: Session, *, instance_id: Any) -> int:

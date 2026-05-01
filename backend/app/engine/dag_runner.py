@@ -1485,7 +1485,7 @@ def _execute_single_node(
             # if tracing is on for this instance (ephemeral or tenant-
             # opted-in). Fast no-op when disabled. Failure is logged
             # but never raises — observability isn't a correctness gate.
-            from app.engine.context_trace import record_write
+            from app.engine.context_trace import record_write, flush_render_events
             record_write(
                 db, context,
                 tenant_id=instance.tenant_id,
@@ -1494,6 +1494,16 @@ def _execute_single_node(
                 size_bytes=(overflow_meta.get("size_bytes") if overflow_meta else None),
                 reducer=reducer_name,
                 overflowed=bool(overflow_meta),
+            )
+            # CTX-MGMT.H v2 — flush any read/miss events captured by
+            # render_prompt during this node's execution (sampled
+            # for reads, every miss recorded). Fast no-op when no
+            # events queued or tracing disabled.
+            flush_render_events(
+                db, context,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
+                node_id=node_id,
             )
             # CTX-MGMT.K — track per-node size approximation + run
             # compaction pass if cumulative context exceeds threshold.
@@ -1744,7 +1754,7 @@ def _execute_parallel(
             if isinstance(_expose_as_p, str) and _expose_as_p.strip():
                 context[_expose_as_p.strip()] = context[node_id]
             # CTX-MGMT.H — record the write on the parallel path too.
-            from app.engine.context_trace import record_write
+            from app.engine.context_trace import record_write, flush_render_events
             record_write(
                 db, context,
                 tenant_id=instance.tenant_id,
@@ -1753,6 +1763,14 @@ def _execute_parallel(
                 size_bytes=(overflow_meta.get("size_bytes") if overflow_meta else None),
                 reducer=reducer_name,
                 overflowed=bool(overflow_meta),
+            )
+            # CTX-MGMT.H v2 — flush read/miss events from any renders
+            # this branch performed.
+            flush_render_events(
+                db, context,
+                tenant_id=instance.tenant_id,
+                instance_id=instance.id,
+                node_id=node_id,
             )
             # CTX-MGMT.K — same compaction pass on the parallel path.
             from app.engine.compaction import (
