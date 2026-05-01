@@ -825,15 +825,36 @@ def build_graph() -> dict:
     # V10: no allowedToolCategories on the Worker — it needs full access
     # (read + remediation + case + glossary). The HITL gate handles
     # destructive consent; categories are not how that gate is enforced.
+    #
+    # 2026-05-01 — Worker swapped from gemini-2.5-flash to
+    # gemini-3-flash-preview. Eval surfaced turn-1 hallucination on
+    # missing-identifier-business-vague (Worker fabricated workflow
+    # names + failure counts with zero tool calls), which is the
+    # exact "tool-following ceiling" 2.5-flash hits on long
+    # rule-heavy prompts. 3-flash-preview is the model the
+    # auto-memory note pegs as the tool-use hot path.
     nodes.append(_node(
         "node_worker", "ReAct Agent",
         {
             "icon": "repeat",
-            "model": GEMINI_25_FLASH,
+            "model": GEMINI_FLASH,
             "provider": "vertex",
             "tools": [],  # SMART-06 + top-15 semantic filter
             "maxIterations": 5,
+            # 2026-05-01 — temperature 0.2 (was engine-default 0.7).
+            # Eval surfaced fabrication where the Worker invented
+            # workflow names + failure counts with zero tool calls;
+            # high temperature amplifies "creative-but-fake" prose.
+            # 0.2 is the standard production tool-calling sweet spot
+            # (deterministic enough to follow STATIC rules without
+            # collapsing to repetitive output).
+            "temperature": 0.2,
             "systemPrompt": WORKER_PROMPT,
+            # 2026-05-01 (TEMPORARY) — exposeFullIterations: true so
+            # we can see the actual tool calls + reasoning during
+            # diagnostic. Revert to default (summary-only) once the
+            # hallucination root-cause is understood.
+            "exposeFullIterations": True,
         },
         x=1620, y=300, display_name="Ops Worker (ReAct)", category="agent",
     ))
@@ -857,6 +878,13 @@ def build_graph() -> dict:
             "provider": "vertex",
             "tools": [],
             "maxIterations": 2,
+            # 2026-05-01 — temperature 0.1 (was engine-default 0.7).
+            # The Verifier is a read-only critic — its job is to
+            # compare worker output against verifiable evidence,
+            # which is a near-deterministic task. Lower temperature
+            # than the Worker because we want stable verdicts
+            # turn-over-turn, not creative analysis.
+            "temperature": 0.1,
             "systemPrompt": VERIFIER_PROMPT,
             "allowedToolCategories": ["read", "case"],
         },
@@ -914,6 +942,18 @@ def build_graph() -> dict:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--update", metavar="WORKFLOW_ID",
+        help=(
+            "PATCH this existing workflow's graph instead of POSTing a new one. "
+            "Use to iterate on V10 in place so the workflow id stays stable for "
+            "the eval harness baseline."
+        ),
+    )
+    args = parser.parse_args()
+
     graph = build_graph()
     out_path = Path(__file__).parent / "ae_ops_support_workflow_v10.json"
     out_path.write_text(json.dumps(graph, indent=2))
@@ -935,8 +975,16 @@ def main() -> int:
         "graph_json": graph,
     }
     headers = {"X-Tenant-Id": TENANT_ID, "Content-Type": "application/json"}
-    print(f"\nPOST {ORCH_URL}/api/v1/workflows  (tenant={TENANT_ID})")
-    r = httpx.post(f"{ORCH_URL}/api/v1/workflows", json=payload, headers=headers, timeout=30)
+
+    if args.update:
+        # PATCH-in-place — preserves the workflow_id for the eval
+        # baseline; the engine bumps version + writes a snapshot.
+        url = f"{ORCH_URL}/api/v1/workflows/{args.update}"
+        print(f"\nPATCH {url}  (tenant={TENANT_ID})")
+        r = httpx.patch(url, json=payload, headers=headers, timeout=30)
+    else:
+        print(f"\nPOST {ORCH_URL}/api/v1/workflows  (tenant={TENANT_ID})")
+        r = httpx.post(f"{ORCH_URL}/api/v1/workflows", json=payload, headers=headers, timeout=30)
     if r.status_code >= 400:
         print(f"  HTTP {r.status_code}: {r.text}")
         return 1

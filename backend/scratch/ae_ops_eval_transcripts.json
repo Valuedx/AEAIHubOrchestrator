@@ -32,7 +32,8 @@
             "must_end_with_question": true,
             "must_exclude": ["request_id", "workflow_id"],
             "tool_calls_max": 1,
-            "max_iterations": 3
+            "max_iterations": 3,
+            "entity_grounding_required": true
           }
         },
         {
@@ -41,7 +42,8 @@
             "must_not_re_ask": true,
             "tool_family_any": ["ae.workflow", "ae.request"],
             "must_exclude": ["request_id", "workflow_id"],
-            "max_iterations": 6
+            "max_iterations": 6,
+            "entity_grounding_required": true
           }
         },
         {
@@ -50,7 +52,8 @@
             "must_not_re_ask": true,
             "tool_family_any": ["ae.workflow", "ae.request"],
             "must_include_any": ["yesterday", "log analyzer"],
-            "max_iterations": 6
+            "max_iterations": 6,
+            "entity_grounding_required": true
           }
         }
       ]

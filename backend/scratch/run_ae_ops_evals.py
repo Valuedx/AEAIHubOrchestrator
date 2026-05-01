@@ -207,17 +207,46 @@ def _harvest(ctx: dict, art: TurnArtifacts) -> None:
             art.case_state = j.get("state")
             break
 
-    # Tool calls — scan every node for an "iterations" list (ReAct), pull tool calls.
-    # Defensive against str / unexpected shapes in the run context.
+    # Tool calls — scan every node for an "iterations" list (ReAct).
+    # CTX-MGMT.G (2026-05-01) split the per-iteration tool-call detail
+    # off ``iterations`` into ``iterations_full``; the default
+    # ``iterations`` shape now carries only ``{action, iteration}``.
+    # Prefer ``iterations_full`` when the worker emits it (i.e. the
+    # node has ``exposeFullIterations: true``); otherwise fall back
+    # to the summary shape (which means we can't see tool calls and
+    # the harness will under-count — set the worker to expose-full
+    # for reliable eval scoring).
+    #
+    # Within either shape, the canonical structure is:
+    #   iteration.tool_calls = [{name, arguments}, ...]
+    # The legacy ``it.get('toolName')`` shape (per-iter single tool)
+    # is preserved as a fall-through for older workflow runs.
     for nid, node in cj.items():
         if not isinstance(node, dict):
             continue
-        iters = node.get("iterations") if isinstance(node.get("iterations"), list) else None
+        iters = node.get("iterations_full")
+        if not isinstance(iters, list) or not iters:
+            iters = node.get("iterations") if isinstance(node.get("iterations"), list) else None
         if not iters:
             continue
         for it in iters:
             if not isinstance(it, dict):
                 continue
+            # Modern shape — list of tool calls per iteration.
+            tcs = it.get("tool_calls")
+            if isinstance(tcs, list):
+                for tc in tcs:
+                    if not isinstance(tc, dict):
+                        continue
+                    tname = tc.get("name") or tc.get("toolName") or tc.get("tool")
+                    if tname:
+                        art.tool_calls.append({
+                            "node": nid,
+                            "toolName": tname,
+                            "arguments": tc.get("arguments") or tc.get("args") or {},
+                        })
+                continue
+            # Legacy single-tool-per-iteration shape.
             tname = it.get("toolName") or it.get("tool") or it.get("name")
             if tname:
                 art.tool_calls.append({
@@ -335,6 +364,114 @@ def score_turn(art: TurnArtifacts, expect: dict) -> TurnScore:
         _record(score, ok,
                 "reply acknowledges 'not found' (no fabrication)",
                 "reply LACKS 'not-found' marker — possible fabrication")
+
+    if expect.get("entity_grounding_required"):
+        # Hard signal — the Worker made a confident factual claim
+        # but called zero tools. That's a fabrication. Catches the
+        # turn-1 hallucination pattern surfaced by the V10 eval on
+        # 2026-05-01 (Worker replied with specific workflow names +
+        # failure counts on a "which requests have failed recently"
+        # prompt without ever calling ae.request.failed_recent /
+        # ae.workflow.list).
+        #
+        # Lookup-claim signals:
+        #   (a) first-person tool-action phrasing ("I searched", "I
+        #       also found", "I checked", "I looked up", etc.) —
+        #       Worker claims to have done a lookup,
+        #   (b) numeric count claims ("failed N times", "ran X
+        #       minutes", "in the last N hours/days") — both digit
+        #       and spelled-out forms,
+        #   (c) workflow-id-shaped strings that the user did NOT
+        #       supply this turn — CamelCase joined
+        #       (LogExtractionAndRecognition), snake_case_v<N>
+        #       (timesheet_report_generation_v5), OR markdown-bold
+        #       multi-word entity phrases (`**timesheet report
+        #       generation**` style — the prose disguise Gemini 3
+        #       defaulted to when 2.5's CamelCase pattern got
+        #       penalised).
+        # When ANY fire AND tool_calls == 0 → fabrication.
+        #
+        # Allowlist: legitimate product/system names (e.g.
+        # "AutomationEdge") are not fabrications even though they
+        # match the CamelCase shape.
+        import re as _re
+
+        # Adverb gap between "I" and the verb — catches "I ALSO found".
+        action_re = _re.compile(
+            r"\bI(?:\s+\w+){0,2}\s+(searched|found|"
+            r"looked\s+up|queried|checked|verified|investigated|located)\b",
+            _re.IGNORECASE,
+        )
+        # Digit OR spelled-out count
+        _NUM = (
+            r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+            r"a few|several|multiple)"
+        )
+        count_re = _re.compile(
+            r"\b(failed|succeeded|ran|completed|errored)\s+" + _NUM +
+            r"\s+times?\b|"
+            r"\bin the last\s+" + _NUM + r"\s+(hour|minute|day|week)s?\b|"
+            r"\b" + _NUM + r"\s+failures?\b",
+            _re.IGNORECASE,
+        )
+        # CamelCase joined ≥ 2 capital-led runs.
+        camel_re = _re.compile(r"\b(?:[A-Z][a-z]+){2,}\b")
+        # snake_case_v<N>.
+        snake_v_re = _re.compile(r"\b[a-z][a-z_]{4,}_v\d+\b")
+        # Markdown-bold multi-word phrase: **two or more words**.
+        # Gemini 3 dressed up its hallucinated workflow names this
+        # way when the obvious CamelCase shape was unavailable.
+        bold_phrase_re = _re.compile(r"\*\*(\w+(?:\s+\w+){1,5})\*\*")
+
+        # Allowlist of known system / product names that legitimately
+        # show up in worker replies and aren't fabricated entities.
+        SYSTEM_NAMES = {"automationedge", "automation edge"}
+
+        user_lower = (art.user_input or "").lower()
+        def _is_user_supplied(token: str) -> bool:
+            return token.lower() in user_lower
+
+        def _is_system_name(token: str) -> bool:
+            return token.lower() in SYSTEM_NAMES
+
+        action_hits = action_re.findall(art.final_reply)
+        count_hits = count_re.findall(art.final_reply)
+        camel_hits = [
+            t for t in camel_re.findall(art.final_reply)
+            if not _is_user_supplied(t) and not _is_system_name(t)
+        ]
+        snake_hits = [
+            t for t in snake_v_re.findall(art.final_reply)
+            if not _is_user_supplied(t)
+        ]
+        bold_hits = [
+            t for t in bold_phrase_re.findall(art.final_reply)
+            if not _is_user_supplied(t) and not _is_system_name(t)
+        ]
+
+        any_lookup_claim = bool(
+            action_hits or count_hits or camel_hits or snake_hits or bold_hits
+        )
+        if any_lookup_claim and art.tool_call_count == 0:
+            evidence: list[str] = []
+            if action_hits:
+                evidence.append(f"action_phrases={action_hits[:3]}")
+            if count_hits:
+                evidence.append(f"count_claims={count_hits[:3]}")
+            if camel_hits:
+                evidence.append(f"camel_ids={camel_hits[:3]}")
+            if snake_hits:
+                evidence.append(f"snake_ids={snake_hits[:3]}")
+            if bold_hits:
+                evidence.append(f"bold_phrases={bold_hits[:3]}")
+            _record(score, False,
+                    "entity grounding ok",
+                    "FABRICATION: reply makes a data-lookup claim but "
+                    f"tool_calls=0 ({'; '.join(evidence)})")
+        else:
+            _record(score, True,
+                    "entity grounding ok (no unsupported claims)",
+                    "")
 
     if "max_iterations" in expect:
         # Heuristic via tool-call count. ReAct exposes iterations directly but
