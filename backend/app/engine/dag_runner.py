@@ -474,6 +474,11 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
     # Expose instance_id so node handlers can route LLM tokens to the right Redis channel
     context["_instance_id"] = str(instance.id)
     context["_workflow_def_id"] = str(instance.workflow_def_id)
+    # CTX-MGMT.C v2.a — stash nodes_map so render_prompt can resolve
+    # exposeAs aliases when applying the dependsOn scope filter.
+    # Top-level _* key → stripped by _get_clean_context before any
+    # DB persistence, never crosses the suspend/resume boundary.
+    context["_engine_nodes_map"] = nodes_map
 
     # Sub-workflow recursion detection: build the parent chain if not already
     # present (child instances have parent_chain pre-set under _runtime in
@@ -607,6 +612,8 @@ def resume_graph(
     context: dict[str, Any] = dict(instance.context_json or {})
     _hoist_legacy_runtime(context)
     context["approval"] = approval_payload
+    # CTX-MGMT.C v2.a — re-stash nodes_map on resume too.
+    context["_engine_nodes_map"] = nodes_map
 
     # Apply operator-supplied context overrides (HITL context patch)
     if context_patch:
@@ -672,6 +679,8 @@ def resume_paused_graph(
     _hoist_legacy_runtime(context)
     context.pop("_trace", None)
     context["_instance_id"] = str(instance.id)
+    # CTX-MGMT.C v2.a — re-stash nodes_map on pause-resume too.
+    context["_engine_nodes_map"] = nodes_map
     if context_patch:
         context.update(context_patch)
         logger.info(
@@ -751,6 +760,8 @@ def retry_graph(
     graph = instance.definition.graph_json
     nodes_map, edges = parse_graph(graph)
     forward, reverse, in_degree = _build_graph_structures(nodes_map, edges)
+    # CTX-MGMT.C v2.a — re-stash nodes_map on retry-from-failure too.
+    context["_engine_nodes_map"] = nodes_map
 
     # All nodes whose output is already in context are "already executed"
     already_executed = {
@@ -1400,6 +1411,14 @@ def _execute_single_node(
         input_data=_build_node_input(node_data, context),
     ) as span:
         try:
+            # CTX-MGMT.C v2.a — stash node_data on a thread-local so
+            # render_prompt can read this node's dependsOn / aliases
+            # without each handler having to thread it through.
+            # Thread-local (not context-dict) so the parallel-branch
+            # executor's concurrent dispatches don't race on a
+            # shared context key.
+            from app.engine.scope import set_current_node_data
+            set_current_node_data(node_data)
             output = dispatch_node(node_data, context, instance.tenant_id, db=db)
 
             # CTX-MGMT.F — write-time secret scrub. Runs FIRST in the
@@ -1675,6 +1694,13 @@ def _execute_parallel(
                 input_data=_build_node_input(node_data, context),
             ) as span:
                 try:
+                    # CTX-MGMT.C v2.a — set the per-thread current-
+                    # node stash so render_prompt resolves the
+                    # branch's own dependsOn during this dispatch.
+                    # Thread-local — sibling branches each set their
+                    # own value without racing.
+                    from app.engine.scope import set_current_node_data
+                    set_current_node_data(node_data)
                     output = dispatch_node(node_data, context, instance.tenant_id, db=thread_db)
                     span.update(output={"status": "completed", "has_output": output is not None})
                     return node_id, "completed", output, None

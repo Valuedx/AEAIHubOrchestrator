@@ -143,7 +143,13 @@ def _wrap(value: Any) -> Any:
     return value
 
 
-def render_prompt(template_str: str, context: dict[str, Any]) -> str:
+def render_prompt(
+    template_str: str,
+    context: dict[str, Any],
+    *,
+    node_data: dict | None = None,
+    nodes_map: dict | None = None,
+) -> str:
     """Render a Jinja2 template string with the execution context.
 
     Wraps dict values so they're dot-accessible in templates:
@@ -155,11 +161,36 @@ def render_prompt(template_str: str, context: dict[str, Any]) -> str:
     ``_runtime['_pending_render_events']`` for the runner to flush
     after the per-node post-handler pipeline. Disabled by default;
     fast no-op when off.
+
+    CTX-MGMT.C v2.a — when the dispatching node declares
+    ``dependsOn`` (in its config), the namespace presented to Jinja
+    is filtered to only the declared deps + their ``exposeAs``
+    aliases + non-``node_*`` infrastructure keys. ``node_data`` and
+    ``nodes_map`` may be passed explicitly; otherwise the helper
+    falls back to ``context['_engine_current_node_data']`` and
+    ``context['_engine_nodes_map']`` which the runner stashes
+    around each ``dispatch_node`` call. When ``dependsOn`` is
+    unset (the default), the safe_context is returned unfiltered —
+    backward-compatible for every existing graph.
     """
     if not template_str or ("{{" not in template_str and "{%" not in template_str):
         return template_str
 
-    safe_context = {k: _wrap(v) for k, v in context.items()}
+    # CTX-MGMT.C v2.a — engine stashes both at the dispatch_node
+    # boundary; explicit kwargs win for tests / direct callers.
+    # node_data lives on a thread-local (parallel-branch executor
+    # runs concurrent dispatches against the same context, so a
+    # context-dict stash would race); nodes_map is read-only after
+    # execute_graph builds it once, so it lives on context.
+    if node_data is None:
+        from app.engine.scope import get_current_node_data
+        node_data = get_current_node_data()
+    if nodes_map is None:
+        nodes_map = context.get("_engine_nodes_map")
+
+    from app.engine.scope import build_scoped_safe_context
+    scoped = build_scoped_safe_context(context, node_data, nodes_map)
+    safe_context = {k: _wrap(v) for k, v in scoped.items()}
 
     runtime = context.get("_runtime") if isinstance(context.get("_runtime"), dict) else None
     capture_on = bool(runtime and runtime.get("context_trace_enabled"))
