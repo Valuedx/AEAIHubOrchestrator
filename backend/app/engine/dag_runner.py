@@ -508,6 +508,23 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
         runtime["context_compaction_enabled"] = resolve_compaction_flag(
             db, tenant_id=instance.tenant_id,
         )
+    # CTX-MGMT.F — resolve secret-scrub flag (default ON, opt out via
+    # tenant_policies.context_secret_scrub_enabled). Per-write
+    # check is a dict lookup; resolution is one-time at run start.
+    if "context_secret_scrub_enabled" not in runtime:
+        try:
+            from app.engine.tenant_policy_resolver import get_effective_policy
+            policy = get_effective_policy(instance.tenant_id)
+            runtime["context_secret_scrub_enabled"] = bool(
+                getattr(policy, "context_secret_scrub_enabled", True)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "context_secret_scrub: tenant policy lookup failed for "
+                "tenant=%r (%s); defaulting scrub ON",
+                instance.tenant_id, exc,
+            )
+            runtime["context_secret_scrub_enabled"] = True
 
     det_tag = ["deterministic"] if deterministic_mode else []
     with trace_workflow(
@@ -1365,6 +1382,17 @@ def _execute_single_node(
         try:
             output = dispatch_node(node_data, context, instance.tenant_id, db=db)
 
+            # CTX-MGMT.F — write-time secret scrub. Runs FIRST in the
+            # post-handler pipeline so every downstream step (schema
+            # validation, overflow artifact, reducer, alias, trace,
+            # compaction) sees the scrubbed value. Key-based:
+            # `password`/`token`/`api_key`/etc. whole-value redacted.
+            # Tenant-policy opt-out via context_secret_scrub_enabled
+            # (default ON). The scrubber is pure/functional — original
+            # `output` reference unchanged.
+            if _get_runtime(context).get("context_secret_scrub_enabled", True):
+                output = scrub_secrets(output)
+
             # CTX-MGMT.I — validate handler output against the node's
             # declared `outputSchema` (JSON Schema, optional). Soft by
             # default: failures stamp `_schema_mismatch` on the
@@ -1631,6 +1659,13 @@ def _execute_parallel(
         results[node_id] = status
         log_entry = log_entries[node_id]
         if status == "completed" and output is not None:
+            # CTX-MGMT.F — write-time secret scrub on the parallel
+            # path too. Same FIRST-in-pipeline ordering so every
+            # downstream step (schema, overflow, reducer, alias,
+            # trace, compaction) sees the scrubbed value.
+            if _get_runtime(context).get("context_secret_scrub_enabled", True):
+                output = scrub_secrets(output)
+
             # CTX-MGMT.I — schema validation on the parallel path too.
             from app.engine.output_schema import (
                 annotate_output_with_validation,

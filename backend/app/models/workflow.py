@@ -587,6 +587,15 @@ class TenantPolicy(Base):
     context_compaction_enabled = Column(
         Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
     )
+    # CTX-MGMT.F — opt-out of write-time secret scrubbing. Default
+    # TRUE (close-leak by default). The scrubber is key-based —
+    # values whose key matches `password` / `token` / `api_key` etc.
+    # are redacted before downstream nodes can read them via Jinja.
+    # Already runs on log writes (since 0001); this flag controls
+    # whether it also runs at context-write time.
+    context_secret_scrub_enabled = Column(
+        Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
+    )
     # MODEL-01.e — per-tenant model defaults + family allowlist.
     # Nullable so tenants that never open the model row in the policy
     # dialog keep the registry's global defaults untouched. See

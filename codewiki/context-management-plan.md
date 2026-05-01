@@ -30,7 +30,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **G** | ReAct iterations summary vs full split | P1 | **Shipped** (branch `ctx-mgmt-g-iterations-split`) | — | 2026-05-01 |
 | **I** | `outputSchema` on every node (not just trigger) | P2 | **Shipped** (branch `ctx-mgmt-i-output-schema`) | — | 2026-05-01 |
 | **J** | First-class `distillBlocks` for context distillation | P2 | **Shipped** (branch `ctx-mgmt-j-distill`) | — | 2026-05-01 |
-| **F** | Scrub-secrets at write-time, not just log-time | P2 | Not started | — | — |
+| **F** | Scrub-secrets at write-time, not just log-time | P2 | **Shipped** (branch `ctx-mgmt-f-write-scrub`) | — | 2026-05-01 |
 | **H** | `context_trace` runtime channel + copilot inspector | P2 | **Shipped** (branch `ctx-mgmt-h-context-trace`) | — | 2026-05-01 |
 | **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | Not started | — | — |
 
@@ -351,11 +351,31 @@ Renders as a labelled section appended to the system prompt::
 
 **Refs.** Anthropic — *"structured note-taking"* as a context-pollution mitigation. The V10 prompt-craft scan that drove the original CTX-MGMT plan called this out explicitly.
 
-### F. Scrub-secrets at write-time
+### F. Scrub-secrets at write-time — **Shipped 2026-05-01**
 
-**Gap.** `scrub_secrets` only runs on log writes; in-memory context can carry secrets that downstream LLM nodes can pull via Jinja.
+**Gap.** `scrub_secrets` only ran on log writes; in-memory context could carry secrets that downstream LLM nodes pulled via Jinja, leaking auth tokens / passwords / API keys into prompts.
 
-**Plan.** Run `scrub_secrets` on `context[node_id] = output` write, in `_execute_single_node` (line 1220). Adds CPU cost but closes the leak vector. Pair with V10's redaction patterns (`runner_tools._SECRET_PATTERNS`) so the engine and copilot share one secret dictionary.
+**What shipped (branch `ctx-mgmt-f-write-scrub`).**
+- Migration `0038`: `tenant_policies.context_secret_scrub_enabled BOOLEAN NOT NULL DEFAULT TRUE`. Default-on (close-leak by default); tenants needing un-scrubbed in-memory context can opt out.
+- `dag_runner.execute_graph` resolves the flag once at run start and stamps `_runtime["context_secret_scrub_enabled"]` (which survives suspend/resume via CTX-MGMT.D's hoist).
+- `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel) run `scrub_secrets(output)` FIRST in the post-handler pipeline — BEFORE schema validation (CTX-MGMT.I), overflow check (CTX-MGMT.A), reducer (CTX-MGMT.L), alias (CTX-MGMT.C), trace (CTX-MGMT.H), or compaction (CTX-MGMT.K). So every downstream step (including artifact storage and schema-error annotations) sees the scrubbed value.
+- The scrubber itself (`app/engine/scrubber.py`) is the existing key-based redactor that's been on log writes since 0001 — same regex / sensitive-suffix logic. No new pattern set introduced; the engine and the existing log scrubber share one source of truth.
+- Pure/functional — original `output` reference unchanged; the in-context value is the scrubbed copy.
+
+**Tests (1316 passed, 1 skipped after this slice — was 1302).**
+- New `tests/test_write_scrub.py` (14 tests):
+  - Scrubber smoke (api_key / token / nested headers / list walk / non-mutation of input).
+  - Runtime flag (default ON, explicit ON/OFF respected, missing-runtime defaults ON).
+  - End-to-end post-handler shape (token gets scrubbed; opt-out preserves raw; scrubbed value round-trips through overflow stub so the persisted artifact is also scrubbed; non-dict outputs unchanged).
+  - **Pipeline-order regression test** — loads `dag_runner.py` source and asserts the scrub marker comes BEFORE the schema validation marker. Catches future refactors that might silently move scrub below schema validation (which would leak secrets into schema-error annotations).
+
+**Order rationale.** Scrub runs FIRST because:
+- Schema validation post-scrub reports field-shape errors on scrubbed values (`[REDACTED]` is still a string, so most enum/type checks survive); pre-scrub would stamp raw secrets into `_schema_errors`.
+- Overflow artifacts persist the scrubbed value, so `inspect_node_artifact` callers don't see secrets.
+- Trace records carry scrubbed-value `size_bytes`, not raw.
+- Compaction stub previews use canonical scalar keys from the scrubbed value.
+
+**Refs.** Anthropic — *"context engineering is the set of strategies for curating and maintaining the optimal set of tokens"*. Removing leaked secrets from agent prompts is part of curation.
 
 ### H. `context_trace` runtime channel — **Shipped 2026-05-01 (v1: writes only)**
 
@@ -462,6 +482,7 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |
 | 2026-05-01 | **CTX-MGMT.A shipped** on branch `ctx-mgmt-a-overflow` (stacked on `ctx-mgmt-d-runtime`). New `node_output_artifacts` table (migration 0035) + RLS + indexes. `app/engine/output_artifact.py` with pure helpers (`estimate_output_size`, `resolve_budget`, `should_overflow`, `materialize_overflow_stub`, `persist_artifact`, `maybe_overflow`). Wired into `dag_runner._execute_single_node` on both sequential and parallel-branch paths — on overflow the artifact is INSERTed and the in-context value becomes a small stub preserving canonical scalar keys (`id`, `status`, `error`, `branch`, etc.) so downstream Jinja still resolves. New copilot runner tool `inspect_node_artifact` (same ephemeral-only safety as `get_execution_logs`). 28 new unit tests + Jinja round-trip tests. Full backend suite 1057 passed (was 1029). Defaults: 64 kB per-node budget, 256 kB hard ceiling, per-node `contextOutputBudget` override. Deferred sub-task: `_save_checkpoint` delta writes — separate optimisation that can land independently. |
 | 2026-05-01 | **P1 stack merged into core** via fast-forward of `ctx-mgmt-c-scope` (linear stack of B/G/E/C). Backend suite 1229 passed on merged core. |
+| 2026-05-01 | **CTX-MGMT.F shipped** on branch `ctx-mgmt-f-write-scrub` (stacked on `ctx-mgmt-j-distill`). Migration 0038: `tenant_policies.context_secret_scrub_enabled` DEFAULT TRUE. Engine wires `scrub_secrets(output)` as the FIRST post-handler step in `_execute_single_node` (both sequential + parallel paths), before schema / overflow / reducer / alias / trace / compaction so every downstream step sees the scrubbed value (including persisted artifacts). Reuses the existing key-based scrubber from `app/engine/scrubber.py` — no new pattern set. 14 new unit tests including a source-inspection guard against future ordering regressions; 1316 backend tests pass (was 1302). |
 | 2026-05-01 | **CTX-MGMT.J shipped** on branch `ctx-mgmt-j-distill` (stacked on `ctx-mgmt-i-output-schema`). New `app/engine/distill.py` with `walk_dotted_path` + `render_one_block` + `render_distill_blocks` + `validate_distill_blocks`. Three formats: bullet (default), numbered, json. Wired into LLM Agent (`_handle_agent`) and ReAct (`run_react_loop`) — appends rendered blocks to the system prompt after `render_prompt`. Validator catches missing fromPath / unknown format / non-int limit at promote time. Generalises V10's manual `RECENT TOOL FINDINGS` Jinja-block pattern into one-line config. 40 new unit tests; 1302 backend tests pass (was 1262). Separate-cacheable-user-message variant deferred (current version appends to system prompt, which is already cache-friendly under our prefix-cache setup). |
 | 2026-05-01 | **CTX-MGMT.I shipped** on branch `ctx-mgmt-i-output-schema` (off merged core). New `app/engine/output_schema.py` with `validate_node_output` (uses jsonschema.Draft202012Validator) + `schema_paths` + `schema_allows_path` + `annotate_output_with_validation`. Wired into `_execute_single_node` on both paths — validates handler output against `data.config.outputSchema` post-dispatch; soft-annotates failures with `_schema_mismatch` by default, raises `OutputSchemaError` when `outputSchemaStrict: true`. Validator catches malformed JSON Schemas at promote time. Lint extension `jinja_ref_path_not_in_schema` (warn) catches Jinja refs to fields outside the declared schema's properties. Latent fix in `extract_node_refs` — now accepts `aliases` set so alias-based refs (`{{ case.foo }}`) are captured (pre-fix, the dangling-ref lint silently missed them; some prior tests were vacuously passing). 33 new unit tests; 1262 backend tests pass (was 1229). |
 | 2026-05-01 | **CTX-MGMT.C v1 shipped** on branch `ctx-mgmt-c-scope` (stacked on `ctx-mgmt-e-coalesce`). All four P1 items now done. v1 ships exposeAs aliasing — the engine writes `context[<exposeAs_value>] = context[node_id]` after each write, so downstream Jinja can read `{{ case.id }}` instead of `{{ node_4r.json.id }}`. Validator `_validate_expose_as_collisions` catches three collision classes (alias matches another node id; two nodes share alias; alias matches own id). `lint_jinja_dangling_reference` extended to (a) accept exposeAs aliases as valid reference targets, (b) warn `jinja_ref_outside_depends_on` when a node has `dependsOn` set and a Jinja ref targets something outside that list. `dependsOn` is informational at runtime in v1 — runtime context-filtering (build per-node read-scope) deferred to v2 because it touches every render site (Jinja, safe_eval, ReAct system prompts, HTTP body / url / headers). 16 new unit tests; 1229 backend tests pass (was 1213). |
