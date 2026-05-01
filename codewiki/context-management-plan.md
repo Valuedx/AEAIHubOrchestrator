@@ -38,6 +38,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **H v2** | Context-trace reads + misses (sampled reads, every miss recorded) | P2 | **Shipped** (branch `ctx-mgmt-h2-context-trace-reads`) | — | 2026-05-01 |
 | **C v2.a** | Runtime `dependsOn` enforcement — Jinja-only filter | P1 | **Shipped** (branch `ctx-mgmt-c2a-jinja-scope`) | — | 2026-05-01 |
 | **C v2.c** | Runtime `dependsOn` enforcement — structured user-message bundle | P1 | **Shipped** (branch `ctx-mgmt-c2c-user-msg-scope`) | — | 2026-05-01 |
+| **C v2.b** | Runtime `dependsOn` enforcement — `safe_eval` filter | P2 | **Deferred (out of scope for now)** — see §3.C v2.b note | — | 2026-05-01 |
 
 **Status vocabulary.** `Not started` → `In design` → `In progress` → `Shipped` → `Verified` (when post-merge eval / soak confirms the fix). A `Walked back` state exists for items the literature contradicts; we removed one (E.original — see §6).
 
@@ -255,8 +256,8 @@ C v2 was originally scoped as one mega-slice covering Jinja, `safe_eval`, and th
   - `render_prompt` integration — full context when no dependsOn, undeclared ref renders empty when dependsOn is set, declared alias resolves, undeclared alias renders empty, thread-local stash picked up when no kwargs, explicit kwargs override thread-local, infrastructure keys always visible, empty dependsOn drops all node slots.
   - `is_scope_enforced` — false when unset, true with declared list, true with empty list.
 
-**What's NOT in v2.a (deferred to v2.b).**
-- `safe_eval` scope filter. 12 call sites in `app/engine/` (Condition, Loop, Set Variables, predicate matching, Intent Classifier, Entity Extractor, While `continueExpression`). Each builds its `eval_env` slightly differently; uniform filter helper TBD. Risk medium because Condition expressions return concrete values that other branches depend on.
+**What's NOT in v2.a.**
+- ~~`safe_eval` scope filter~~ — **explicitly dropped, see C v2.b note below**.
 - ~~`build_structured_context_block` filter~~ — **shipped as C v2.c below (2026-05-01)**.
 - Tenant-policy escape hatch (`tenant_policies.context_scope_enforced`). Not strictly needed because the filter is already opt-in via `dependsOn`. Useful only if a tenant's existing graph carelessly declared `dependsOn` and relied on out-of-list visibility — the lint would have warned, but a hard runtime-toggle adds insurance. Defer until evidence of need.
 
@@ -279,17 +280,39 @@ C v2 was originally scoped as one mega-slice covering Jinja, `safe_eval`, and th
 |---|---|---|---|
 | System prompt Jinja | full context | scoped | scoped |
 | Per-turn user message workflow context | full context | full context | scoped |
-| safe_eval expressions | full context | full context | full context (v2.b deferred) |
+| safe_eval expressions | full context | full context | full context (v2.b dropped — see note) |
 
 **Tests (1416 passed, 1 skipped after this slice — was 1404).**
 - New `tests/test_user_msg_scope.py` (12 tests):
   - `build_structured_context_block` — no dependsOn emits all nodes; explicit `node_data` kwarg filters; empty list drops all nodes (keeps trigger); thread-local stash picked up; explicit kwarg overrides thread-local; loop_item always emitted; `exclude_node_ids` still works alongside scope; alias in dependsOn resolves to source node; backward-compat hot path when dependsOn is unset.
   - `assemble_agent_messages` integration — memory-disabled path filters the user message; memory-enabled path filters the "Workflow context:" section of the final user message; no dependsOn emits everything.
 
-**What's still NOT in C v2 (deferred to v2.b).**
-- `safe_eval` scope filter — see v2.a's deferred list. v2.b is the last remaining piece of the C v2 family.
-
 **Refs.** Same as v2.a. Half-enforcement (only-system-prompt) leaks scope through the user surface; v2.c closes that gap.
+
+### C v2.b. Runtime `dependsOn` enforcement — `safe_eval` filter — **Deferred (out of scope for now)** — 2026-05-01
+
+**Decision.** v2.b would extend `dependsOn` enforcement to the 12 `safe_eval` call sites in `app/engine/` (Condition, Loop array expression, Set Variables, predicate matching in HTTP/A2A handlers, Intent Classifier, Entity Extractor, While `continueExpression`, sub-workflow inputMapping eval, etc.). Each handler currently builds its `eval_env` slightly differently (some pass `{output, context, trigger}`, some pass `{**upstream, ...}`, some pass raw `context`), so a uniform filter helper would need a small audit + per-site edit.
+
+**Why dropping for now.** The risk/reward isn't there yet:
+
+1. **Risk is concentrated.** Condition expressions (`safe_eval(condition, env)`) return concrete branch decisions — a wrong filter that hides a value the expression depended on flips the branch, which silently routes the workflow down the wrong path. Loop array expressions decide iteration count. These aren't render-to-empty-string failures; they're behavior changes.
+2. **Reward is partial.** v2.a + v2.c already cover the **prompt surface** — what the LLM sees. v2.b would cover the **control-flow surface** — what the engine decides. The lint already catches the most common drift (`jinja_ref_outside_depends_on` covers safe_eval refs too via the shared `extract_node_refs` regex).
+3. **No production incident motivates it.** The original CTX-MGMT plan was driven by V8/V9/V10 lessons; none of them surfaced a control-flow scope drift bug. This is theoretical hygiene.
+4. **Per-handler review needed.** Unlike v2.a/v2.c which had one-or-two chokepoints, v2.b touches 12 distinct call sites with non-uniform `eval_env` shapes. Each needs its own correctness review, not a mechanical sweep.
+
+**Reactivation criteria.** Pick this up when ANY of these are true:
+- A production incident traces back to a Condition/Loop expression reading a stale slot from a node not in `dependsOn`.
+- The lint warning rate for `jinja_ref_outside_depends_on` on safe_eval refs (we can split the lint counter) exceeds a meaningful threshold.
+- A tenant explicitly asks for full enforcement (compliance / audit driver).
+- The next major engine refactor consolidates `safe_eval` call sites onto a single helper, making the filter a one-place edit.
+
+**If reactivated, the plan would be:**
+- Audit each of the 12 sites and categorise their `eval_env` construction patterns. Likely 3-4 distinct patterns.
+- Add a `build_scoped_eval_env(context, node_data, nodes_map)` helper in `app/engine/scope.py` (next to `build_scoped_safe_context`).
+- Per-handler edit, with explicit tests for each Condition/Loop pattern showing scoped vs unscoped behavior matches expectations.
+- Tenant-policy escape hatch (`tenant_policies.context_scope_enforced`) becomes more useful at this point — flip-it-off insurance for the higher-impact control-flow surface.
+
+**For now: lint catches authoring drift; v2.a/v2.c keep the prompt surface scoped.** That's the right ROI for today.
 
 ### E. Fan-in primitive + child-evidence promotion + reachability lint — **Shipped 2026-05-01**
 
@@ -661,3 +684,4 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | **CTX-MGMT.H v2 shipped** on branch `ctx-mgmt-h2-context-trace-reads` (off merged core). `context_trace.py` gains `record_read`, `record_miss`, `flush_render_events` helpers (same fast-no-op contract as v1's `record_write`). `prompt_template.py` adds a thread-local capture buffer wired into `_DotDict.__getattr__` (read/miss on dict lookup), `_PermissiveUndefined.__init__` (top-level undefined name miss), and `_PermissiveUndefined.__getattr__`/`__getitem__` (chained miss); `render_prompt` accumulates events on `_runtime["_pending_render_events"]` only when tracing is on. `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel) call `flush_render_events` after `record_write`, applying 1-in-N read sampling (DEFAULT_READ_SAMPLE_N=10, tunable via `_runtime["context_trace_read_sample_n"]`) and consecutive-event dedupe. Misses are never sampled. Sample counter persists across flushes within a run. 24 new unit tests; 1369 backend tests pass (was 1345). Closes the v2 follow-up flagged in H v1's "what's NOT in v1" note. |
 | 2026-05-01 | **CTX-MGMT.C v2.a shipped** on branch `ctx-mgmt-c2a-jinja-scope` (off merged core). First slice of C v2 — Jinja-only runtime enforcement of `dependsOn`. New `app/engine/scope.py` with pure helpers (`get_depends_on`, `collect_alias_index`, `build_scoped_safe_context`) plus thread-local current-node stash (`set_current_node_data`/`get_current_node_data`/`clear_current_node_data`). `prompt_template.render_prompt` gains `node_data` and `nodes_map` kwargs that fall through to the thread-local + `context["_engine_nodes_map"]` respectively. `dag_runner.execute_graph` stashes `nodes_map` once at every entry point (fresh start, HITL resume, pause-resume, retry); `_execute_single_node` and the parallel-branch worker both call `scope.set_current_node_data` before `dispatch_node`. When `dependsOn` is set, `render_prompt` filters its safe_context to the declared deps + their aliases + infrastructure keys before Jinja sees them; un-scoped refs render to empty string via the existing permissive-undefined policy. Unset `dependsOn` returns the same context object unchanged — backward-compatible identity-preserving hot path. v2.b (safe_eval) and v2.c (structured user-message block) remain on the backlog. 35 new unit tests including thread-local-leak verification across siblings; 1404 backend tests pass (was 1369). |
 | 2026-05-01 | **CTX-MGMT.C v2.c shipped** on branch `ctx-mgmt-c2c-user-msg-scope` (stacked on `ctx-mgmt-c2a-jinja-scope`). Closes the half-enforcement gap from v2.a — `build_structured_context_block` (the per-turn user-message bundle in `assemble_agent_messages`) now also honors `dependsOn`. New `node_data` and `nodes_map` kwargs with the same fall-through-to-thread-local-stash convention as `render_prompt`. The `for key, value in context.items()` loop skips out-of-scope `node_*` keys; `trigger`, `_loop_item`, and other infrastructure are unconditionally emitted. Aliases in `dependsOn` resolve back to source node ids so the filter is symmetric with `build_scoped_safe_context`. After v2.a + v2.c: system prompt Jinja AND per-turn user message workflow context are both scope-filtered; `safe_eval` (v2.b) is the last remaining surface. 12 new unit tests (helper direct + assemble_agent_messages integration in both memory paths); 1416 backend tests pass (was 1404). |
+| 2026-05-01 | **CTX-MGMT.C v2.b explicitly dropped** (see §3.C v2.b note). Risk concentrated (Condition / Loop return values steer branches — wrong filter is a routing bug, not a render-to-empty), reward partial (v2.a/v2.c already cover the prompt surface; v2.b would cover control-flow surface), no production incident motivating it. Reactivation criteria recorded: production incident on a stale-slot Condition, elevated `jinja_ref_outside_depends_on` rate on safe_eval refs, tenant compliance ask, or a future refactor that consolidates `safe_eval` call sites onto one chokepoint. For now: the lint already catches authoring drift on safe_eval refs via the shared `extract_node_refs` regex. |
