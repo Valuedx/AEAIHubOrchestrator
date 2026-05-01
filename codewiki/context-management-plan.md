@@ -34,6 +34,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **H** | `context_trace` runtime channel + copilot inspector | P2 | **Shipped** (branch `ctx-mgmt-h-context-trace`) | — | 2026-05-01 |
 | **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | **Shipped** (branch `ctx-mgmt-m-forgetting`) | — | 2026-05-01 |
 | **M2** | Beat-task wiring for `prune_aged_checkpoints` (daily sweep) | P3 | **Shipped** (branch `ctx-mgmt-m2-beat-prune`) | — | 2026-05-01 |
+| **J v2** | distillBlocks ride per-turn user message (cache-stable system prompt) | P2 | **Shipped** (branch `ctx-mgmt-j2-distill-cache`) | — | 2026-05-01 |
 
 **Status vocabulary.** `Not started` → `In design` → `In progress` → `Shipped` → `Verified` (when post-merge eval / soak confirms the fix). A `Walked back` state exists for items the literature contradicts; we removed one (E.original — see §6).
 
@@ -339,7 +340,7 @@ Renders as a labelled section appended to the system prompt::
     - restart succeeded
 
 **What's NOT in v1 (deferred).**
-- Separate-cacheable-user-message variant. The plan called for distill blocks as a cacheable user message; v1 ships them appended to the system prompt (which is cacheable in our existing prefix-cache setup). Splitting into a separate user message would let the static system prompt stay byte-stable while distill content varies — useful when distill blocks change per-turn AND the rest of the system prompt is large. Worth revisiting once a workflow demonstrates the cost.
+- ~~Separate-cacheable-user-message variant.~~ — **shipped as J v2 below (2026-05-01).** v1's append-to-system-prompt design busted prefix caches the moment distill content drifted; v2 moves distill onto the per-turn user message so the system prompt stays cache-stable.
 
 **Tests (1302 passed, 1 skipped after this slice — was 1262).**
 - New `tests/test_distill.py` (40 tests):
@@ -351,6 +352,28 @@ Renders as a labelled section appended to the system prompt::
   - Validator integration (valid no warning, invalid warns with node-id + label, missing field skipped).
 
 **Refs.** Anthropic — *"structured note-taking"* as a context-pollution mitigation. The V10 prompt-craft scan that drove the original CTX-MGMT plan called this out explicitly.
+
+### J v2. Cache-stable distill ride-along — **Shipped 2026-05-01**
+
+**Gap.** J v1 appended rendered distill blocks to the system prompt right after `render_prompt`. That worked but broke the provider's prefix cache on every turn whose distill content shifted (recent worknotes, recent findings — by design these change continuously). The system prompt's first ~hundreds of tokens were stable; the trailing distill drifted. Cache hit ratios for high-volume workflows showed the cost.
+
+**What shipped (branch `ctx-mgmt-j2-distill-cache`).**
+- `assemble_agent_messages` gains a new `distill_text: str = ""` keyword argument. The default keeps every existing caller working unchanged.
+- Memory-disabled path: distill rides on the synthetic user message that's emitted alongside the structured workflow context — system message stays as the static rendered prompt.
+- Memory-enabled path: distill is appended to `final_sections` on the per-turn user message, alongside facts / semantic hits / latest user message / workflow context. System message contains only the policy instructions + static rendered prompt.
+- `_handle_agent` (LLM agent) and `run_react_loop` (ReAct workers): both stop concatenating `_distill_text` into `system_prompt`; the rendered text now flows through to the new kwarg. ReAct iterations within a single turn re-use the same `initial_messages`, so distill stays stable across iterations of one turn — no per-iteration cache flap either.
+- Source-inspection regression test in `test_distill_cache_split.py` guards the wire by asserting both handlers pass `distill_text=_distill_text` and that the pre-v2 `system_prompt + "\n\n" + _distill_text` pattern is gone — a future refactor can't silently undo the cache split.
+
+**Cache stability proof.** A direct test (`TestCacheStability::test_same_system_prompt_across_changing_distill`) calls `assemble_agent_messages` twice with the same `rendered_system_prompt` but completely different `distill_text` payloads and asserts the system message is byte-identical. That's exactly what the prefix cache requires.
+
+**Tests (1345 passed, 1 skipped after this slice — was 1337).**
+- New `tests/test_distill_cache_split.py` (8 tests):
+  - Memory-disabled path — distill on user, never on system; empty distill omits cleanly; default kwarg keeps old callers valid.
+  - Memory-enabled path — distill on final user message alongside latest user message; absent distill renders no marker.
+  - Cache stability — system message byte-identical across turns with shifting distill content.
+  - Handler wiring guard — source inspection of `node_handlers.py` and `react_loop.py` confirms both pass `distill_text=` and don't append to system prompt.
+
+**Refs.** Anthropic — system prompt cache breakpoint guidance: *"keep dynamic content out of the cached prefix"*. Provider docs (Anthropic / Vertex / OpenAI) all advertise prefix caching that depends on byte-stable prefixes; v1 violated that contract by stamping recent-evidence into the system message.
 
 ### F. Scrub-secrets at write-time — **Shipped 2026-05-01**
 
@@ -535,3 +558,4 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | **CTX-MGMT.H shipped** (v1: writes only) on branch `ctx-mgmt-h-context-trace` (stacked on `ctx-mgmt-l-reducers`). New `instance_context_trace` table (migration 0036) + `tenant_policies.context_trace_enabled` flag. `app/engine/context_trace.py` with fast-path no-op helpers. Wired into `dag_runner._execute_single_node` on both paths so every context write records `{instance_id, node_id, op, key, size_bytes, reducer, overflowed, ts}` when tracing is on. Ephemeral (copilot-initiated) instances always trace; production opts in via the new tenant policy. New copilot runner tool `inspect_context_flow(instance_id, key?)` with exact-match + prefix (`node_*`) filtering. Per-instance cap of 500 events with batched 50-row trim. 19 new unit tests; 1120 backend tests pass (was 1101). Read-event + miss-event tracking deferred to v2 — volume is template-dependent and the missing-key story is better served by `lint_jinja_dangling_reference` (CTX-MGMT.B) at promote time. |
 | 2026-05-01 | **CTX-MGMT.L shipped** on branch `ctx-mgmt-l-reducers` (stacked on `ctx-mgmt-a-overflow`). New `app/engine/reducers.py` with `KNOWN_REDUCERS` registry (6 entries: `overwrite`/`append`/`merge`/`max`/`min`/`counter`) + pure helpers `resolve_reducer` and `apply_reducer`. Wired into `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel-branch) — fires AFTER the overflow check so the overflow stub composes correctly with reducers. `app/engine/config_validator.py` gains `_validate_output_reducer` (rejects unknown names) and `_validate_output_budget` (rejects non-positive budgets) at promote time. Default `overwrite` keeps every existing graph identical; new reducers unlock parallel-branch aggregation, audit trails, counters, max/min trackers without ad-hoc handler code. 44 new unit tests; full backend suite 1101 passed (was 1057). Deferred sub-task: refactoring ForEach + Loop body aggregation to use reducers — invasive, current semantics work, current reducers already add value for new patterns. |
 | 2026-05-01 | **CTX-MGMT.M2 shipped** on branch `ctx-mgmt-m2-beat-prune` (off merged core). Beat schedule entry `prune-aged-checkpoints` registered in `app/workers/scheduler.py` at `crontab(hour=4, minute=0)` (avoids the 03:00/03:30 prune slots). New Celery task `orchestrator.prune_aged_checkpoints` enumerates every tenant with checkpoints via `distinct(WorkflowInstance.tenant_id) JOIN InstanceCheckpoint`, calls `forgetting.prune_aged_checkpoints(db, tenant_id=…)` per tenant so each honors its own `checkpoint_retention_days` policy. Per-tenant exception → log+rollback+continue (one bad tenant never breaks the daily sweep); top-level enumeration failure → log+rollback+exit cleanly (Beat retries next tick). 5 new unit tests; 1337 backend tests pass (was 1332). Closes the v2 follow-up flagged in the M section. |
+| 2026-05-01 | **CTX-MGMT.J v2 shipped** on branch `ctx-mgmt-j2-distill-cache` (off merged core). `assemble_agent_messages` gains `distill_text: str = ""` kwarg. `_handle_agent` and `run_react_loop` stop appending rendered distill into the system prompt — they now pass it through to the assembler where it lands on the per-turn user message (memory-disabled path: alongside the structured workflow block; memory-enabled path: as a `final_sections` entry alongside facts / semantic hits / latest user message). System message becomes byte-stable across turns regardless of distill content drift, so provider prefix caches (Anthropic / Vertex / OpenAI) actually hit. Source-inspection regression test guards both handler wires against future regressions. 8 new unit tests including a direct cache-stability proof; 1345 backend tests pass (was 1337). Closes the v2 follow-up flagged in J's "what's NOT in v1" list. |

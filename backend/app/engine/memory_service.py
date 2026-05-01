@@ -1687,6 +1687,7 @@ def assemble_agent_messages(
     context: dict[str, Any],
     node_config: dict[str, Any],
     rendered_system_prompt: str,
+    distill_text: str = "",
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     policy = resolve_memory_policy(
         db,
@@ -1699,7 +1700,16 @@ def assemble_agent_messages(
         messages = []
         if rendered_system_prompt.strip():
             messages.append({"role": "system", "content": rendered_system_prompt})
-        messages.append({"role": "user", "content": build_structured_context_block(context)})
+        # CTX-MGMT.J v2 — distill goes into the per-turn user message,
+        # NOT the system prompt. Keeps the system prompt stable across
+        # turns so the provider's prefix-cache hits.
+        user_parts: list[str] = []
+        if distill_text:
+            user_parts.append(distill_text)
+        structured = build_structured_context_block(context)
+        if structured:
+            user_parts.append(structured)
+        messages.append({"role": "user", "content": "\n\n".join(user_parts)})
         return messages, {"enabled": False}
 
     history_node_id, history_output = _find_history_output(context, policy.history_node_id or "")
@@ -1779,6 +1789,15 @@ def assemble_agent_messages(
     )
     if structured_block:
         final_sections.append(f"Workflow context:\n{structured_block}")
+    # CTX-MGMT.J v2 — distill ride-along on the per-turn user message.
+    # Pre-v2 the rendered distill was appended to the system prompt,
+    # which busted the provider's prefix cache every time the
+    # underlying source changed (each new worknote, each new finding).
+    # Putting distill here keeps the system prompt stable so the
+    # cached prefix can grow turn over turn while the recent-evidence
+    # block lives where it always changes anyway.
+    if distill_text:
+        final_sections.append(distill_text)
     messages.append({"role": "user", "content": "\n\n".join(section for section in final_sections if section)})
 
     memory_debug = {

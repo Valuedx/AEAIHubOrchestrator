@@ -184,14 +184,12 @@ def _handle_agent(
     max_tokens = int(config.get("maxTokens", 4096))
 
     system_prompt = render_prompt(raw_prompt, context)
-    # CTX-MGMT.J — append rendered distillBlocks to the system prompt.
-    # Generalises V10's manual `RECENT TOOL FINDINGS` Jinja loop into
-    # a declarative config field. Empty / missing distillBlocks =
-    # one-list-check no-op.
+    # CTX-MGMT.J v2 — render distillBlocks separately and pass to
+    # assemble_agent_messages so it lands in the per-turn user
+    # message instead of the system prompt. Keeps the system prompt
+    # stable across turns so provider prefix caches actually hit.
     from app.engine.distill import render_distill_blocks
     _distill_text = render_distill_blocks(context, config.get("distillBlocks"))
-    if _distill_text:
-        system_prompt = system_prompt + "\n\n" + _distill_text
     db = SessionLocal()
     try:
         set_tenant_context(db, tenant_id)
@@ -202,6 +200,7 @@ def _handle_agent(
             context=context,
             node_config=config,
             rendered_system_prompt=system_prompt,
+            distill_text=_distill_text,
         )
     finally:
         db.close()

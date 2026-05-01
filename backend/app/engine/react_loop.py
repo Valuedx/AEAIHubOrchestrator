@@ -79,15 +79,15 @@ def run_react_loop(
     from app.engine.prompt_template import render_prompt
 
     system_prompt = render_prompt(raw_prompt, context)
-    # CTX-MGMT.J — append rendered distillBlocks. The ReAct loop
-    # benefits from this even more than plain LLM nodes since
-    # workers commonly want a recent-findings summary block on
-    # every iteration without re-Jinja-templating it (the V10
-    # WORKER_PROMPT_DYNAMIC pattern).
+    # CTX-MGMT.J v2 — distillBlocks are rendered separately and
+    # passed to assemble_agent_messages where they land on the
+    # per-turn user message. Pre-v2 we appended into the system
+    # prompt, which busted the provider's prefix cache on every
+    # worknote/finding change. ReAct workers re-fire the LLM
+    # multiple times per node — cache stability matters here even
+    # more than on plain LLM nodes.
     from app.engine.distill import render_distill_blocks
     _distill_text = render_distill_blocks(context, config.get("distillBlocks"))
-    if _distill_text:
-        system_prompt = system_prompt + "\n\n" + _distill_text
     # CONCISE-01 — Instruct the agent to be concise to stay within gateway limits
     system_prompt += (
         "\n\nBe extremely concise. Summarize tool outputs unless details are requested. "
@@ -104,6 +104,7 @@ def run_react_loop(
             context=context,
             node_config=config,
             rendered_system_prompt=system_prompt,
+            distill_text=_distill_text,
         )
     finally:
         db.close()
