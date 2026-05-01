@@ -542,6 +542,26 @@ def execute_graph(db: Session, instance_id: str, deterministic_mode: bool = Fals
             deterministic_mode=deterministic_mode,
             loopbacks_by_source=_build_loopback_map(edges),
         )
+        # CTX-MGMT.M — end-of-run forgetting. Walk the graph and
+        # pop slots whose config opted out of retention. Runs BEFORE
+        # the trace's final output stamp + before the implicit
+        # context_json persist by the caller (status writes happen
+        # later via `_finalize_*` paths). No-op for graphs that
+        # don't use the flag.
+        try:
+            from app.engine.forgetting import clear_non_retained_outputs
+            cleared = clear_non_retained_outputs(context, nodes_map)
+            if cleared:
+                logger.info(
+                    "Workflow %s: cleared %d non-retained outputs at end "
+                    "of run: %s",
+                    instance.id, len(cleared), cleared[:10],
+                )
+        except Exception as exc:
+            logger.warning(
+                "clear_non_retained_outputs failed for instance %s: %s",
+                instance.id, exc,
+            )
         trace.update(output={"status": instance.status, "nodes_executed": len([k for k in context if k.startswith("node_")])})
 
     flush()

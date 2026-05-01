@@ -32,7 +32,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **J** | First-class `distillBlocks` for context distillation | P2 | **Shipped** (branch `ctx-mgmt-j-distill`) | — | 2026-05-01 |
 | **F** | Scrub-secrets at write-time, not just log-time | P2 | **Shipped** (branch `ctx-mgmt-f-write-scrub`) | — | 2026-05-01 |
 | **H** | `context_trace` runtime channel + copilot inspector | P2 | **Shipped** (branch `ctx-mgmt-h-context-trace`) | — | 2026-05-01 |
-| **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | Not started | — | — |
+| **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | **Shipped** (branch `ctx-mgmt-m-forgetting`) | — | 2026-05-01 |
 
 **Status vocabulary.** `Not started` → `In design` → `In progress` → `Shipped` → `Verified` (when post-merge eval / soak confirms the fix). A `Walked back` state exists for items the literature contradicts; we removed one (E.original — see §6).
 
@@ -407,15 +407,32 @@ Renders as a labelled section appended to the system prompt::
 
 **Refs.** Anthropic — *"context engineering is the set of strategies for curating and maintaining the optimal set of tokens"*. Observability is what enables that curation in practice.
 
-### M. Forgetting / decay
+### M. Forgetting / decay — **Shipped 2026-05-01**
 
-**Gap.** Context grows unbounded within a run; checkpoints accumulate forever.
+**Gap.** Context grew unbounded within a run; checkpoints accumulated forever — no time-based decay or explicit deletion path.
 
-**Plan.**
-- `data.config.retainOutputAfterRun: bool` per node — when False, engine clears `context[node_id]` at run completion before persisting.
-- Beat task `prune_aged_checkpoints` — `InstanceCheckpoint` rows older than N days deleted (configurable via `tenant_policies.checkpoint_retention_days`).
+**What shipped (branch `ctx-mgmt-m-forgetting`).**
+- Migration `0039`: `tenant_policies.checkpoint_retention_days INTEGER NULL` — null falls through to `SYSTEM_DEFAULT_RETENTION_DAYS` (30). Tenants with cost or compliance constraints can override.
+- New `app/engine/forgetting.py`:
+  - `clear_non_retained_outputs(context, nodes_map)` — pure helper. Walks every node; for any whose config sets `retainOutputAfterRun: False`, pops the slot from `context`. Also clears the corresponding `exposeAs` alias slot if present (otherwise the alias would carry a ghost value into context_json). Returns the list of cleared keys for observability.
+  - `resolve_checkpoint_retention_days(db, tenant_id)` — reads tenant policy with defensive fall-through to `SYSTEM_DEFAULT_RETENTION_DAYS` on lookup error, zero, or negative values (never delete everything by accident).
+  - `prune_aged_checkpoints(db, *, tenant_id=None, older_than_days=None)` — operator utility for retention sweep. Same shape as `cleanup_ephemeral_workflows`. When tenant_id is set, joins through `WorkflowInstance` for tenant filtering and uses the per-tenant retention policy. Refuses to delete when threshold ≤ 0.
+- `dag_runner.execute_graph` calls `clear_non_retained_outputs` at end-of-run, AFTER the ready-queue completes but BEFORE the trace's final output stamp. No-op for graphs that don't use the flag (default behavior unchanged).
 
-**Refs.** Agent-memory literature — time-based decay, relevance scoring, explicit deletion.
+**Per-node config:**
+- `data.config.retainOutputAfterRun: bool` (default True). Set to False when a node's output is only meant for the next downstream node — the slot is cleared at end-of-run before context_json persists. Useful for transient HTTP responses that downstream LLMs summarised, after which the raw response is dead weight in the persisted context.
+
+**What's NOT in v1 (deferred).**
+- Beat-task wiring for `prune_aged_checkpoints`. Available as an operator-callable utility today (matching `cleanup_ephemeral_workflows`'s pre-Beat shape). Wire to a scheduled job in a follow-up — independent of this slice.
+- Per-node retention TTL (different node types decaying at different rates). Boolean retain/clear is enough for v1; finer-grained TTL on top of that is additive.
+
+**Tests (1332 passed, 1 skipped after this slice — was 1316).**
+- New `tests/test_forgetting.py` (16 tests):
+  - `clear_non_retained_outputs` (default retains everything, explicit True retains, explicit False clears, alias also cleared, skip when slot absent, mixed retain-and-clear).
+  - `resolve_checkpoint_retention_days` (default when unset, explicit override, zero/negative fall through to default, lookup-error falls through).
+  - `prune_aged_checkpoints` (zero/negative threshold refuses to delete, no-rows no commit, system default when no args, tenant_id uses tenant policy retention via JOIN).
+
+**Refs.** Agent-memory literature — *"time-based decay, relevance scoring, explicit deletion"* are part of the design, not afterthoughts. Anthropic — context engineering as ongoing curation, not just initial assembly.
 
 ---
 
@@ -482,6 +499,7 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |
 | 2026-05-01 | **CTX-MGMT.A shipped** on branch `ctx-mgmt-a-overflow` (stacked on `ctx-mgmt-d-runtime`). New `node_output_artifacts` table (migration 0035) + RLS + indexes. `app/engine/output_artifact.py` with pure helpers (`estimate_output_size`, `resolve_budget`, `should_overflow`, `materialize_overflow_stub`, `persist_artifact`, `maybe_overflow`). Wired into `dag_runner._execute_single_node` on both sequential and parallel-branch paths — on overflow the artifact is INSERTed and the in-context value becomes a small stub preserving canonical scalar keys (`id`, `status`, `error`, `branch`, etc.) so downstream Jinja still resolves. New copilot runner tool `inspect_node_artifact` (same ephemeral-only safety as `get_execution_logs`). 28 new unit tests + Jinja round-trip tests. Full backend suite 1057 passed (was 1029). Defaults: 64 kB per-node budget, 256 kB hard ceiling, per-node `contextOutputBudget` override. Deferred sub-task: `_save_checkpoint` delta writes — separate optimisation that can land independently. |
 | 2026-05-01 | **P1 stack merged into core** via fast-forward of `ctx-mgmt-c-scope` (linear stack of B/G/E/C). Backend suite 1229 passed on merged core. |
+| 2026-05-01 | **CTX-MGMT.M shipped** on branch `ctx-mgmt-m-forgetting` (stacked on `ctx-mgmt-f-write-scrub`). Migration 0039: `tenant_policies.checkpoint_retention_days INTEGER NULL` (NULL → SYSTEM_DEFAULT_RETENTION_DAYS = 30). New `app/engine/forgetting.py` with `clear_non_retained_outputs` (pops node slots whose config sets `retainOutputAfterRun: False`, also clears alias slots) + `resolve_checkpoint_retention_days` + `prune_aged_checkpoints` operator utility. Wired into `execute_graph` at end-of-run before trace finalize. Beat-task scheduling deferred — function is available as operator-callable today. 16 new unit tests; 1332 backend tests pass (was 1316). |
 | 2026-05-01 | **CTX-MGMT.F shipped** on branch `ctx-mgmt-f-write-scrub` (stacked on `ctx-mgmt-j-distill`). Migration 0038: `tenant_policies.context_secret_scrub_enabled` DEFAULT TRUE. Engine wires `scrub_secrets(output)` as the FIRST post-handler step in `_execute_single_node` (both sequential + parallel paths), before schema / overflow / reducer / alias / trace / compaction so every downstream step sees the scrubbed value (including persisted artifacts). Reuses the existing key-based scrubber from `app/engine/scrubber.py` — no new pattern set. 14 new unit tests including a source-inspection guard against future ordering regressions; 1316 backend tests pass (was 1302). |
 | 2026-05-01 | **CTX-MGMT.J shipped** on branch `ctx-mgmt-j-distill` (stacked on `ctx-mgmt-i-output-schema`). New `app/engine/distill.py` with `walk_dotted_path` + `render_one_block` + `render_distill_blocks` + `validate_distill_blocks`. Three formats: bullet (default), numbered, json. Wired into LLM Agent (`_handle_agent`) and ReAct (`run_react_loop`) — appends rendered blocks to the system prompt after `render_prompt`. Validator catches missing fromPath / unknown format / non-int limit at promote time. Generalises V10's manual `RECENT TOOL FINDINGS` Jinja-block pattern into one-line config. 40 new unit tests; 1302 backend tests pass (was 1262). Separate-cacheable-user-message variant deferred (current version appends to system prompt, which is already cache-friendly under our prefix-cache setup). |
 | 2026-05-01 | **CTX-MGMT.I shipped** on branch `ctx-mgmt-i-output-schema` (off merged core). New `app/engine/output_schema.py` with `validate_node_output` (uses jsonschema.Draft202012Validator) + `schema_paths` + `schema_allows_path` + `annotate_output_with_validation`. Wired into `_execute_single_node` on both paths — validates handler output against `data.config.outputSchema` post-dispatch; soft-annotates failures with `_schema_mismatch` by default, raises `OutputSchemaError` when `outputSchemaStrict: true`. Validator catches malformed JSON Schemas at promote time. Lint extension `jinja_ref_path_not_in_schema` (warn) catches Jinja refs to fields outside the declared schema's properties. Latent fix in `extract_node_refs` — now accepts `aliases` set so alias-based refs (`{{ case.foo }}`) are captured (pre-fix, the dangling-ref lint silently missed them; some prior tests were vacuously passing). 33 new unit tests; 1262 backend tests pass (was 1229). |

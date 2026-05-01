@@ -596,6 +596,11 @@ class TenantPolicy(Base):
     context_secret_scrub_enabled = Column(
         Boolean, nullable=False, default=True, server_default=sa.text("TRUE"),
     )
+    # CTX-MGMT.M — checkpoint retention policy. NULL = use system
+    # default (30 days). Tenants with shorter retention needs (cost)
+    # or longer (compliance) can override. Drives the
+    # `prune_aged_checkpoints` operator utility's per-tenant sweep.
+    checkpoint_retention_days = Column(Integer, nullable=True)
     # MODEL-01.e — per-tenant model defaults + family allowlist.
     # Nullable so tenants that never open the model row in the policy
     # dialog keep the registry's global defaults untouched. See
