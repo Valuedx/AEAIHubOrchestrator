@@ -33,6 +33,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **F** | Scrub-secrets at write-time, not just log-time | P2 | **Shipped** (branch `ctx-mgmt-f-write-scrub`) | — | 2026-05-01 |
 | **H** | `context_trace` runtime channel + copilot inspector | P2 | **Shipped** (branch `ctx-mgmt-h-context-trace`) | — | 2026-05-01 |
 | **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | **Shipped** (branch `ctx-mgmt-m-forgetting`) | — | 2026-05-01 |
+| **M2** | Beat-task wiring for `prune_aged_checkpoints` (daily sweep) | P3 | **Shipped** (branch `ctx-mgmt-m2-beat-prune`) | — | 2026-05-01 |
 
 **Status vocabulary.** `Not started` → `In design` → `In progress` → `Shipped` → `Verified` (when post-merge eval / soak confirms the fix). A `Walked back` state exists for items the literature contradicts; we removed one (E.original — see §6).
 
@@ -423,7 +424,7 @@ Renders as a labelled section appended to the system prompt::
 - `data.config.retainOutputAfterRun: bool` (default True). Set to False when a node's output is only meant for the next downstream node — the slot is cleared at end-of-run before context_json persists. Useful for transient HTTP responses that downstream LLMs summarised, after which the raw response is dead weight in the persisted context.
 
 **What's NOT in v1 (deferred).**
-- Beat-task wiring for `prune_aged_checkpoints`. Available as an operator-callable utility today (matching `cleanup_ephemeral_workflows`'s pre-Beat shape). Wire to a scheduled job in a follow-up — independent of this slice.
+- ~~Beat-task wiring for `prune_aged_checkpoints`~~ — **shipped as M2 below (2026-05-01)**.
 - Per-node retention TTL (different node types decaying at different rates). Boolean retain/clear is enough for v1; finer-grained TTL on top of that is additive.
 
 **Tests (1332 passed, 1 skipped after this slice — was 1316).**
@@ -433,6 +434,29 @@ Renders as a labelled section appended to the system prompt::
   - `prune_aged_checkpoints` (zero/negative threshold refuses to delete, no-rows no commit, system default when no args, tenant_id uses tenant policy retention via JOIN).
 
 **Refs.** Agent-memory literature — *"time-based decay, relevance scoring, explicit deletion"* are part of the design, not afterthoughts. Anthropic — context engineering as ongoing curation, not just initial assembly.
+
+### M2. Beat-task wiring for `prune_aged_checkpoints` — **Shipped 2026-05-01**
+
+**Gap.** M v1 shipped `prune_aged_checkpoints` as an operator-callable utility but no Beat task invoked it on a schedule. Without scheduled invocation the retention policy decayed nothing on its own — the function had to be called by hand.
+
+**What shipped (branch `ctx-mgmt-m2-beat-prune`).**
+- `app/workers/scheduler.py`: new Beat schedule entry `"prune-aged-checkpoints"` running daily at `crontab(hour=4, minute=0)`. Slot picked to avoid colliding with the 03:00 (`prune-old-snapshots`) and 03:30 (`prune-old-scheduled-triggers`) tasks.
+- New Celery task `prune_aged_checkpoints_task` (`orchestrator.prune_aged_checkpoints`):
+  - Enumerates every tenant with at least one checkpoint via `db.query(distinct(WorkflowInstance.tenant_id)).join(InstanceCheckpoint, ...)`. Cross-tenant by design (Beat already runs as a BYPASSRLS role per scheduler.py module docstring).
+  - Calls `forgetting.prune_aged_checkpoints(db, tenant_id=tenant_id)` per tenant so each tenant's `checkpoint_retention_days` policy is honored independently.
+  - Per-tenant exception handling: a single bad tenant policy lookup or transient DB hiccup logs a warning, rolls back, and continues with the rest. The daily sweep is never aborted by one tenant.
+  - Top-level enumeration failure (rare — DB unavailable) is also caught + logged; task exits cleanly without raising. Beat will retry on the next tick.
+  - Aggregate log line `"Daily checkpoint sweep: deleted N checkpoint(s) across M tenant(s) (failures: F)"` only emitted when there's actually something to report.
+
+**Tests (1337 passed, 1 skipped after this slice — was 1332).**
+- New `tests/test_prune_checkpoints_beat.py` (5 tests):
+  - `TestBeatSchedule::test_prune_aged_checkpoints_in_schedule` — confirms the entry is registered with the expected task name and a `crontab` (not interval) schedule.
+  - `TestPruneTask::test_sweeps_each_tenant_separately` — three tenants, each gets a distinct `prune_aged_checkpoints(db, tenant_id=…)` call, session closed at the end.
+  - `TestPruneTask::test_continues_on_per_tenant_failure` — middle tenant raises; first + last still get swept; `db.rollback` was called.
+  - `TestPruneTask::test_no_tenants_no_op` — empty enumeration; `prune_aged_checkpoints` is never called.
+  - `TestPruneTask::test_top_level_failure_handled` — `db.query` itself raises; task exits cleanly with rollback + close.
+
+**Refs.** Mirrors the existing pattern in `prune_old_snapshots` and `prune_old_scheduled_triggers` for a consistent operator surface.
 
 ---
 
@@ -510,3 +534,4 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | **CTX-MGMT.K shipped** on branch `ctx-mgmt-k-compaction` (stacked on `ctx-mgmt-h-context-trace`). All four P0 items now done. Migration 0037: `tenant_policies.context_compaction_enabled` (DEFAULT TRUE — opposite of trace flag's default-off). New `app/engine/compaction.py` with running-size approximation tracker, oldest-first candidate selection, and `maybe_compact` end-to-end pass that reuses CTX-MGMT.A's `node_output_artifacts` table for storage. Stub shape upgrade — `materialize_overflow_stub` accepts `kind: "overflow"|"compaction"` and now spreads canonical scalar keys to top level so `{{ node_X.id }}` renders the same pre/post-stub. Wired into `dag_runner._execute_single_node` on both paths. Selection signal is write-age (oldest-first) until CTX-MGMT.H v2 adds read-recency. 32 new unit tests; 1152 backend tests pass (was 1120). Per-tenant opt-out for strict audit-trail replay; full output remains in artifacts either way. |
 | 2026-05-01 | **CTX-MGMT.H shipped** (v1: writes only) on branch `ctx-mgmt-h-context-trace` (stacked on `ctx-mgmt-l-reducers`). New `instance_context_trace` table (migration 0036) + `tenant_policies.context_trace_enabled` flag. `app/engine/context_trace.py` with fast-path no-op helpers. Wired into `dag_runner._execute_single_node` on both paths so every context write records `{instance_id, node_id, op, key, size_bytes, reducer, overflowed, ts}` when tracing is on. Ephemeral (copilot-initiated) instances always trace; production opts in via the new tenant policy. New copilot runner tool `inspect_context_flow(instance_id, key?)` with exact-match + prefix (`node_*`) filtering. Per-instance cap of 500 events with batched 50-row trim. 19 new unit tests; 1120 backend tests pass (was 1101). Read-event + miss-event tracking deferred to v2 — volume is template-dependent and the missing-key story is better served by `lint_jinja_dangling_reference` (CTX-MGMT.B) at promote time. |
 | 2026-05-01 | **CTX-MGMT.L shipped** on branch `ctx-mgmt-l-reducers` (stacked on `ctx-mgmt-a-overflow`). New `app/engine/reducers.py` with `KNOWN_REDUCERS` registry (6 entries: `overwrite`/`append`/`merge`/`max`/`min`/`counter`) + pure helpers `resolve_reducer` and `apply_reducer`. Wired into `dag_runner._execute_single_node` (sequential) and `_apply_result` (parallel-branch) — fires AFTER the overflow check so the overflow stub composes correctly with reducers. `app/engine/config_validator.py` gains `_validate_output_reducer` (rejects unknown names) and `_validate_output_budget` (rejects non-positive budgets) at promote time. Default `overwrite` keeps every existing graph identical; new reducers unlock parallel-branch aggregation, audit trails, counters, max/min trackers without ad-hoc handler code. 44 new unit tests; full backend suite 1101 passed (was 1057). Deferred sub-task: refactoring ForEach + Loop body aggregation to use reducers — invasive, current semantics work, current reducers already add value for new patterns. |
+| 2026-05-01 | **CTX-MGMT.M2 shipped** on branch `ctx-mgmt-m2-beat-prune` (off merged core). Beat schedule entry `prune-aged-checkpoints` registered in `app/workers/scheduler.py` at `crontab(hour=4, minute=0)` (avoids the 03:00/03:30 prune slots). New Celery task `orchestrator.prune_aged_checkpoints` enumerates every tenant with checkpoints via `distinct(WorkflowInstance.tenant_id) JOIN InstanceCheckpoint`, calls `forgetting.prune_aged_checkpoints(db, tenant_id=…)` per tenant so each honors its own `checkpoint_retention_days` policy. Per-tenant exception → log+rollback+continue (one bad tenant never breaks the daily sweep); top-level enumeration failure → log+rollback+exit cleanly (Beat retries next tick). 5 new unit tests; 1337 backend tests pass (was 1332). Closes the v2 follow-up flagged in the M section. |

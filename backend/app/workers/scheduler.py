@@ -76,6 +76,14 @@ celery_app.conf.beat_schedule = {
         "task": "orchestrator.archive_stale_conversation_episodes",
         "schedule": 900.0,
     },
+    # CTX-MGMT.M (Beat wiring) — daily checkpoint retention sweep.
+    # Defaults to 30 days per tenant (overridable via
+    # tenant_policies.checkpoint_retention_days). Runs at 4:00 AM
+    # so it doesn't collide with the 3:00/3:30 prune tasks above.
+    "prune-aged-checkpoints": {
+        "task": "orchestrator.prune_aged_checkpoints",
+        "schedule": crontab(hour=4, minute=0),
+    },
 }
 
 
@@ -428,6 +436,71 @@ def prune_old_snapshots():
             )
     except Exception:
         logger.exception("Error in snapshot pruning")
+        db.rollback()
+    finally:
+        db.close()
+
+
+@celery_app.task(name="orchestrator.prune_aged_checkpoints")
+def prune_aged_checkpoints_task():
+    """CTX-MGMT.M Beat wiring — daily sweep of old InstanceCheckpoint
+    rows.
+
+    Walks every tenant that has at least one checkpoint and calls
+    ``forgetting.prune_aged_checkpoints`` per-tenant so each tenant's
+    `checkpoint_retention_days` policy is honored. Tenants without an
+    override use SYSTEM_DEFAULT_RETENTION_DAYS (30).
+
+    Logs total deletes per run; failures are logged but never raise
+    so a single bad tenant policy doesn't break the daily sweep for
+    everyone else.
+    """
+    from app.engine.forgetting import prune_aged_checkpoints
+    from app.models.workflow import InstanceCheckpoint, WorkflowInstance
+
+    db = SessionLocal()
+    try:
+        # Find every tenant with at least one checkpoint. Joining
+        # through WorkflowInstance because InstanceCheckpoint itself
+        # doesn't carry tenant_id (RLS would handle it at query time
+        # if we set the tenant context, but we sweep across tenants
+        # here so we explicitly enumerate).
+        from sqlalchemy import distinct
+
+        tenant_rows = (
+            db.query(distinct(WorkflowInstance.tenant_id))
+            .join(
+                InstanceCheckpoint,
+                InstanceCheckpoint.instance_id == WorkflowInstance.id,
+            )
+            .all()
+        )
+        tenant_ids = [row[0] for row in tenant_rows if row[0]]
+
+        total_deleted = 0
+        per_tenant_failures = 0
+        for tenant_id in tenant_ids:
+            try:
+                deleted = prune_aged_checkpoints(db, tenant_id=tenant_id)
+                total_deleted += deleted
+            except Exception as exc:
+                per_tenant_failures += 1
+                logger.warning(
+                    "prune_aged_checkpoints failed for tenant=%r: %s",
+                    tenant_id, exc,
+                )
+                # Roll back the failed tenant's transaction so the
+                # next iteration starts clean.
+                db.rollback()
+
+        if total_deleted:
+            logger.info(
+                "Daily checkpoint sweep: deleted %d checkpoint(s) across "
+                "%d tenant(s) (failures: %d)",
+                total_deleted, len(tenant_ids), per_tenant_failures,
+            )
+    except Exception:
+        logger.exception("Error in prune_aged_checkpoints Beat task")
         db.rollback()
     finally:
         db.close()
