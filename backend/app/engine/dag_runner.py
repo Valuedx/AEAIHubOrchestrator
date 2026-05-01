@@ -1365,6 +1365,35 @@ def _execute_single_node(
         try:
             output = dispatch_node(node_data, context, instance.tenant_id, db=db)
 
+            # CTX-MGMT.I — validate handler output against the node's
+            # declared `outputSchema` (JSON Schema, optional). Soft by
+            # default: failures stamp `_schema_mismatch` on the
+            # output and log a warning. Authors opt into strict-fail
+            # via `outputSchemaStrict: true`. Empty/missing schema =
+            # no-op (one dict lookup of cost).
+            from app.engine.output_schema import (
+                annotate_output_with_validation,
+                OutputSchemaError,
+                validate_node_output,
+            )
+            _node_cfg = node_data.get("config") or {}
+            _output_schema = _node_cfg.get("outputSchema")
+            if _output_schema:
+                _is_valid, _schema_errs = validate_node_output(output, _output_schema)
+                if not _is_valid:
+                    if bool(_node_cfg.get("outputSchemaStrict")):
+                        raise OutputSchemaError(
+                            f"Node {node_id}: outputSchema validation failed — "
+                            + "; ".join(_schema_errs[:3])
+                        )
+                    logger.warning(
+                        "Node %s output failed schema validation: %s",
+                        node_id, _schema_errs[:3],
+                    )
+                    output = annotate_output_with_validation(
+                        output, is_valid=False, errors=_schema_errs,
+                    )
+
             # CTX-MGMT.A — per-node output budget. If the handler's
             # output exceeds the configured budget, persist the full
             # payload to node_output_artifacts and replace the in-
@@ -1602,6 +1631,36 @@ def _execute_parallel(
         results[node_id] = status
         log_entry = log_entries[node_id]
         if status == "completed" and output is not None:
+            # CTX-MGMT.I — schema validation on the parallel path too.
+            from app.engine.output_schema import (
+                annotate_output_with_validation,
+                OutputSchemaError,
+                validate_node_output,
+            )
+            _node_lookup = nodes_map.get(node_id) or {}
+            _node_data_p = _node_lookup.get("data") or {}
+            _node_cfg_p = _node_data_p.get("config") or {}
+            _output_schema_p = _node_cfg_p.get("outputSchema")
+            if _output_schema_p:
+                _is_valid_p, _errs_p = validate_node_output(output, _output_schema_p)
+                if not _is_valid_p:
+                    if bool(_node_cfg_p.get("outputSchemaStrict")):
+                        # Strict-fail on parallel path: mark this branch failed.
+                        results[node_id] = "failed"
+                        log_entry.status = "failed"
+                        log_entry.error = (
+                            f"outputSchema validation failed: {'; '.join(_errs_p[:3])}"
+                        )
+                        log_entry.completed_at = _utcnow()
+                        return
+                    logger.warning(
+                        "Node %s output failed schema validation: %s",
+                        node_id, _errs_p[:3],
+                    )
+                    output = annotate_output_with_validation(
+                        output, is_valid=False, errors=_errs_p,
+                    )
+
             # CTX-MGMT.A — overflow check on the parallel-branch path
             # too. Same shape as the sequential path; the artifact
             # write happens on the main session because the worker

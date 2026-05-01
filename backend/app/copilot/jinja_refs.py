@@ -62,20 +62,31 @@ _NODE_REF_PATTERN = re.compile(
 )
 
 
-def extract_node_refs(text: str) -> list[tuple[str, str]]:
+def extract_node_refs(
+    text: str,
+    *,
+    aliases: set[str] | None = None,
+) -> list[tuple[str, str]]:
     """Return every node reference in ``text``.
 
     Output: ``[(node_id, attr_path), ...]`` where ``attr_path`` is
     the dotted suffix without the leading dot. Empty string for
     bare ``node_X`` references (no attribute access).
 
+    The ``aliases`` parameter (CTX-MGMT.C) lets callers feed in the
+    set of known ``exposeAs`` aliases declared anywhere in the
+    graph. The regex picks up ``<alias>.foo.bar`` patterns in
+    addition to the canonical ``node_X.foo.bar`` shape, so the
+    lint can verify alias-based refs against schemas (CTX-MGMT.I)
+    and dependsOn lists.
+
     Examples::
 
         extract_node_refs("{{ node_4r.json.id }}")
         # → [("node_4r", "json.id")]
 
-        extract_node_refs("Hello {{ trigger.x }} from {{ node_2.messages }}")
-        # → [("node_2", "messages")]
+        extract_node_refs("{{ case.id }}", aliases={"case"})
+        # → [("case", "id")]
 
         extract_node_refs("if node_3.branch == 'true' else node_4r.json")
         # → [("node_3", "branch"), ("node_4r", "json")]
@@ -83,16 +94,46 @@ def extract_node_refs(text: str) -> list[tuple[str, str]]:
         extract_node_refs("{{ node_X }}")
         # → [("node_X", "")]
     """
-    if not isinstance(text, str) or "node_" not in text:
+    if not isinstance(text, str):
+        return []
+    needs_pass2 = bool(aliases) and any(a in text for a in aliases)
+    if "node_" not in text and not needs_pass2:
         return []
     out: list[tuple[str, str]] = []
-    for match in _NODE_REF_PATTERN.finditer(text):
-        node_id = match.group(1)
-        attr_suffix = match.group(2) or ""
-        # Strip the leading dot from the attr_path.
-        if attr_suffix.startswith("."):
-            attr_suffix = attr_suffix[1:]
-        out.append((node_id, attr_suffix))
+    seen: set[tuple[str, str]] = set()
+    # Pass 1 — canonical node_X.foo.bar pattern.
+    if "node_" in text:
+        for match in _NODE_REF_PATTERN.finditer(text):
+            node_id = match.group(1)
+            attr_suffix = match.group(2) or ""
+            if attr_suffix.startswith("."):
+                attr_suffix = attr_suffix[1:]
+            ref = (node_id, attr_suffix)
+            if ref not in seen:
+                seen.add(ref)
+                out.append(ref)
+    # Pass 2 — alias.foo.bar for each declared alias. Skip aliases
+    # that start with `node_` (already covered by pass 1) — and
+    # avoid collisions with stdlib / Jinja builtins (`trigger`,
+    # `output`, `context`, `_runtime`) which the engine reserves.
+    if aliases:
+        reserved = {"trigger", "output", "context", "_runtime", "approval"}
+        for alias in aliases:
+            if not alias or alias in reserved or alias.startswith("node_"):
+                continue
+            pattern = re.compile(
+                r"(?<![A-Za-z0-9_])"
+                + re.escape(alias)
+                + r"((?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+            )
+            for match in pattern.finditer(text):
+                attr_suffix = match.group(1) or ""
+                if attr_suffix.startswith("."):
+                    attr_suffix = attr_suffix[1:]
+                ref = (alias, attr_suffix)
+                if ref not in seen:
+                    seen.add(ref)
+                    out.append(ref)
     return out
 
 
@@ -121,11 +162,21 @@ def walk_node_strings(obj: Any) -> Iterable[str]:
     return
 
 
-def collect_refs_from_config(config: Any) -> list[tuple[str, str]]:
+def collect_refs_from_config(
+    config: Any,
+    *,
+    aliases: set[str] | None = None,
+) -> list[tuple[str, str]]:
     """Walk a node's full config and return every node reference
-    found across all string values. De-duplicated."""
+    found across all string values. De-duplicated.
+
+    The optional ``aliases`` set (CTX-MGMT.C) is passed through to
+    ``extract_node_refs`` so alias-based refs (`{{ case.id }}` for
+    an upstream `exposeAs: "case"`) are captured the same way as
+    canonical `node_X.foo` refs.
+    """
     seen: set[tuple[str, str]] = set()
     for s in walk_node_strings(config):
-        for ref in extract_node_refs(s):
+        for ref in extract_node_refs(s, aliases=aliases):
             seen.add(ref)
     return sorted(seen)

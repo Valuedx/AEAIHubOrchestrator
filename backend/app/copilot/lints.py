@@ -710,11 +710,24 @@ def lint_jinja_dangling_reference(graph: dict[str, Any]) -> list[Lint]:
     # targets, so a node can reference `{{ case.id }}` when an
     # upstream is configured `exposeAs: "case"`.
     expose_aliases: set[str] = set()
+    # CTX-MGMT.I — collect declared outputSchemas keyed by node id
+    # AND by each of that node's exposeAs aliases. A Jinja ref
+    # `node_X.foo.bar` is verified against the producing node's
+    # schema (when declared) — catches typos in field paths in
+    # addition to the existing typo-in-node-id check.
+    schemas_by_id: dict[str, dict[str, Any]] = {}
     for n in nodes:
+        nid_n = n.get("id")
         cfg = (n.get("data") or {}).get("config") or {}
         alias = cfg.get("exposeAs")
         if isinstance(alias, str) and alias.strip():
             expose_aliases.add(alias.strip())
+        schema = cfg.get("outputSchema")
+        if isinstance(schema, dict) and schema:
+            if nid_n:
+                schemas_by_id[nid_n] = schema
+            if isinstance(alias, str) and alias.strip():
+                schemas_by_id[alias.strip()] = schema
 
     out: list[Lint] = []
     for node in nodes:
@@ -729,7 +742,11 @@ def lint_jinja_dangling_reference(graph: dict[str, Any]) -> list[Lint]:
         depends_on: set[str] | None = None
         if isinstance(depends_on_raw, list):
             depends_on = {str(d) for d in depends_on_raw if isinstance(d, str)}
-        for ref_node, ref_path in collect_refs_from_config(config):
+        # Pass aliases into the ref extractor so `{{ case.id }}`
+        # patterns get captured (CTX-MGMT.C v1).
+        for ref_node, ref_path in collect_refs_from_config(
+            config, aliases=expose_aliases,
+        ):
             # Existence check now includes exposeAs aliases.
             if ref_node not in valid_ids and ref_node not in expose_aliases:
                 # Dangling reference — the referenced node doesn't
@@ -821,6 +838,36 @@ def lint_jinja_dangling_reference(graph: dict[str, Any]) -> list[Lint]:
                         fix_hint=(
                             f"Either add `{ref_node}` to dependsOn, or "
                             "remove the reference if it's stale."
+                        ),
+                        node_id=nid,
+                    ))
+
+            # CTX-MGMT.I — when the referenced node declares an
+            # outputSchema, the Jinja ref's attribute path must be
+            # reachable through the schema's properties. Catches
+            # typos like `node_4r.id` when the handler actually
+            # produces `node_4r.json.id`.
+            ref_schema = schemas_by_id.get(ref_node)
+            if ref_schema and ref_path:
+                from app.engine.output_schema import schema_allows_path
+
+                if not schema_allows_path(ref_schema, ref_path):
+                    out.append(Lint(
+                        code="jinja_ref_path_not_in_schema",
+                        severity="warn",
+                        message=(
+                            f"Node `{nid}` references "
+                            f"`{ref_node}.{ref_path}` but the "
+                            f"declared outputSchema for `{ref_node}` "
+                            "does not include that field path."
+                        ),
+                        fix_hint=(
+                            "Either update the reference to a path "
+                            "the schema declares, extend the "
+                            "outputSchema's `properties` to include "
+                            "the field, or set "
+                            "`additionalProperties: true` if the "
+                            "node deliberately produces extra fields."
                         ),
                         node_id=nid,
                     ))

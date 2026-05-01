@@ -111,6 +111,9 @@ def validate_graph_configs(graph_json: dict) -> list[str]:
         # if set; the engine clamps to a hard ceiling but author-time
         # validation catches obviously-wrong values (negative, str).
         warnings.extend(_validate_output_budget(node_id, label, config))
+        # CTX-MGMT.I — outputSchema must be a dict (a JSON Schema)
+        # if set; basic shape check + draft validity check.
+        warnings.extend(_validate_output_schema(node_id, label, config))
 
     # CTX-MGMT.C — exposeAs collisions need a graph-level pass
     # (a single node's exposeAs collides with another node's id or
@@ -528,3 +531,41 @@ def _validate_expose_as_collisions(graph_json: dict) -> list[str]:
             )
 
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.I — outputSchema shape check
+# ---------------------------------------------------------------------------
+
+
+def _validate_output_schema(node_id: str, label: str, config: dict) -> list[str]:
+    """``outputSchema`` must be a dict (a JSON Schema). When set, do
+    a quick draft-validity check via the jsonschema library so
+    malformed schemas surface at promote time rather than as silent
+    runtime warnings."""
+    raw = config.get("outputSchema")
+    if raw is None:
+        return []
+    if not isinstance(raw, dict):
+        return [
+            f"Node {node_id} ({label}): 'outputSchema' must be a dict "
+            f"(JSON Schema), got {type(raw).__name__}"
+        ]
+    if not raw:
+        return []  # empty dict = no constraint
+
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError:
+        # jsonschema missing — skip the check; runtime validator
+        # will also skip with a log warning.
+        return []
+
+    try:
+        Draft202012Validator.check_schema(raw)
+    except Exception as exc:
+        return [
+            f"Node {node_id} ({label}): 'outputSchema' is not a valid "
+            f"JSON Schema — {exc}"
+        ]
+    return []
