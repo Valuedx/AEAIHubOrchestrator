@@ -114,6 +114,10 @@ def validate_graph_configs(graph_json: dict) -> list[str]:
         # CTX-MGMT.I — outputSchema must be a dict (a JSON Schema)
         # if set; basic shape check + draft validity check.
         warnings.extend(_validate_output_schema(node_id, label, config))
+        # CTX-MGMT.J — distillBlocks must be a list of well-shaped
+        # block specs. Catches typos in fromPath, malformed limit,
+        # unknown format values at promote time.
+        warnings.extend(_validate_distill_blocks(node_id, label, config))
 
     # CTX-MGMT.C — exposeAs collisions need a graph-level pass
     # (a single node's exposeAs collides with another node's id or
@@ -569,3 +573,22 @@ def _validate_output_schema(node_id: str, label: str, config: dict) -> list[str]
             f"JSON Schema — {exc}"
         ]
     return []
+
+
+# ---------------------------------------------------------------------------
+# CTX-MGMT.J — distillBlocks shape check
+# ---------------------------------------------------------------------------
+
+
+def _validate_distill_blocks(node_id: str, label: str, config: dict) -> list[str]:
+    """Shape-check ``distillBlocks`` config — delegates to the pure
+    helper in ``app/engine/distill.py``."""
+    raw = config.get("distillBlocks")
+    if raw is None:
+        return []
+    from app.engine.distill import validate_distill_blocks
+
+    errors = validate_distill_blocks(raw)
+    return [
+        f"Node {node_id} ({label}): {err}" for err in errors
+    ]

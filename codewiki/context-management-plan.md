@@ -29,7 +29,7 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 | **E** | Native fan-in primitive (Merge waitAny) + child-evidence promotion + reachability lint | P1 | **Shipped** (branch `ctx-mgmt-e-coalesce`) | — | 2026-05-01 |
 | **G** | ReAct iterations summary vs full split | P1 | **Shipped** (branch `ctx-mgmt-g-iterations-split`) | — | 2026-05-01 |
 | **I** | `outputSchema` on every node (not just trigger) | P2 | **Shipped** (branch `ctx-mgmt-i-output-schema`) | — | 2026-05-01 |
-| **J** | First-class `distillBlocks` for context distillation | P2 | Not started | — | — |
+| **J** | First-class `distillBlocks` for context distillation | P2 | **Shipped** (branch `ctx-mgmt-j-distill`) | — | 2026-05-01 |
 | **F** | Scrub-secrets at write-time, not just log-time | P2 | Not started | — | — |
 | **H** | `context_trace` runtime channel + copilot inspector | P2 | **Shipped** (branch `ctx-mgmt-h-context-trace`) | — | 2026-05-01 |
 | **M** | Forgetting / decay (run-end pruning + checkpoint TTL) | P3 | Not started | — | — |
@@ -302,13 +302,54 @@ The four items at the top are the highest-leverage, smallest-blast-radius change
 
 **Refs.** LangGraph 2026 — *"Pydantic v3 is used for state definitions because it provides runtime validation"*. Anthropic — *"system prompts should be extremely clear and use simple, direct language"* — applies to schema authoring too.
 
-### J. First-class `distillBlocks`
+### J. First-class `distillBlocks` — **Shipped 2026-05-01**
 
-**Gap.** Manual Jinja distillation (V10 RECENT TOOL FINDINGS pattern) doesn't generalize across workflows.
+**Gap.** Manual Jinja distillation (V10 `RECENT TOOL FINDINGS` pattern in `WORKER_PROMPT_DYNAMIC`) didn't generalize across workflows. Authors copy-paste-adapt → drift.
 
-**Plan.** `data.config.distillBlocks: [{label, fromPath, limit, project, format}]` on any LLM/ReAct node. Engine renders distilled blocks as a separate cacheable user message.
+**What shipped (branch `ctx-mgmt-j-distill`).**
+- New `app/engine/distill.py` with pure helpers:
+  - `walk_dotted_path(context, path)` — resolves `"node_4r.json.worknotes"` (or `"node_4r.items[0].name"`) into the actual nested value. Returns `None` on any miss; never raises.
+  - `render_one_block(context, block)` — renders one distill block. Skips empty results (caller can omit the section). Hard limit of 100 items per block; per-item char cap of 280 with `…` truncation.
+  - `render_distill_blocks(context, blocks)` — combines multiple blocks into one string ready to append to a system prompt. Empty / missing blocks → empty string. Malformed blocks logged + skipped (observability concern, not correctness).
+  - `validate_distill_blocks(blocks)` — promote-time shape validator.
+  - Three formats: `bullet` (default), `numbered`, `json`. Project field via `project: list[str]` — single field returns the bare value, multiple fields return a dict.
+- Engine wiring:
+  - `node_handlers._handle_agent` (LLM Agent path) appends rendered distill blocks to the system prompt after `render_prompt(raw_prompt, context)` and BEFORE `assemble_agent_messages`.
+  - `react_loop.run_react_loop` does the same after the system prompt is rendered (between render_prompt and the CONCISE-01 suffix).
+  - One-list-check no-op when `distillBlocks` is unset, so existing graphs are unaffected.
+- Validator (`config_validator._validate_distill_blocks`) catches missing `fromPath`, non-string label/fromPath, non-int limit, non-list project, and unknown format values at promote time.
 
-**Refs.** Anthropic — *"structured note-taking"* as a context-pollution mitigation.
+**Block shape:**
+
+```yaml
+distillBlocks:
+  - label: "RECENT TOOL FINDINGS"
+    fromPath: "node_4r.json.worknotes"
+    limit: 4              # last N entries (recency bias)
+    project: ["text"]      # fields to keep per entry
+    format: "bullet"       # bullet | numbered | json
+```
+
+Renders as a labelled section appended to the system prompt::
+
+    === RECENT TOOL FINDINGS ===
+    - agent flagged license expiry
+    - queue depth alarm
+    - restart succeeded
+
+**What's NOT in v1 (deferred).**
+- Separate-cacheable-user-message variant. The plan called for distill blocks as a cacheable user message; v1 ships them appended to the system prompt (which is cacheable in our existing prefix-cache setup). Splitting into a separate user message would let the static system prompt stay byte-stable while distill content varies — useful when distill blocks change per-turn AND the rest of the system prompt is large. Worth revisiting once a workflow demonstrates the cost.
+
+**Tests (1302 passed, 1 skipped after this slice — was 1262).**
+- New `tests/test_distill.py` (40 tests):
+  - `walk_dotted_path` — simple, nested, missing root, missing attr, walk-through-scalar, list-index, out-of-range, invalid-index, empty path, non-dict context.
+  - `render_one_block` — bullet default format, last-N when limit exceeded, numbered, JSON, multi-field project returns dict, empty path returns empty string, no label omits header, long string truncated, hard-limit ceiling, limit=0 means all, scalar value renders as single item.
+  - `render_distill_blocks` — empty input no-op, multiple blocks combined with blank-line separator, empty blocks skipped, one-empty-one-full keeps full only, malformed block skipped silently.
+  - `validate_distill_blocks` — None valid, non-list invalid, block must be object, missing/non-string fromPath, non-string label, non-int limit, non-list project, unknown format, clean block passes.
+  - V10 pattern smoke (RECENT TOOL FINDINGS + EVIDENCE blocks render correctly from a typical case-store context).
+  - Validator integration (valid no warning, invalid warns with node-id + label, missing field skipped).
+
+**Refs.** Anthropic — *"structured note-taking"* as a context-pollution mitigation. The V10 prompt-craft scan that drove the original CTX-MGMT plan called this out explicitly.
 
 ### F. Scrub-secrets at write-time
 
@@ -421,6 +462,7 @@ These hold across every item; reference them in PRs to keep the surface coherent
 | 2026-05-01 | **CTX-MGMT.D shipped** on branch `ctx-mgmt-d-runtime`. `_runtime` namespace + `_hoist_legacy_runtime` backward-compat migration in `dag_runner.py`. Producers migrated in `dag_runner.py` (cycle counters, ForEach + Loop iteration runners), `react_loop.py` (HITL pending call), `node_handlers.py` (sub-workflow `parent_chain`). Consumers updated with new-then-legacy fall-through in `prompt_template.py`, `node_handlers.py`, `react_loop.py`. 18 new unit tests + 24 existing cyclic tests migrated. Full backend suite 1029 passed (was 1011). HITL-inside-ForEach now resumes at the correct iteration index instead of restarting at 0. |
 | 2026-05-01 | **CTX-MGMT.A shipped** on branch `ctx-mgmt-a-overflow` (stacked on `ctx-mgmt-d-runtime`). New `node_output_artifacts` table (migration 0035) + RLS + indexes. `app/engine/output_artifact.py` with pure helpers (`estimate_output_size`, `resolve_budget`, `should_overflow`, `materialize_overflow_stub`, `persist_artifact`, `maybe_overflow`). Wired into `dag_runner._execute_single_node` on both sequential and parallel-branch paths — on overflow the artifact is INSERTed and the in-context value becomes a small stub preserving canonical scalar keys (`id`, `status`, `error`, `branch`, etc.) so downstream Jinja still resolves. New copilot runner tool `inspect_node_artifact` (same ephemeral-only safety as `get_execution_logs`). 28 new unit tests + Jinja round-trip tests. Full backend suite 1057 passed (was 1029). Defaults: 64 kB per-node budget, 256 kB hard ceiling, per-node `contextOutputBudget` override. Deferred sub-task: `_save_checkpoint` delta writes — separate optimisation that can land independently. |
 | 2026-05-01 | **P1 stack merged into core** via fast-forward of `ctx-mgmt-c-scope` (linear stack of B/G/E/C). Backend suite 1229 passed on merged core. |
+| 2026-05-01 | **CTX-MGMT.J shipped** on branch `ctx-mgmt-j-distill` (stacked on `ctx-mgmt-i-output-schema`). New `app/engine/distill.py` with `walk_dotted_path` + `render_one_block` + `render_distill_blocks` + `validate_distill_blocks`. Three formats: bullet (default), numbered, json. Wired into LLM Agent (`_handle_agent`) and ReAct (`run_react_loop`) — appends rendered blocks to the system prompt after `render_prompt`. Validator catches missing fromPath / unknown format / non-int limit at promote time. Generalises V10's manual `RECENT TOOL FINDINGS` Jinja-block pattern into one-line config. 40 new unit tests; 1302 backend tests pass (was 1262). Separate-cacheable-user-message variant deferred (current version appends to system prompt, which is already cache-friendly under our prefix-cache setup). |
 | 2026-05-01 | **CTX-MGMT.I shipped** on branch `ctx-mgmt-i-output-schema` (off merged core). New `app/engine/output_schema.py` with `validate_node_output` (uses jsonschema.Draft202012Validator) + `schema_paths` + `schema_allows_path` + `annotate_output_with_validation`. Wired into `_execute_single_node` on both paths — validates handler output against `data.config.outputSchema` post-dispatch; soft-annotates failures with `_schema_mismatch` by default, raises `OutputSchemaError` when `outputSchemaStrict: true`. Validator catches malformed JSON Schemas at promote time. Lint extension `jinja_ref_path_not_in_schema` (warn) catches Jinja refs to fields outside the declared schema's properties. Latent fix in `extract_node_refs` — now accepts `aliases` set so alias-based refs (`{{ case.foo }}`) are captured (pre-fix, the dangling-ref lint silently missed them; some prior tests were vacuously passing). 33 new unit tests; 1262 backend tests pass (was 1229). |
 | 2026-05-01 | **CTX-MGMT.C v1 shipped** on branch `ctx-mgmt-c-scope` (stacked on `ctx-mgmt-e-coalesce`). All four P1 items now done. v1 ships exposeAs aliasing — the engine writes `context[<exposeAs_value>] = context[node_id]` after each write, so downstream Jinja can read `{{ case.id }}` instead of `{{ node_4r.json.id }}`. Validator `_validate_expose_as_collisions` catches three collision classes (alias matches another node id; two nodes share alias; alias matches own id). `lint_jinja_dangling_reference` extended to (a) accept exposeAs aliases as valid reference targets, (b) warn `jinja_ref_outside_depends_on` when a node has `dependsOn` set and a Jinja ref targets something outside that list. `dependsOn` is informational at runtime in v1 — runtime context-filtering (build per-node read-scope) deferred to v2 because it touches every render site (Jinja, safe_eval, ReAct system prompts, HTTP body / url / headers). 16 new unit tests; 1229 backend tests pass (was 1213). |
 | 2026-05-01 | **CTX-MGMT.E shipped** on branch `ctx-mgmt-e-coalesce` (stacked on `ctx-mgmt-g-iterations-split`). Implementation note: rather than adding a new `Coalesce` node, wired the missing `waitAny` semantics into the existing `Merge` node (registry entry has been there since 0001, but the engine ignored the strategy field). New `_is_waitany_merge` helper + `_find_ready_nodes` branch in `dag_runner.py` — fires when ANY active source is satisfied (vs default waitAll). `_handle_logic` Merge handler outputs `{merged, value, from, strategy}` for waitAny so downstream Jinja can read `{{ node_merge.value }}`. `_execute_sub_workflow` propagates `child._runtime.shared_evidence` to `parent._runtime.shared_evidence` via append-merge. New SMART-04 lint `lint_unreachable_node_after_switch` catches the V9-pre-fix bug shape — fan-in node where two incoming edges trace to different arms of the same Switch/Condition ancestor; Coalesce/non-Merge-style nodes flagged with fix-hint pointing at Merge waitAny. 23 new unit tests; 1213 backend tests pass (was 1190). |
