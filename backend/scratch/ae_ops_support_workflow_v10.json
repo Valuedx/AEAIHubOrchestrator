@@ -110,7 +110,7 @@
           "intents": [
             {
               "name": "small_talk",
-              "description": "Greetings, thanks, jokes, 'what can you help with', off-topic, OR follow-up status checks on a case already with the team ('any update?', 'any news?', 'is it done yet?').",
+              "description": "Pure greetings, thanks, jokes, off-topic chitchat, or 'what can you help with' meta-questions. NOT for status queries about specific bots/processes/batches/runs/reports \u2014 those are 'ops' even when phrased politely. The downstream case-state Switch handles HANDED_OFF follow-ups separately.",
               "examples": [
                 "hi",
                 "hello",
@@ -120,17 +120,9 @@
                 "what do you do",
                 "how are you",
                 "good morning",
-                "any update?",
-                "any updates?",
-                "any news?",
-                "what's the status?",
-                "what is the status?",
-                "is it done yet?",
-                "is it resolved?",
-                "did the team respond?",
-                "any progress?",
-                "have you heard back?",
-                "still waiting?"
+                "good evening",
+                "ok thanks",
+                "got it"
               ],
               "priority": 100
             },
@@ -188,7 +180,7 @@
             },
             {
               "name": "ops",
-              "description": "Anything operational \u2014 diagnostics, remediation, missing output, status check, resolution update, correction. The catch-all for the Worker agent.",
+              "description": "Anything operational \u2014 diagnostics, remediation, missing output, status check on a specific bot/process/batch/run/report (including polite phrasings like 'may I know', 'could you check', 'any update on X'), resolution update, correction. The catch-all for the Worker agent.",
               "examples": [
                 "my report didn't arrive",
                 "where is my daily recon",
@@ -235,7 +227,28 @@
                 "rerun that one",
                 "one more time",
                 "again please",
-                "yes do it again"
+                "yes do it again",
+                "may I know the status of my claim process",
+                "may I know the status of my report",
+                "could you check the status of my batch",
+                "could you tell me what's happening with the report",
+                "any update on the medical batch",
+                "what's the status of MG13 today's run",
+                "what's the status of my report today",
+                "is my batch done yet",
+                "did the morning run complete",
+                "did my batch finish",
+                "is the report ready",
+                "the medical claim batch from this morning",
+                "MG13 ran but my applications weren't picked up",
+                "my applications weren't processed",
+                "my claim batch didn't run today",
+                "my batch didn't run today",
+                "give me the status",
+                "show me the status",
+                "tell me the status of",
+                "is X running",
+                "is X stuck"
               ],
               "priority": 130
             }

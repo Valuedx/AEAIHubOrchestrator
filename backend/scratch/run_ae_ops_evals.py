@@ -59,6 +59,10 @@ ORCH_URL = os.environ.get("ORCHESTRATOR_BASE_URL", "http://localhost:8001")
 TENANT_ID = os.environ.get("TENANT_ID", "default")
 HEADERS = {"X-Tenant-Id": TENANT_ID, "Content-Type": "application/json"}
 TRANSCRIPTS = Path(__file__).parent / "ae_ops_eval_transcripts.json"
+# Test Flask server (AEAIHUBTesterUI/agent_server.py) hosts the
+# eval-mock fixture endpoints. Set EVAL_MOCK_BASE_URL to override
+# (e.g. when the Flask server is on a different port).
+EVAL_MOCK_BASE_URL = os.environ.get("EVAL_MOCK_BASE_URL", "http://localhost:5050").rstrip("/")
 
 DESTRUCTIVE_TOOL_FRAGMENTS = (
     "restart", "rerun", "terminate", "rotate", "change_schedule", "kill", "stop",
@@ -425,7 +429,17 @@ def score_turn(art: TurnArtifacts, expect: dict) -> TurnScore:
 
         # Allowlist of known system / product names that legitimately
         # show up in worker replies and aren't fabricated entities.
-        SYSTEM_NAMES = {"automationedge", "automation edge"}
+        # Extended 2026-05-02 to cover AE upstream systems that
+        # appear in real HDFC ticket data (LifeAsia, CallHealth,
+        # MediAssist) and the AS400 platform reference.
+        SYSTEM_NAMES = {
+            "automationedge", "automation edge",
+            "lifeasia", "life asia",
+            "callhealth", "call health",
+            "mediassist", "medi assist", "medi-assist",
+            "as400", "automationanywhere", "automation anywhere",
+            "sharepath", "sharepoint",
+        }
 
         user_lower = (art.user_input or "").lower()
         def _is_user_supplied(token: str) -> bool:
@@ -473,6 +487,17 @@ def score_turn(art: TurnArtifacts, expect: dict) -> TurnScore:
                     "entity grounding ok (no unsupported claims)",
                     "")
 
+    if "must_reach_status" in expect:
+        # Direct check that the workflow instance reached a specific
+        # status (typically "suspended" for HITL-gated tests). Tests
+        # that the gate fired, not just that a destructive tool name
+        # appears. Pairs with `destructive_tool_called`.
+        target = expect["must_reach_status"]
+        ok = art.status == target
+        _record(score, ok,
+                f"instance reached status={target}",
+                f"instance status={art.status!r}, expected {target!r}")
+
     if "max_iterations" in expect:
         # Heuristic via tool-call count. ReAct exposes iterations directly but
         # the harvester only keeps tool calls; iterations include zero-tool
@@ -498,20 +523,82 @@ def _record(score: TurnScore, passed: bool, ok_msg: str, fail_msg: str) -> None:
 # Replay loop
 # ---------------------------------------------------------------------------
 
+def _install_mock_fixture(case: dict) -> bool:
+    """If the case declares ``mock_fixtures``, POST them to the test
+    Flask server so the MCP eval_mock layer picks them up. Returns
+    True on success, False if the mock infra is unreachable (case
+    should be skipped). No-op + True for cases without fixtures."""
+    fixtures = case.get("mock_fixtures")
+    if not fixtures:
+        return True
+    try:
+        r = httpx.post(
+            f"{EVAL_MOCK_BASE_URL}/api/eval/fixture",
+            json={"case_id": case["id"], "fixtures": fixtures},
+            timeout=5,
+        )
+        if r.status_code >= 400:
+            print(
+                f"      [mock-infra] HTTP {r.status_code} from "
+                f"{EVAL_MOCK_BASE_URL}/api/eval/fixture: {r.text[:120]}",
+                file=sys.stderr,
+            )
+            return False
+        return True
+    except Exception as exc:
+        print(
+            f"      [mock-infra] could not reach {EVAL_MOCK_BASE_URL}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+
+def _clear_mock_fixture() -> None:
+    """Best-effort fixture teardown after a case finishes. Failures
+    are non-fatal — the next case overwrites the fixture file anyway."""
+    try:
+        httpx.delete(f"{EVAL_MOCK_BASE_URL}/api/eval/fixture", timeout=5)
+    except Exception:
+        pass
+
+
 def run_case(case: dict, workflow_id: str) -> list[tuple[TurnArtifacts, TurnScore]]:
     session_id = f"eval-{uuid.uuid4().hex[:12]}"
     user_role = case.get("user_role") or "business"
+
+    # Install per-case mock fixture (if declared). When the test
+    # Flask server is unreachable, mark the case as skipped so the
+    # report reflects that the run was inconclusive (not a behavior
+    # failure).
+    if not _install_mock_fixture(case):
+        art = TurnArtifacts(turn_index=0, user_input=(case.get("turns") or [{}])[0].get("input", ""))
+        art.status = "skipped"
+        art.error = (
+            f"mock infra unavailable at {EVAL_MOCK_BASE_URL} — case requires "
+            "mock_fixtures but the Flask test server isn't reachable. Start "
+            "agent_server.py and ensure /api/eval/fixture responds."
+        )
+        skip_score = TurnScore()
+        skip_score.notes.append("  ⊘ skipped (mock infra unavailable)")
+        return [(art, skip_score)]
+
     results: list[tuple[TurnArtifacts, TurnScore]] = []
     prior_reply = ""
-    for i, turn in enumerate(case.get("turns") or []):
-        art = execute_turn(workflow_id, session_id, user_role, turn["input"])
-        art.turn_index = i
-        expect = dict(turn.get("expect") or {})
-        if "must_not_re_ask" in expect:
-            expect["_prior_reply"] = prior_reply
-        score = score_turn(art, expect)
-        results.append((art, score))
-        prior_reply = art.final_reply
+    try:
+        for i, turn in enumerate(case.get("turns") or []):
+            art = execute_turn(workflow_id, session_id, user_role, turn["input"])
+            art.turn_index = i
+            expect = dict(turn.get("expect") or {})
+            if "must_not_re_ask" in expect:
+                expect["_prior_reply"] = prior_reply
+            score = score_turn(art, expect)
+            results.append((art, score))
+            prior_reply = art.final_reply
+    finally:
+        if case.get("mock_fixtures"):
+            _clear_mock_fixture()
+
     return results
 
 
@@ -520,6 +607,10 @@ def run_case(case: dict, workflow_id: str) -> list[tuple[TurnArtifacts, TurnScor
 # ---------------------------------------------------------------------------
 
 def render_markdown(label: str, report: list[tuple[dict, list[tuple[TurnArtifacts, TurnScore]]]]) -> str:
+    """Compact summary report — one block per case, truncated reply preview.
+
+    Pair with render_full_transcript() for verification; this one is the
+    glanceable scoreboard."""
     lines = [f"## {label}\n"]
     pass_n = fail_n = total = 0
     for case, turns in report:
@@ -529,9 +620,14 @@ def render_markdown(label: str, report: list[tuple[dict, list[tuple[TurnArtifact
         total += 1
         status = "✅" if case_pass else "❌"
         lines.append(f"### {status} {case['id']}")
-        lines.append(f"_{case.get('description', '')}_  \nrole: `{case.get('user_role', 'business')}`\n")
+        meta = [f"role: `{case.get('user_role', 'business')}`"]
+        if case.get("tier"):
+            meta.append(f"tier: `{case['tier']}`")
+        if case.get("themes"):
+            meta.append(f"themes: `{', '.join(case['themes'])}`")
+        lines.append(f"_{case.get('description', '')}_  \n{' · '.join(meta)}\n")
         for art, score in turns:
-            lines.append(f"**Turn {art.turn_index + 1}**: `{art.user_input}`")
+            lines.append(f"**Turn {art.turn_index + 1}**: `{art.user_input[:200]}`")
             lines.append(f"- status: `{art.status}` · latency: `{art.latency_seconds}s` · "
                          f"intent: `{art.intent}` · tool_calls: `{art.tool_call_count}` · "
                          f"case_state: `{art.case_state}`")
@@ -544,6 +640,86 @@ def render_markdown(label: str, report: list[tuple[dict, list[tuple[TurnArtifact
         lines.append("")
     summary = f"**{label} summary**: {pass_n}/{total} cases passed, {fail_n} failed.\n"
     return summary + "\n" + "\n".join(lines)
+
+
+def render_full_transcript(label: str, report: list[tuple[dict, list[tuple[TurnArtifacts, TurnScore]]]]) -> str:
+    """Verbose report — full conversation with NO reply truncation, every
+    tool call argument, every tool result preview, full verifier output.
+    For human verification of agent behavior end-to-end.
+
+    Output structure per case:
+      - User turn (full input)
+      - Per-turn metadata (status, latency, intent, case_state)
+      - Every tool call with full args
+      - Every tool result with full preview
+      - Full agent reply (no truncation)
+      - Verifier output if any
+      - Pass/fail breakdown
+    """
+    lines = [f"# Full conversation transcript — {label}\n"]
+    lines.append("This report shows the complete back-and-forth for every case "
+                 "in the run. Use it to verify agent behavior end-to-end. The "
+                 "summary report (`<out>.md`) has the scoreboard view.\n")
+
+    for case, turns in report:
+        case_pass = all(s.passed for _, s in turns)
+        status = "✅ PASS" if case_pass else "❌ FAIL"
+        lines.append(f"\n---\n")
+        lines.append(f"## {status} — `{case['id']}`")
+        meta_bits = [
+            f"role: **{case.get('user_role', 'business')}**",
+        ]
+        if case.get("tier"):
+            meta_bits.append(f"tier: **{case['tier']}**")
+        if case.get("themes"):
+            meta_bits.append(f"themes: **{', '.join(case['themes'])}**")
+        lines.append(" · ".join(meta_bits))
+        lines.append(f"\n> {case.get('description', '')}\n")
+
+        for art, score in turns:
+            lines.append(f"\n### Turn {art.turn_index + 1}")
+            lines.append(f"\n**👤 User:**\n")
+            # Preserve the user's input verbatim, including newlines
+            # (some cases include forwarded email threads).
+            lines.append("```")
+            lines.append(art.user_input)
+            lines.append("```")
+            lines.append(f"\n**Run metadata:**")
+            lines.append(f"- status: `{art.status}` · latency: `{art.latency_seconds}s`")
+            lines.append(f"- intent: `{art.intent}`" +
+                         (f" (score `{art.intent_score:.3f}`)" if art.intent_score is not None else ""))
+            lines.append(f"- tool_calls: `{art.tool_call_count}` · case_state: `{art.case_state}` · "
+                         f"instance: `{art.instance_id[:12] + '…' if art.instance_id else 'n/a'}`")
+            if art.error:
+                lines.append(f"- error: `{art.error}`")
+
+            if art.tool_calls:
+                lines.append(f"\n**🔧 Tool calls** ({len(art.tool_calls)}):")
+                for i, tc in enumerate(art.tool_calls, 1):
+                    name = tc.get("toolName") or tc.get("name") or "<unknown>"
+                    args = tc.get("arguments") or {}
+                    args_str = json.dumps(args, default=str, ensure_ascii=False)
+                    if len(args_str) > 400:
+                        args_str = args_str[:397] + "…"
+                    lines.append(f"  {i}. `{name}({args_str})`")
+
+            lines.append(f"\n**🤖 Agent reply:**\n")
+            if art.final_reply:
+                lines.append("> " + art.final_reply.replace("\n", "\n> "))
+            else:
+                lines.append("_(empty)_")
+
+            if art.verifier_text:
+                lines.append(f"\n**🔍 Verifier output:**\n")
+                lines.append("> " + art.verifier_text.replace("\n", "\n> "))
+
+            lines.append(f"\n**Scoring** ({score.pass_count}/{score.total} checks passed):")
+            for note in score.notes:
+                lines.append(note)
+
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -562,22 +738,42 @@ def main() -> int:
     p.add_argument("--workflow", action="append", required=True,
                    help="workflow id [optionally :LABEL]; pass multiple to compare")
     p.add_argument("--case", action="append",
-                   help="filter to specific case id(s); default = all")
-    p.add_argument("--out", default="ae_ops_eval_report.md", help="output markdown path")
+                   help="filter to specific case id(s); default = all (subject to --tier)")
+    p.add_argument("--tier", choices=["core", "extended", "all"], default="core",
+                   help="run only cases tagged with this tier (default: core)")
+    p.add_argument("--out", default="ae_ops_eval_report.md",
+                   help="output markdown path for the SUMMARY scoreboard. A "
+                        "companion `<out>.transcript.md` is always written "
+                        "alongside with the full conversation flow for human "
+                        "verification.")
     args = p.parse_args()
 
-    transcripts = json.loads(TRANSCRIPTS.read_text())
+    transcripts = json.loads(TRANSCRIPTS.read_text(encoding="utf-8"))
     cases = transcripts["cases"]
+
+    # Tier filter applies first — narrows the pool. --case selects a
+    # specific id (overrides tier; useful for fast iteration on one
+    # case regardless of which tier it belongs to).
     if args.case:
         wanted = set(args.case)
         cases = [c for c in cases if c["id"] in wanted]
         if not cases:
             print(f"no cases matched {args.case}", file=sys.stderr)
             return 1
+    elif args.tier != "all":
+        cases = [c for c in cases if c.get("tier") == args.tier]
+        if not cases:
+            print(f"no cases tagged tier={args.tier!r}", file=sys.stderr)
+            return 1
+
+    print(f"running {len(cases)} case(s) (tier={args.tier})", flush=True)
 
     sections: list[str] = [f"# AE Ops Support eval — {len(cases)} cases\n",
-                           f"orchestrator: `{ORCH_URL}`  ·  tenant: `{TENANT_ID}`\n"]
+                           f"orchestrator: `{ORCH_URL}`  ·  tenant: `{TENANT_ID}` · tier: `{args.tier}`\n"]
     overall: list[tuple[str, int, int]] = []
+
+    # Collect per-workflow reports for both summary and full-transcript output.
+    workflow_reports: list[tuple[str, list[tuple[dict, list[tuple[TurnArtifacts, TurnScore]]]]]] = []
 
     for wf_arg in args.workflow:
         wid, label = parse_workflow_arg(wf_arg)
@@ -593,14 +789,35 @@ def main() -> int:
         sections.append(render_markdown(label, report))
         passed = sum(1 for _, t in report if all(s.passed for _, s in t))
         overall.append((label, passed, len(report)))
+        workflow_reports.append((label, report))
 
     if len(overall) >= 2:
         sections.insert(1, "## Side-by-side\n\n| Label | Passed | Total |\n|---|---|---|")
         for lbl, p_, t_ in overall:
             sections.insert(2, f"| {lbl} | {p_} | {t_} |")
 
-    Path(args.out).write_text("\n".join(sections), encoding="utf-8")
-    print(f"\nReport: {args.out}")
+    out_path = Path(args.out)
+    out_path.write_text("\n".join(sections), encoding="utf-8")
+    print(f"\nReport: {out_path}")
+
+    # Companion full-transcript file for human verification — always
+    # generated alongside the summary so reviewers can see the actual
+    # conversation flow without reading raw JSON.
+    transcript_path = out_path.with_suffix(out_path.suffix + ".transcript.md") \
+        if not out_path.suffix.endswith(".transcript.md") \
+        else out_path.with_name(out_path.stem + "_transcript.md")
+    # Simpler: always replace .md with .transcript.md
+    if out_path.suffix == ".md":
+        transcript_path = out_path.with_suffix(".transcript.md")
+    transcript_lines = [
+        f"# AE Ops Support eval — full conversation transcript\n",
+        f"orchestrator: `{ORCH_URL}` · tenant: `{TENANT_ID}` · tier: `{args.tier}` · cases: `{len(cases)}`\n",
+    ]
+    for label, report in workflow_reports:
+        transcript_lines.append(render_full_transcript(label, report))
+    transcript_path.write_text("\n".join(transcript_lines), encoding="utf-8")
+    print(f"Full transcript: {transcript_path}")
+
     return 0
 
 

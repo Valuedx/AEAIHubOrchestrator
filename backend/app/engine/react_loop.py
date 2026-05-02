@@ -249,8 +249,13 @@ def run_react_loop(
                 "memory_debug": memory_debug,
             }
 
-        total_usage["input_tokens"] += response["usage"]["input_tokens"]
-        total_usage["output_tokens"] += response["usage"]["output_tokens"]
+        # Defensive — some provider responses (notably Vertex on
+        # certain function-calling shapes) return usage = {None, None}.
+        # Coerce to 0 so a single odd response doesn't crash the
+        # whole turn; the totals still mean roughly the right thing.
+        _usage = response.get("usage") or {}
+        total_usage["input_tokens"] += _usage.get("input_tokens") or 0
+        total_usage["output_tokens"] += _usage.get("output_tokens") or 0
         
         llm_duration = time.monotonic() - iteration_start
         logger.info("ReAct iteration %d LLM call took %.1fs", i + 1, llm_duration)
