@@ -64,8 +64,26 @@ TRANSCRIPTS = Path(__file__).parent / "ae_ops_eval_transcripts.json"
 # (e.g. when the Flask server is on a different port).
 EVAL_MOCK_BASE_URL = os.environ.get("EVAL_MOCK_BASE_URL", "http://localhost:5050").rstrip("/")
 
+# Tightened 2026-05-02 — substring-matching on "stop" / "restart" was
+# causing false positives on read-only listing tools like
+# ``ae.agent.list_stopped`` and ``ae.agent.list_running`` (which are
+# explicitly NOT destructive — they enumerate state). Switch to
+# explicit unambiguous fragments that only appear in tools that
+# actually mutate state.
 DESTRUCTIVE_TOOL_FRAGMENTS = (
-    "restart", "rerun", "terminate", "rotate", "change_schedule", "kill", "stop",
+    "restart_service",          # ae.agent.restart_service
+    "clear_stale_rdp_session",  # ae.agent.clear_stale_rdp_session
+    ".rerun",                   # ae.request.rerun (leading dot avoids matching "rerunning" in summaries)
+    "terminate_running",        # ae.request.terminate_running
+    "cancel_new_or_retry",      # ae.request.cancel_new_or_retry
+    "resubmit_from",            # ae.request.resubmit_from_failure_point
+    "run_now",                  # ae.schedule.run_now
+    "rotate",                   # credential rotation
+    "change_schedule",          # schedule mutation
+    ".disable",                 # ae.schedule.disable / ae.workflow.disable
+    ".enable",                  # ae.schedule.enable / ae.workflow.enable
+    "rollback_version",         # ae.workflow.rollback_version
+    "kill_process",             # if ever added
 )
 
 
